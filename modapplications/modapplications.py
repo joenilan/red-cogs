@@ -16,7 +16,8 @@ class ModApplications(commands.Cog):
         
         default_guild = {
             "applications": {},
-            "base_questions": [
+            "questions": [],  # Remove this as we're not using it anymore
+            "base_questions": [  # Add this to match what we're using
                 {
                     "id": "age",
                     "question": "Are you over the age of 16? (Yes/No)",
@@ -51,7 +52,7 @@ class ModApplications(commands.Cog):
                     "valid_responses": ["yes", "no"]
                 }
             ],
-            "platform_questions": {
+            "platform_questions": {  # Add this to match what we're using
                 "discord": [
                     {
                         "id": "discord_username",
@@ -572,12 +573,17 @@ class ApplicationTypeView(discord.ui.View):
             platform_names = [self.platforms[p] for p in self.selected_platforms]
             answers["platforms"] = ", ".join(platform_names)
             
+            print(f"Debug - Selected Platforms: {self.selected_platforms}")
+            print(f"Debug - Platform Names: {platform_names}")
+            print(f"Debug - Answers after platforms: {answers}")
+            
             # Ask base questions first
             for question in base_questions:
                 answer = await self.ask_question(interaction, question["question"], question.get("valid_responses"))
                 if not self.validate_answer(question, answer):
                     return False
                 answers[question["id"]] = answer
+                print(f"Debug - Answers after base question {question['id']}: {answers}")
 
             # Ask platform-specific questions for each selected platform
             for platform in self.selected_platforms:
@@ -591,13 +597,16 @@ class ApplicationTypeView(discord.ui.View):
                         if not self.validate_answer(question, answer):
                             return False
                         answers[f"{platform}_{question['id']}"] = answer
+                        print(f"Debug - Answers after platform question {platform}_{question['id']}: {answers}")
 
+            print(f"Debug - Final answers before submission: {answers}")
             # Submit the application through the cog
             await self.cog.submit_application(self.guild, self.user, answers)
             await interaction.followup.send("Application completed! Thank you for applying.", ephemeral=True)
             return True
             
         except Exception as e:
+            print(f"Debug - Error occurred: {str(e)}")
             await interaction.followup.send(f"An error occurred during the application: {str(e)}", ephemeral=True)
             return False
 
