@@ -241,30 +241,30 @@ class ModApplications(commands.Cog):
     async def start_application_process(self, interaction: discord.Interaction):
         """Handle the initial application button press."""
         try:
-            # First acknowledge the interaction
-            await interaction.response.defer(ephemeral=True)
-            
             # Check if applications are open
             if not await self.config.guild(interaction.guild).applications_open():
-                await interaction.followup.send("Sorry, moderator applications are currently closed.", ephemeral=True)
+                await interaction.response.send_message("Sorry, moderator applications are currently closed.", ephemeral=True)
                 return
 
             # Try to DM the user
             try:
+                # Send initial response first
+                await interaction.response.send_message("I've sent you a DM to start the application process!", ephemeral=True)
+                
+                # Then send DMs
                 await interaction.user.send("Welcome to the moderator application process!")
                 view = ApplicationTypeView(self, interaction.user, interaction.guild)
                 await interaction.user.send("What would you like to apply for?", view=view)
-                await interaction.followup.send("I've sent you a DM to start the application process!", ephemeral=True)
             except discord.Forbidden:
-                await interaction.followup.send(
-                    "I couldn't DM you! Please enable DMs from server members and try again.", 
-                    ephemeral=True
+                # If we can't DM, edit the response instead of sending a new one
+                await interaction.edit_original_response(
+                    content="I couldn't DM you! Please enable DMs from server members and try again."
                 )
                 
         except Exception as e:
-            await interaction.followup.send(
-                f"An error occurred while starting the application: {str(e)}", 
-                ephemeral=True
+            # If something goes wrong, edit the original response
+            await interaction.edit_original_response(
+                content=f"An error occurred while starting the application: {str(e)}"
             )
 
     async def cog_load(self):
