@@ -252,15 +252,13 @@ class ModApplications(commands.Cog):
             await interaction.followup.send("I couldn't DM you! Please enable DMs from server members and try again.", ephemeral=True)
 
     async def cog_load(self):
-        if not self.persistent_views_added:
-            # Add the persistent views
-            self.bot.add_view(ApplicationStartView(self))
-            self.bot.add_view(ApplicationTypeView(self, None, None))
-            self.persistent_views_added = True
+        """This is called when the cog is loaded."""
+        self.bot.add_view(ApplicationTypeView(self, None, None))
+        self.bot.add_view(ApplicationResponseView(self, None))
 
 class ApplicationTypeView(discord.ui.View):
     def __init__(self, cog, user, guild):
-        # Make the view persistent
+        # Make the view persistent by removing the timeout
         super().__init__(timeout=None)
         self.cog = cog
         self.user = user
@@ -284,7 +282,8 @@ class ApplicationTypeView(discord.ui.View):
             discord.SelectOption(label="Kick", value="kick")
         ],
         min_values=1,
-        max_values=5  # Allow selecting all platforms
+        max_values=5,  # Allow selecting all platforms
+        custom_id="platform_select"  # Add custom_id for persistence
     )
     async def platform_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         # Only allow the original user to interact
@@ -295,7 +294,11 @@ class ApplicationTypeView(discord.ui.View):
         self.selected_platforms = select.values
         await interaction.response.send_message("Click 'Submit' when you've selected all platforms you want to apply for.", ephemeral=True)
 
-    @discord.ui.button(label="Submit", style=discord.ButtonStyle.green)
+    @discord.ui.button(
+        label="Submit",
+        style=discord.ButtonStyle.green,
+        custom_id="submit_platforms"  # Add custom_id for persistence
+    )
     async def submit_platforms(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Only allow the original user to interact
         if interaction.user != self.user:
