@@ -18,8 +18,8 @@ class ModApplications(commands.Cog):
             "applications": {},
             "questions": [
                 {
-                    "id": "username",
-                    "question": "What is your {platform} Username?",
+                    "id": "discord_username",
+                    "question": "What is your Discord Username?",
                     "required": True
                 },
                 {
@@ -30,23 +30,23 @@ class ModApplications(commands.Cog):
                 },
                 {
                     "id": "experience",
-                    "question": "Are you a Moderator on any other {platform} channels? If yes, please list which ones.",
+                    "question": "Are you a Moderator on any other platforms/servers? If yes, please list which ones.",
                     "required": False
                 },
                 {
                     "id": "motivation",
-                    "question": "Why do you want to be a {platform} moderator?",
+                    "question": "Why do you want to be a moderator?",
                     "required": True
                 },
                 {
                     "id": "activity",
-                    "question": "How active are you on our {platform}? (Rate 1-5)",
+                    "question": "How active are you in our community? (Rate 1-5)",
                     "required": True,
                     "valid_responses": ["1", "2", "3", "4", "5"]
                 },
                 {
                     "id": "tos",
-                    "question": "Do you agree to follow {platform}'s Terms of Service? (Yes/No)",
+                    "question": "Do you agree to follow our Terms of Service? (Yes/No)",
                     "required": True,
                     "valid_responses": ["yes", "no"]
                 }
@@ -326,7 +326,6 @@ class ApplicationTypeView(discord.ui.View):
         custom_id="submit_platforms"  # Add custom_id for persistence
     )
     async def submit_platforms(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Only allow the original user to interact
         if interaction.user != self.user:
             await interaction.response.send_message("This is not your application!", ephemeral=True)
             return
@@ -346,26 +345,24 @@ class ApplicationTypeView(discord.ui.View):
             # Send confirmation
             await interaction.followup.send("Starting your application process...", ephemeral=True)
             
-            # Start the application process
-            for platform in self.selected_platforms:
-                await interaction.user.send(f"\n**Starting {self.platforms[platform]} Moderator Application**")
-                if not await self.start_application(interaction, platform):
-                    return
-
-            await interaction.user.send("All applications completed! Thank you for applying.")
+            # Start single application process
+            if await self.start_application(interaction):
+                await interaction.user.send("Application completed! Thank you for applying.")
             
         except Exception as e:
             await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
 
-    async def start_application(self, interaction: discord.Interaction, platform: str) -> bool:
+    async def start_application(self, interaction: discord.Interaction) -> bool:
         try:
             questions = await self.cog.config.guild(self.guild).questions()
             answers = {}
-            platform_name = self.platforms[platform]
+            
+            # Add selected platforms to answers
+            platform_names = [self.platforms[p] for p in self.selected_platforms]
+            answers["platforms"] = ", ".join(platform_names)
 
             for question in questions:
-                formatted_question = question["question"].format(platform=platform_name)
-                answer = await self.ask_question(interaction, formatted_question, question.get("valid_responses"))
+                answer = await self.ask_question(interaction, question["question"], question.get("valid_responses"))
                 
                 if question["required"] and not answer:
                     await interaction.followup.send("Required question was not answered. Application cancelled.", ephemeral=True)
@@ -390,12 +387,10 @@ class ApplicationTypeView(discord.ui.View):
                     
                 answers[question["id"]] = answer
 
-            # Add platform to answers
-            answers["platform"] = platform_name
-            
-            # Create and send the application
-            await self.submit_application(platform_name, answers)
+            # Submit the single application
+            await self.submit_application(answers)
             return True
+            
         except Exception as e:
             await interaction.followup.send(f"An error occurred during the application: {str(e)}", ephemeral=True)
             return False
@@ -429,7 +424,7 @@ class ApplicationTypeView(discord.ui.View):
             await interaction.followup.send("Application timed out. Please start over.")
             return None
 
-    async def submit_application(self, platform_name: str, answers: Dict[str, str]):
+    async def submit_application(self, answers: Dict[str, str]):
         """Submit the completed application."""
         channel_id = await self.cog.config.guild(self.guild).app_channel()
         if not channel_id:
@@ -442,17 +437,18 @@ class ApplicationTypeView(discord.ui.View):
             return
 
         embed = discord.Embed(
-            title=f"New Moderator Application - {platform_name}",
-            description=f"Application from {self.user.mention} ({self.user.id})",
+            title="New Moderator Application",
+            description=f"Application from {self.user.mention} ({self.user.id})\nPlatforms: {answers['platforms']}",
             color=discord.Color.blue(),
             timestamp=datetime.now()
         )
 
         # Add all answers to the embed
         for question_id, answer in answers.items():
-            # Format the question ID to be more readable
-            field_name = question_id.replace("_", " ").title()
-            embed.add_field(name=field_name, value=answer, inline=False)
+            if question_id != "platforms":  # Skip platforms as it's in the description
+                # Format the question ID to be more readable
+                field_name = question_id.replace("_", " ").title()
+                embed.add_field(name=field_name, value=answer, inline=False)
 
         view = ApplicationResponseView(self.cog, self.user.id)
         msg = await channel.send(embed=embed, view=view)
@@ -461,13 +457,13 @@ class ApplicationTypeView(discord.ui.View):
         async with self.cog.config.guild(self.guild).applications() as apps:
             apps[str(msg.id)] = {
                 "user_id": self.user.id,
-                "platform": platform_name,
+                "platforms": answers["platforms"],
                 "answers": answers,
                 "status": "pending",
                 "timestamp": datetime.now().isoformat()
             }
 
-        await self.user.send(f"Your {platform_name} application has been submitted! You will be notified when it has been reviewed.")
+        await self.user.send("Your application has been submitted! You will be notified when it has been reviewed.")
 
 class ApplicationResponseView(discord.ui.View):
     def __init__(self, cog, applicant_id):
