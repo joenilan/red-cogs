@@ -88,7 +88,7 @@ class ModApplications(commands.Cog):
         await ctx.send(f"Applications are now {status}.")
 
     @modapp.command(name="open")
-    @commands.is_owner()  # Changed to owner-only since it creates channels
+    @commands.is_owner()
     async def modapp_open(self, ctx):
         """Open applications and create necessary channels/roles."""
         try:
@@ -130,20 +130,20 @@ class ModApplications(commands.Cog):
                 }
             )
             
+            # Get the bot's command prefix
+            prefix = (await self.bot.get_prefix(ctx.message))[0]
+            
             # Send the application button message
             embed = discord.Embed(
                 title="Moderator Applications",
-                description="Click the button below to start your moderator application!",
+                description=(
+                    "Click the button below to start your moderator application!\n\n"
+                    f"You can also use `{prefix}apply` to start the application process."
+                ),
                 color=discord.Color.blue()
             )
             
-            view = discord.ui.View()
-            view.add_item(discord.ui.Button(
-                label="Apply Now",
-                style=discord.ButtonStyle.primary,
-                custom_id="start_application"
-            ))
-            
+            view = ApplicationStartView(self)  # Create a new view class for the start button
             await info_channel.send(embed=embed, view=view)
             
             # Save the IDs to config
@@ -253,7 +253,8 @@ class ModApplications(commands.Cog):
 
     async def cog_load(self):
         if not self.persistent_views_added:
-            # Add the persistent view
+            # Add the persistent views
+            self.bot.add_view(ApplicationStartView(self))
             self.bot.add_view(ApplicationTypeView(self, None, None))
             self.persistent_views_added = True
 
@@ -475,4 +476,13 @@ class ApplicationResponseView(discord.ui.View):
         embed.set_footer(text=f"{status.title()} by {interaction.user}")
         
         self.disable_all_items()
-        await interaction.message.edit(embed=embed, view=self) 
+        await interaction.message.edit(embed=embed, view=self)
+
+class ApplicationStartView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Apply Now", style=discord.ButtonStyle.primary, custom_id="start_application")
+    async def start_application(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.start_application_process(interaction) 
