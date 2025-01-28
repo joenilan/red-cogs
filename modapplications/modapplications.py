@@ -55,7 +55,8 @@ class ModApplications(commands.Cog):
             "notify_role": None,
             "applications_open": False,
             "mod_role": None,  # New: Role for moderator reviewers
-            "category_id": None  # New: Category for application channels
+            "category_id": None,  # New: Category for application channels
+            "info_channel": None  # New: Info channel for application button
         }
         
         self.config.register_guild(**default_guild)
@@ -100,7 +101,7 @@ class ModApplications(commands.Cog):
                 ctx.guild.get_role(735167487854903377)   # Agent
             ]
             
-            # Create the applications channel
+            # Create the private applications channel for reviewers
             overwrites = {
                 ctx.guild.default_role: discord.PermissionOverwrite(read_messages=False),
                 ctx.guild.me: discord.PermissionOverwrite(read_messages=True)
@@ -117,8 +118,34 @@ class ModApplications(commands.Cog):
                 overwrites=overwrites
             )
             
+            # Create the public info channel
+            info_channel = await ctx.guild.create_text_channel(
+                "apply-here",
+                category=category,
+                overwrites={
+                    ctx.guild.default_role: discord.PermissionOverwrite(send_messages=False)
+                }
+            )
+            
+            # Send the application button message
+            embed = discord.Embed(
+                title="Moderator Applications",
+                description="Click the button below to start your moderator application!",
+                color=discord.Color.blue()
+            )
+            
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(
+                label="Apply Now",
+                style=discord.ButtonStyle.primary,
+                custom_id="start_application"
+            ))
+            
+            await info_channel.send(embed=embed, view=view)
+            
             # Save the IDs to config
             await self.config.guild(ctx.guild).app_channel.set(apps_channel.id)
+            await self.config.guild(ctx.guild).info_channel.set(info_channel.id)
             await self.config.guild(ctx.guild).category_id.set(category.id)
             await self.config.guild(ctx.guild).applications_open.set(True)
             
@@ -126,8 +153,8 @@ class ModApplications(commands.Cog):
                 "📝 Moderator applications are now open!\n"
                 f"Category: {category.name}\n"
                 f"Applications Channel: {apps_channel.mention}\n"
+                f"Info Channel: {info_channel.mention}\n"
                 "Reviewer Roles: The One and Agent\n"
-                "Users can apply using the `!apply` command."
             )
             
         except discord.Forbidden:
@@ -193,6 +220,26 @@ class ModApplications(commands.Cog):
             await ctx.author.send("What would you like to apply for?", view=view)
         except discord.Forbidden:
             await ctx.send("I couldn't DM you! Please enable DMs from server members and try again.", delete_after=10)
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        if interaction.type == discord.InteractionType.component:
+            if interaction.data["custom_id"] == "start_application":
+                await interaction.response.defer(ephemeral=True)
+                await self.start_application_process(interaction)
+
+    async def start_application_process(self, interaction: discord.Interaction):
+        # Check if applications are open
+        if not await self.config.guild(interaction.guild).applications_open():
+            await interaction.followup.send("Sorry, moderator applications are currently closed.", ephemeral=True)
+            return
+
+        try:
+            await interaction.user.send("Welcome to the moderator application process!")
+            view = ApplicationTypeView(self, interaction.user, interaction.guild)
+            await interaction.user.send("What would you like to apply for?", view=view)
+        except discord.Forbidden:
+            await interaction.followup.send("I couldn't DM you! Please enable DMs from server members and try again.", ephemeral=True)
 
 class ApplicationTypeView(discord.ui.View):
     def __init__(self, cog, user, guild):
