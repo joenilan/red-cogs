@@ -214,6 +214,34 @@ class ModApplications(commands.Cog):
             await self.config.guild(ctx.guild).category_id.set(category.id)
             await self.config.guild(ctx.guild).applications_open.set(True)
             
+            # Create initial status embed
+            embed = discord.Embed(
+                title="Application Status Overview",
+                color=discord.Color.blue(),
+                timestamp=datetime.now()
+            )
+            
+            embed.add_field(
+                name="📝 Pending Applications (0)",
+                value="No pending applications",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="✅ Approved Applications (0)",
+                value="No approved applications",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="❌ Denied Applications (0)",
+                value="No denied applications",
+                inline=False
+            )
+            
+            status_msg = await apps_channel.send(embed=embed)
+            await status_msg.pin()
+            
             await ctx.send(
                 "📝 Moderator applications are now open!\n"
                 f"Category: {category.name}\n"
@@ -535,10 +563,6 @@ class ApplicationTypeView(discord.ui.View):
             
             answers = {}
             
-            # Add selected platforms to answers
-            platform_names = [self.platforms[p] for p in self.selected_platforms]
-            answers["platforms"] = ", ".join(platform_names)
-
             # Ask base questions first
             for question in base_questions:
                 answer = await self.ask_question(interaction, question["question"], question.get("valid_responses"))
@@ -559,8 +583,13 @@ class ApplicationTypeView(discord.ui.View):
                             return False
                         answers[f"{platform}_{question['id']}"] = answer
 
+            # Add selected platforms to answers AFTER all questions are answered
+            platform_names = [self.platforms[p] for p in self.selected_platforms]
+            answers["platforms"] = ", ".join(platform_names)
+
             # Submit the application through the cog
             await self.cog.submit_application(self.guild, self.user, answers)
+            await interaction.followup.send("Application completed! Thank you for applying.", ephemeral=True)
             return True
             
         except Exception as e:
@@ -654,10 +683,10 @@ class ApplicationResponseView(discord.ui.View):
         except discord.HTTPException:
             await interaction.followup.send("Could not DM the applicant, but the application has been processed.", ephemeral=True)
 
-        # After updating the application status, update the status embed
+        # Update the status embed first
         await self.cog.update_status_embed(interaction.guild)
 
-        # Update the embed
+        # Update the current application embed
         embed = interaction.message.embeds[0]
         embed.color = discord.Color.green() if status == "approved" else discord.Color.red()
         embed.set_footer(text=f"{status.title()} by {interaction.user}")
