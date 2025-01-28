@@ -61,6 +61,9 @@ class ModApplications(commands.Cog):
         
         self.config.register_guild(**default_guild)
 
+        # Add persistent views when the cog loads
+        self.persistent_views_added = False
+
     @commands.group()
     @commands.admin_or_permissions(administrator=True)
     async def modapp(self, ctx):
@@ -248,9 +251,16 @@ class ModApplications(commands.Cog):
         except discord.Forbidden:
             await interaction.followup.send("I couldn't DM you! Please enable DMs from server members and try again.", ephemeral=True)
 
+    async def cog_load(self):
+        if not self.persistent_views_added:
+            # Add the persistent view
+            self.bot.add_view(ApplicationTypeView(self, None, None))
+            self.persistent_views_added = True
+
 class ApplicationTypeView(discord.ui.View):
     def __init__(self, cog, user, guild):
-        super().__init__(timeout=300)
+        # Make the view persistent
+        super().__init__(timeout=None)
         self.cog = cog
         self.user = user
         self.guild = guild
@@ -273,39 +283,47 @@ class ApplicationTypeView(discord.ui.View):
             discord.SelectOption(label="Kick", value="kick")
         ],
         min_values=1,
-        max_values=5,  # Allow selecting all platforms
-        custom_id="platform_select"
+        max_values=5  # Allow selecting all platforms
     )
     async def platform_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        # Only allow the original user to interact
+        if interaction.user != self.user:
+            await interaction.response.send_message("This is not your application!", ephemeral=True)
+            return
+
         self.selected_platforms = select.values
         await interaction.response.send_message("Click 'Submit' when you've selected all platforms you want to apply for.", ephemeral=True)
 
-    @discord.ui.button(
-        label="Submit",
-        style=discord.ButtonStyle.green,
-        custom_id="submit_application"
-    )
+    @discord.ui.button(label="Submit", style=discord.ButtonStyle.green)
     async def submit_platforms(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Only allow the original user to interact
+        if interaction.user != self.user:
+            await interaction.response.send_message("This is not your application!", ephemeral=True)
+            return
+
         if not self.selected_platforms:
             await interaction.response.send_message("Please select at least one platform first!", ephemeral=True)
             return
 
-        # Disable the view immediately
-        self.disable_all_items()
-        await interaction.message.edit(view=self)
-        await interaction.response.send_message("Starting application process...", ephemeral=True)
-
-        # Start the application process in DMs
         try:
-            await interaction.user.send("Starting your application process!")
+            # Acknowledge the interaction first
+            await interaction.response.defer(ephemeral=True)
+            
+            # Disable the view
+            self.disable_all_items()
+            await interaction.message.edit(view=self)
+            
+            # Send confirmation
+            await interaction.followup.send("Starting your application process...", ephemeral=True)
+            
+            # Start the application process
             for platform in self.selected_platforms:
                 await interaction.user.send(f"\n**Starting {self.platforms[platform]} Moderator Application**")
                 if not await self.start_application(interaction, platform):
-                    return  # Stop if any application fails
+                    return
 
             await interaction.user.send("All applications completed! Thank you for applying.")
-        except discord.Forbidden:
-            await interaction.followup.send("I couldn't DM you! Please enable DMs from server members and try again.", ephemeral=True)
+            
         except Exception as e:
             await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
 
