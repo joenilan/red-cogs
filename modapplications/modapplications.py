@@ -163,7 +163,7 @@ class ModApplications(commands.Cog):
             await ctx.send(f"An error occurred during setup: {str(e)}")
 
     @modapp.command(name="close")
-    @commands.is_owner()  # Changed to owner-only since it deletes channels
+    @commands.is_owner()
     async def modapp_close(self, ctx):
         """Close applications and remove channels/roles."""
         try:
@@ -171,22 +171,24 @@ class ModApplications(commands.Cog):
             category_id = await self.config.guild(ctx.guild).category_id()
             mod_role_id = await self.config.guild(ctx.guild).mod_role()
             
-            # Delete category (this will delete all channels in it)
             if category_id:
                 category = ctx.guild.get_channel(category_id)
                 if category:
+                    # Delete all channels in the category first
+                    for channel in category.channels:
+                        try:
+                            await channel.delete(reason="Closing mod applications")
+                        except discord.HTTPException:
+                            continue
+                    
+                    # Then delete the category
                     await category.delete(reason="Closing mod applications")
-            
-            # Delete reviewer role
-            if mod_role_id:
-                role = ctx.guild.get_role(mod_role_id)
-                if role:
-                    await role.delete(reason="Closing mod applications")
             
             # Clear config
             await self.config.guild(ctx.guild).app_channel.set(None)
             await self.config.guild(ctx.guild).mod_role.set(None)
             await self.config.guild(ctx.guild).category_id.set(None)
+            await self.config.guild(ctx.guild).info_channel.set(None)
             await self.config.guild(ctx.guild).applications_open.set(False)
             
             await ctx.send("❌ Moderator applications are now closed and all related channels/roles have been removed.")
@@ -331,10 +333,13 @@ class ApplicationTypeView(discord.ui.View):
     async def ask_question(self, interaction: discord.Interaction, question: str, valid_responses: Optional[List[str]] = None) -> Optional[str]:
         await interaction.followup.send(f"**{question}**\nYou have 5 minutes to respond. Type 'cancel' to cancel.")
         
+        def check(m):
+            return m.author == self.user and isinstance(m.channel, discord.DMChannel)
+            
         try:
             response_message = await self.cog.bot.wait_for(
                 "message",
-                check=lambda m: m.author == self.user and m.channel == interaction.channel,
+                check=check,
                 timeout=300
             )
             
