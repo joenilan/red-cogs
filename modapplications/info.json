@@ -1,0 +1,14 @@
+{
+    "name": "ModApplications",
+    "short": "A cog for managing Twitch/Discord moderator applications",
+    "description": "This cog allows users to apply for moderator positions and administrators to review applications.",
+    "end_user_data_statement": "This cog stores Discord user IDs and application responses for moderator applications.",
+    "author": ["YourName"],
+    "required_cogs": {},
+    "requirements": [],
+    "tags": ["moderation", "applications", "twitch"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+} 
