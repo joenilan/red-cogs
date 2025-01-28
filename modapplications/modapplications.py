@@ -563,19 +563,76 @@ class ApplicationTypeView(discord.ui.View):
 
     async def start_application(self, interaction: discord.Interaction) -> bool:
         try:
-            # Get base questions and platform-specific questions
-            base_questions = await self.cog.config.guild(self.guild).base_questions()
-            platform_questions = await self.cog.config.guild(self.guild).platform_questions()
-            
             answers = {}
             
             # Set platforms FIRST before asking any questions
             platform_names = [self.platforms[p] for p in self.selected_platforms]
             answers["platforms"] = ", ".join(platform_names)
             
-            print(f"Debug - Selected Platforms: {self.selected_platforms}")
-            print(f"Debug - Platform Names: {platform_names}")
-            print(f"Debug - Answers after platforms: {answers}")
+            # Define base questions directly
+            base_questions = [
+                {
+                    "id": "age",
+                    "question": "Are you over the age of 16? (Yes/No)",
+                    "required": True,
+                    "valid_responses": ["yes", "no"]
+                },
+                {
+                    "id": "timezone",
+                    "question": "What timezone are you in? (e.g. EST, PST, GMT)",
+                    "required": True
+                },
+                {
+                    "id": "experience",
+                    "question": "Do you have any previous moderation experience? If yes, please describe.",
+                    "required": False
+                },
+                {
+                    "id": "motivation",
+                    "question": "Why do you want to be a moderator?",
+                    "required": True
+                },
+                {
+                    "id": "activity",
+                    "question": "How active are you in our community? (Rate 1-5)",
+                    "required": True,
+                    "valid_responses": ["1", "2", "3", "4", "5"]
+                },
+                {
+                    "id": "tos",
+                    "question": "Do you agree to follow our Terms of Service? (Yes/No)",
+                    "required": True,
+                    "valid_responses": ["yes", "no"]
+                }
+            ]
+            
+            # Define platform questions directly
+            platform_questions = {
+                "discord": [
+                    {
+                        "id": "discord_username",
+                        "question": "What is your Discord Username?",
+                        "required": True
+                    },
+                    {
+                        "id": "discord_experience",
+                        "question": "How long have you been using Discord?",
+                        "required": True
+                    }
+                ],
+                "twitch": [
+                    {
+                        "id": "twitch_username",
+                        "question": "What is your Twitch username?",
+                        "required": True
+                    },
+                    {
+                        "id": "twitch_following",
+                        "question": "How long have you been following our Twitch channel?",
+                        "required": True
+                    }
+                ]
+            }
             
             # Ask base questions first
             for question in base_questions:
@@ -583,7 +640,6 @@ class ApplicationTypeView(discord.ui.View):
                 if not self.validate_answer(question, answer):
                     return False
                 answers[question["id"]] = answer
-                print(f"Debug - Answers after base question {question['id']}: {answers}")
 
             # Ask platform-specific questions for each selected platform
             for platform in self.selected_platforms:
@@ -597,9 +653,7 @@ class ApplicationTypeView(discord.ui.View):
                         if not self.validate_answer(question, answer):
                             return False
                         answers[f"{platform}_{question['id']}"] = answer
-                        print(f"Debug - Answers after platform question {platform}_{question['id']}: {answers}")
 
-            print(f"Debug - Final answers before submission: {answers}")
             # Submit the application through the cog
             await self.cog.submit_application(self.guild, self.user, answers)
             await interaction.followup.send("Application completed! Thank you for applying.", ephemeral=True)
