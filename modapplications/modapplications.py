@@ -449,16 +449,21 @@ class ModApplications(commands.Cog):
             await user.send("Error: Could not find application channel. Please contact an administrator.")
             return
 
+        # Create the embed first without the platforms
         embed = discord.Embed(
             title="New Moderator Application",
-            description=f"Application from {user.mention} ({user.id})\nPlatforms: {answers['platforms']}",
+            description=f"Application from {user.mention} ({user.id})",
             color=discord.Color.blue(),
             timestamp=datetime.now()
         )
 
+        # Add platforms to description if available
+        if 'platforms' in answers:
+            embed.description += f"\nPlatforms: {answers['platforms']}"
+
         # Add all answers to the embed
         for question_id, answer in answers.items():
-            if question_id != "platforms":  # Skip platforms as it's in the description
+            if question_id != 'platforms':  # Skip platforms as it's in the description
                 # Format the question ID to be more readable
                 field_name = question_id.replace("_", " ").title()
                 embed.add_field(name=field_name, value=answer, inline=False)
@@ -470,7 +475,7 @@ class ModApplications(commands.Cog):
         async with self.config.guild(guild).applications() as apps:
             apps[str(msg.id)] = {
                 "user_id": user.id,
-                "platforms": answers["platforms"],
+                "platforms": answers.get("platforms", "Unknown"),  # Use get() with default value
                 "answers": answers,
                 "status": "pending",
                 "timestamp": datetime.now().isoformat()
