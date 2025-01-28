@@ -409,21 +409,21 @@ class ModApplications(commands.Cog):
         status_msg = await channel.send(embed=embed)
         await status_msg.pin()
 
-    async def submit_application(self, answers: Dict[str, str]):
+    async def submit_application(self, guild, user, answers: Dict[str, str]):
         """Submit the completed application."""
-        channel_id = await self.config.guild(self.guild).app_channel()
+        channel_id = await self.config.guild(guild).app_channel()
         if not channel_id:
-            await self.user.send("Error: Application channel not configured. Please contact an administrator.")
+            await user.send("Error: Application channel not configured. Please contact an administrator.")
             return
 
-        channel = self.guild.get_channel(channel_id)
+        channel = guild.get_channel(channel_id)
         if not channel:
-            await self.user.send("Error: Could not find application channel. Please contact an administrator.")
+            await user.send("Error: Could not find application channel. Please contact an administrator.")
             return
 
         embed = discord.Embed(
             title="New Moderator Application",
-            description=f"Application from {self.user.mention} ({self.user.id})\nPlatforms: {answers['platforms']}",
+            description=f"Application from {user.mention} ({user.id})\nPlatforms: {answers['platforms']}",
             color=discord.Color.blue(),
             timestamp=datetime.now()
         )
@@ -435,23 +435,23 @@ class ModApplications(commands.Cog):
                 field_name = question_id.replace("_", " ").title()
                 embed.add_field(name=field_name, value=answer, inline=False)
 
-        view = ApplicationResponseView(self.cog, self.user.id)
+        view = ApplicationResponseView(self, user.id)
         msg = await channel.send(embed=embed, view=view)
 
         # Store the application in the config
-        async with self.cog.config.guild(self.guild).applications() as apps:
+        async with self.config.guild(guild).applications() as apps:
             apps[str(msg.id)] = {
-                "user_id": self.user.id,
+                "user_id": user.id,
                 "platforms": answers["platforms"],
                 "answers": answers,
                 "status": "pending",
                 "timestamp": datetime.now().isoformat()
             }
 
-        await self.user.send("Your application has been submitted! You will be notified when it has been reviewed.")
+        await user.send("Your application has been submitted! You will be notified when it has been reviewed.")
 
         # After storing the application, update the status embed
-        await self.update_status_embed(self.guild)
+        await self.update_status_embed(guild)
 
 class ApplicationTypeView(discord.ui.View):
     def __init__(self, cog, user, guild):
@@ -559,8 +559,8 @@ class ApplicationTypeView(discord.ui.View):
                             return False
                         answers[f"{platform}_{question['id']}"] = answer
 
-            # Submit the application
-            await self.submit_application(answers)
+            # Submit the application through the cog
+            await self.cog.submit_application(self.guild, self.user, answers)
             return True
             
         except Exception as e:
