@@ -239,22 +239,41 @@ class ModApplications(commands.Cog):
                 await view.submit_platforms(interaction, None)
 
     async def start_application_process(self, interaction: discord.Interaction):
-        # Check if applications are open
-        if not await self.config.guild(interaction.guild).applications_open():
-            await interaction.followup.send("Sorry, moderator applications are currently closed.", ephemeral=True)
-            return
-
+        """Handle the initial application button press."""
         try:
-            await interaction.user.send("Welcome to the moderator application process!")
-            view = ApplicationTypeView(self, interaction.user, interaction.guild)
-            await interaction.user.send("What would you like to apply for?", view=view)
-        except discord.Forbidden:
-            await interaction.followup.send("I couldn't DM you! Please enable DMs from server members and try again.", ephemeral=True)
+            # First acknowledge the interaction
+            await interaction.response.defer(ephemeral=True)
+            
+            # Check if applications are open
+            if not await self.config.guild(interaction.guild).applications_open():
+                await interaction.followup.send("Sorry, moderator applications are currently closed.", ephemeral=True)
+                return
+
+            # Try to DM the user
+            try:
+                await interaction.user.send("Welcome to the moderator application process!")
+                view = ApplicationTypeView(self, interaction.user, interaction.guild)
+                await interaction.user.send("What would you like to apply for?", view=view)
+                await interaction.followup.send("I've sent you a DM to start the application process!", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    "I couldn't DM you! Please enable DMs from server members and try again.", 
+                    ephemeral=True
+                )
+                
+        except Exception as e:
+            await interaction.followup.send(
+                f"An error occurred while starting the application: {str(e)}", 
+                ephemeral=True
+            )
 
     async def cog_load(self):
         """This is called when the cog is loaded."""
-        self.bot.add_view(ApplicationTypeView(self, None, None))
-        self.bot.add_view(ApplicationResponseView(self, None))
+        if not self.persistent_views_added:
+            self.bot.add_view(ApplicationStartView(self))
+            self.bot.add_view(ApplicationTypeView(self, None, None))
+            self.bot.add_view(ApplicationResponseView(self, None))
+            self.persistent_views_added = True
 
 class ApplicationTypeView(discord.ui.View):
     def __init__(self, cog, user, guild):
