@@ -16,12 +16,7 @@ class ModApplications(commands.Cog):
         
         default_guild = {
             "applications": {},
-            "questions": [
-                {
-                    "id": "discord_username",
-                    "question": "What is your Discord Username?",
-                    "required": True
-                },
+            "base_questions": [
                 {
                     "id": "age",
                     "question": "Are you over the age of 16? (Yes/No)",
@@ -29,8 +24,13 @@ class ModApplications(commands.Cog):
                     "valid_responses": ["yes", "no"]
                 },
                 {
+                    "id": "timezone",
+                    "question": "What timezone are you in? (e.g. EST, PST, GMT)",
+                    "required": True
+                },
+                {
                     "id": "experience",
-                    "question": "Are you a Moderator on any other platforms/servers? If yes, please list which ones.",
+                    "question": "Do you have any previous moderation experience? If yes, please describe.",
                     "required": False
                 },
                 {
@@ -51,6 +51,68 @@ class ModApplications(commands.Cog):
                     "valid_responses": ["yes", "no"]
                 }
             ],
+            "platform_questions": {
+                "discord": [
+                    {
+                        "id": "discord_username",
+                        "question": "What is your Discord Username?",
+                        "required": True
+                    },
+                    {
+                        "id": "discord_experience",
+                        "question": "How long have you been using Discord?",
+                        "required": True
+                    }
+                ],
+                "twitch": [
+                    {
+                        "id": "twitch_username",
+                        "question": "What is your Twitch username?",
+                        "required": True
+                    },
+                    {
+                        "id": "twitch_following",
+                        "question": "How long have you been following our Twitch channel?",
+                        "required": True
+                    }
+                ],
+                "youtube": [
+                    {
+                        "id": "youtube_username",
+                        "question": "What is your YouTube username?",
+                        "required": True
+                    },
+                    {
+                        "id": "youtube_experience",
+                        "question": "How familiar are you with YouTube's community guidelines?",
+                        "required": True
+                    }
+                ],
+                "tiktok": [
+                    {
+                        "id": "tiktok_username",
+                        "question": "What is your TikTok username?",
+                        "required": True
+                    },
+                    {
+                        "id": "tiktok_experience",
+                        "question": "How familiar are you with TikTok's community guidelines?",
+                        "required": True
+                    }
+                ],
+                "kick": [
+                    {
+                        "id": "kick_username",
+                        "question": "What is your Kick username?",
+                        "required": True
+                    },
+                    {
+                        "id": "kick_experience",
+                        "question": "How long have you been using Kick?",
+                        "required": True
+                    }
+                ]
+            },
             "app_channel": None,
             "notify_role": None,
             "applications_open": False,
@@ -278,6 +340,119 @@ class ModApplications(commands.Cog):
             self.bot.add_view(ApplicationResponseView(self, None))
             self.persistent_views_added = True
 
+    async def update_status_embed(self, guild):
+        """Updates the status tracking embed in the reviewer channel."""
+        channel_id = await self.config.guild(guild).app_channel()
+        if not channel_id:
+            return
+            
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            return
+
+        # Get all applications
+        applications = await self.config.guild(guild).applications()
+        
+        # Sort applications by status
+        pending = []
+        approved = []
+        denied = []
+        
+        for msg_id, app in applications.items():
+            user = guild.get_member(app['user_id'])
+            if not user:
+                continue
+                
+            jump_url = f"https://discord.com/channels/{guild.id}/{channel_id}/{msg_id}"
+            entry = f"[{user.name}]({jump_url}) - {app['platforms']}"
+            
+            if app['status'] == 'pending':
+                pending.append(entry)
+            elif app['status'] == 'approved':
+                approved.append(entry)
+            elif app['status'] == 'denied':
+                denied.append(entry)
+
+        # Create the status embed
+        embed = discord.Embed(
+            title="Application Status Overview",
+            color=discord.Color.blue(),
+            timestamp=datetime.now()
+        )
+        
+        embed.add_field(
+            name=f"📝 Pending Applications ({len(pending)})",
+            value="\n".join(pending) if pending else "No pending applications",
+            inline=False
+        )
+        
+        embed.add_field(
+            name=f"✅ Approved Applications ({len(approved)})",
+            value="\n".join(approved) if approved else "No approved applications",
+            inline=False
+        )
+        
+        embed.add_field(
+            name=f"❌ Denied Applications ({len(denied)})",
+            value="\n".join(denied) if denied else "No denied applications",
+            inline=False
+        )
+
+        # Try to find existing status embed
+        async for message in channel.history(limit=10):
+            if message.author == self.bot.user and message.embeds:
+                if message.embeds[0].title == "Application Status Overview":
+                    await message.edit(embed=embed)
+                    return
+
+        # If no existing embed found, send new one and pin it
+        status_msg = await channel.send(embed=embed)
+        await status_msg.pin()
+
+    async def submit_application(self, answers: Dict[str, str]):
+        """Submit the completed application."""
+        channel_id = await self.config.guild(self.guild).app_channel()
+        if not channel_id:
+            await self.user.send("Error: Application channel not configured. Please contact an administrator.")
+            return
+
+        channel = self.guild.get_channel(channel_id)
+        if not channel:
+            await self.user.send("Error: Could not find application channel. Please contact an administrator.")
+            return
+
+        embed = discord.Embed(
+            title="New Moderator Application",
+            description=f"Application from {self.user.mention} ({self.user.id})\nPlatforms: {answers['platforms']}",
+            color=discord.Color.blue(),
+            timestamp=datetime.now()
+        )
+
+        # Add all answers to the embed
+        for question_id, answer in answers.items():
+            if question_id != "platforms":  # Skip platforms as it's in the description
+                # Format the question ID to be more readable
+                field_name = question_id.replace("_", " ").title()
+                embed.add_field(name=field_name, value=answer, inline=False)
+
+        view = ApplicationResponseView(self.cog, self.user.id)
+        msg = await channel.send(embed=embed, view=view)
+
+        # Store the application in the config
+        async with self.cog.config.guild(self.guild).applications() as apps:
+            apps[str(msg.id)] = {
+                "user_id": self.user.id,
+                "platforms": answers["platforms"],
+                "answers": answers,
+                "status": "pending",
+                "timestamp": datetime.now().isoformat()
+            }
+
+        await self.user.send("Your application has been submitted! You will be notified when it has been reviewed.")
+
+        # After storing the application, update the status embed
+        await self.update_status_embed(self.guild)
+
 class ApplicationTypeView(discord.ui.View):
     def __init__(self, cog, user, guild):
         super().__init__(timeout=None)
@@ -354,46 +529,61 @@ class ApplicationTypeView(discord.ui.View):
 
     async def start_application(self, interaction: discord.Interaction) -> bool:
         try:
-            questions = await self.cog.config.guild(self.guild).questions()
+            # Get base questions and platform-specific questions
+            base_questions = await self.cog.config.guild(self.guild).base_questions()
+            platform_questions = await self.cog.config.guild(self.guild).platform_questions()
+            
             answers = {}
             
             # Add selected platforms to answers
             platform_names = [self.platforms[p] for p in self.selected_platforms]
             answers["platforms"] = ", ".join(platform_names)
 
-            for question in questions:
+            # Ask base questions first
+            for question in base_questions:
                 answer = await self.ask_question(interaction, question["question"], question.get("valid_responses"))
-                
-                if question["required"] and not answer:
-                    await interaction.followup.send("Required question was not answered. Application cancelled.", ephemeral=True)
+                if not self.validate_answer(question, answer):
                     return False
-                    
-                if answer and question.get("valid_responses"):
-                    if answer.lower() not in [r.lower() for r in question["valid_responses"]]:
-                        await interaction.followup.send(
-                            f"Invalid response. Please answer with one of: {', '.join(question['valid_responses'])}. Application cancelled.",
-                            ephemeral=True
-                        )
-                        return False
-                        
-                # Auto-reject conditions
-                if question["id"] == "age" and answer.lower() == "no":
-                    await interaction.followup.send("Sorry, you must be 16 or older to apply for moderator positions. Application cancelled.", ephemeral=True)
-                    return False
-                    
-                if question["id"] == "tos" and answer.lower() == "no":
-                    await interaction.followup.send("You must agree to the Terms of Service to apply. Application cancelled.", ephemeral=True)
-                    return False
-                    
                 answers[question["id"]] = answer
 
-            # Submit the single application
+            # Ask platform-specific questions for each selected platform
+            for platform in self.selected_platforms:
+                if platform in platform_questions:
+                    for question in platform_questions[platform]:
+                        answer = await self.ask_question(
+                            interaction,
+                            f"[{self.platforms[platform]}] {question['question']}", 
+                            question.get("valid_responses")
+                        )
+                        if not self.validate_answer(question, answer):
+                            return False
+                        answers[f"{platform}_{question['id']}"] = answer
+
+            # Submit the application
             await self.submit_application(answers)
             return True
             
         except Exception as e:
             await interaction.followup.send(f"An error occurred during the application: {str(e)}", ephemeral=True)
             return False
+
+    def validate_answer(self, question: dict, answer: Optional[str]) -> bool:
+        """Validate an answer against question requirements."""
+        if not answer and question["required"]:
+            return False
+            
+        if answer and question.get("valid_responses"):
+            if answer.lower() not in [r.lower() for r in question["valid_responses"]]:
+                return False
+                
+        # Auto-reject conditions
+        if question["id"] == "age" and answer.lower() == "no":
+            return False
+            
+        if question["id"] == "tos" and answer.lower() == "no":
+            return False
+            
+        return True
 
     async def ask_question(self, interaction: discord.Interaction, question: str, valid_responses: Optional[List[str]] = None) -> Optional[str]:
         await interaction.followup.send(f"**{question}**\nYou have 5 minutes to respond. Type 'cancel' to cancel.")
@@ -423,47 +613,6 @@ class ApplicationTypeView(discord.ui.View):
         except asyncio.TimeoutError:
             await interaction.followup.send("Application timed out. Please start over.")
             return None
-
-    async def submit_application(self, answers: Dict[str, str]):
-        """Submit the completed application."""
-        channel_id = await self.cog.config.guild(self.guild).app_channel()
-        if not channel_id:
-            await self.user.send("Error: Application channel not configured. Please contact an administrator.")
-            return
-
-        channel = self.guild.get_channel(channel_id)
-        if not channel:
-            await self.user.send("Error: Could not find application channel. Please contact an administrator.")
-            return
-
-        embed = discord.Embed(
-            title="New Moderator Application",
-            description=f"Application from {self.user.mention} ({self.user.id})\nPlatforms: {answers['platforms']}",
-            color=discord.Color.blue(),
-            timestamp=datetime.now()
-        )
-
-        # Add all answers to the embed
-        for question_id, answer in answers.items():
-            if question_id != "platforms":  # Skip platforms as it's in the description
-                # Format the question ID to be more readable
-                field_name = question_id.replace("_", " ").title()
-                embed.add_field(name=field_name, value=answer, inline=False)
-
-        view = ApplicationResponseView(self.cog, self.user.id)
-        msg = await channel.send(embed=embed, view=view)
-
-        # Store the application in the config
-        async with self.cog.config.guild(self.guild).applications() as apps:
-            apps[str(msg.id)] = {
-                "user_id": self.user.id,
-                "platforms": answers["platforms"],
-                "answers": answers,
-                "status": "pending",
-                "timestamp": datetime.now().isoformat()
-            }
-
-        await self.user.send("Your application has been submitted! You will be notified when it has been reviewed.")
 
 class ApplicationResponseView(discord.ui.View):
     def __init__(self, cog, applicant_id):
@@ -498,6 +647,9 @@ class ApplicationResponseView(discord.ui.View):
                 await user.send(message)
         except discord.HTTPException:
             await interaction.followup.send("Could not DM the applicant, but the application has been processed.", ephemeral=True)
+
+        # After updating the application status, update the status embed
+        await self.cog.update_status_embed(interaction.guild)
 
         # Update the embed
         embed = interaction.message.embeds[0]
