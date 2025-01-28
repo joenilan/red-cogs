@@ -246,17 +246,19 @@ class ModApplications(commands.Cog):
                 await interaction.response.send_message("Sorry, moderator applications are currently closed.", ephemeral=True)
                 return
 
-            # Try to DM the user and acknowledge interaction
+            # Try to DM the user
             try:
-                # Send DMs first
-                await interaction.user.send("Welcome to the moderator application process!")
-                view = ApplicationTypeView(self, interaction.user, interaction.guild)
-                await interaction.user.send("What would you like to apply for?", view=view)
-                
-                # Then acknowledge the interaction
+                # Acknowledge the interaction first
                 await interaction.response.send_message("I've sent you a DM to start the application process!", ephemeral=True)
+                
+                # Send only one DM with the view
+                view = ApplicationTypeView(self, interaction.user, interaction.guild)
+                await interaction.user.send(
+                    "Welcome to the moderator application process!\nWhat would you like to apply for?",
+                    view=view
+                )
             except discord.Forbidden:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "I couldn't DM you! Please enable DMs from server members and try again.",
                     ephemeral=True
                 )
@@ -306,17 +308,17 @@ class ApplicationTypeView(discord.ui.View):
             discord.SelectOption(label="Kick", value="kick")
         ],
         min_values=1,
-        max_values=5,  # Allow selecting all platforms
-        custom_id="platform_select"  # Add custom_id for persistence
+        max_values=5,
+        custom_id="platform_select"
     )
     async def platform_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        # Only allow the original user to interact
         if interaction.user != self.user:
             await interaction.response.send_message("This is not your application!", ephemeral=True)
             return
 
         self.selected_platforms = select.values
-        await interaction.response.send_message("Click 'Submit' when you've selected all platforms you want to apply for.", ephemeral=True)
+        # Just acknowledge the selection without sending a new message
+        await interaction.response.defer()
 
     @discord.ui.button(
         label="Submit",
