@@ -94,39 +94,39 @@ class ModApplications(commands.Cog):
                 reason="Automated setup for moderator applications"
             )
             
-            # Create the reviewer role if it doesn't exist
-            reviewer_role = await ctx.guild.create_role(
-                name="Application Reviewer",
-                color=discord.Color.blue(),
-                reason="Role for reviewing moderator applications"
-            )
+            # Use existing reviewer roles
+            reviewer_roles = [
+                ctx.guild.get_role(734775241707880518),  # The One
+                ctx.guild.get_role(735167487854903377)   # Agent
+            ]
             
             # Create the applications channel
+            overwrites = {
+                ctx.guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                ctx.guild.me: discord.PermissionOverwrite(read_messages=True)
+            }
+            
+            # Add permissions for reviewer roles
+            for role in reviewer_roles:
+                if role:
+                    overwrites[role] = discord.PermissionOverwrite(read_messages=True)
+            
             apps_channel = await ctx.guild.create_text_channel(
                 "mod-applications",
                 category=category,
-                overwrites={
-                    ctx.guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                    reviewer_role: discord.PermissionOverwrite(read_messages=True),
-                    ctx.guild.me: discord.PermissionOverwrite(read_messages=True)
-                }
+                overwrites=overwrites
             )
             
             # Save the IDs to config
             await self.config.guild(ctx.guild).app_channel.set(apps_channel.id)
-            await self.config.guild(ctx.guild).mod_role.set(reviewer_role.id)
             await self.config.guild(ctx.guild).category_id.set(category.id)
             await self.config.guild(ctx.guild).applications_open.set(True)
-            
-            # Add the role to the command user
-            await ctx.author.add_roles(reviewer_role)
             
             await ctx.send(
                 "📝 Moderator applications are now open!\n"
                 f"Category: {category.name}\n"
                 f"Applications Channel: {apps_channel.mention}\n"
-                f"Reviewer Role: {reviewer_role.mention}\n"
-                f"You have been given the reviewer role.\n"
+                "Reviewer Roles: The One and Agent\n"
                 "Users can apply using the `!apply` command."
             )
             
