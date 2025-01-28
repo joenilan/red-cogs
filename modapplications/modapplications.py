@@ -568,6 +568,10 @@ class ApplicationTypeView(discord.ui.View):
             
             answers = {}
             
+            # Set platforms FIRST before asking any questions
+            platform_names = [self.platforms[p] for p in self.selected_platforms]
+            answers["platforms"] = ", ".join(platform_names)
+            
             # Ask base questions first
             for question in base_questions:
                 answer = await self.ask_question(interaction, question["question"], question.get("valid_responses"))
@@ -587,10 +591,6 @@ class ApplicationTypeView(discord.ui.View):
                         if not self.validate_answer(question, answer):
                             return False
                         answers[f"{platform}_{question['id']}"] = answer
-
-            # Add selected platforms to answers AFTER all questions are answered
-            platform_names = [self.platforms[p] for p in self.selected_platforms]
-            answers["platforms"] = ", ".join(platform_names)
 
             # Submit the application through the cog
             await self.cog.submit_application(self.guild, self.user, answers)
