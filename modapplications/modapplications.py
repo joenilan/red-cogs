@@ -246,26 +246,27 @@ class ModApplications(commands.Cog):
                 await interaction.response.send_message("Sorry, moderator applications are currently closed.", ephemeral=True)
                 return
 
-            # Try to DM the user
+            # Try to DM the user and acknowledge interaction
             try:
-                # Send initial response first
-                await interaction.response.send_message("I've sent you a DM to start the application process!", ephemeral=True)
-                
-                # Then send DMs
+                # Send DMs first
                 await interaction.user.send("Welcome to the moderator application process!")
                 view = ApplicationTypeView(self, interaction.user, interaction.guild)
                 await interaction.user.send("What would you like to apply for?", view=view)
+                
+                # Then acknowledge the interaction
+                await interaction.response.send_message("I've sent you a DM to start the application process!", ephemeral=True)
             except discord.Forbidden:
-                # If we can't DM, edit the response instead of sending a new one
-                await interaction.edit_original_response(
-                    content="I couldn't DM you! Please enable DMs from server members and try again."
+                await interaction.response.send_message(
+                    "I couldn't DM you! Please enable DMs from server members and try again.",
+                    ephemeral=True
                 )
                 
         except Exception as e:
-            # If something goes wrong, edit the original response
-            await interaction.edit_original_response(
-                content=f"An error occurred while starting the application: {str(e)}"
-            )
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    f"An error occurred while starting the application: {str(e)}",
+                    ephemeral=True
+                )
 
     async def cog_load(self):
         """This is called when the cog is loaded."""
@@ -277,7 +278,6 @@ class ModApplications(commands.Cog):
 
 class ApplicationTypeView(discord.ui.View):
     def __init__(self, cog, user, guild):
-        # Make the view persistent by removing the timeout
         super().__init__(timeout=None)
         self.cog = cog
         self.user = user
@@ -290,6 +290,11 @@ class ApplicationTypeView(discord.ui.View):
             "kick": "Kick"
         }
         self.selected_platforms = []
+
+    def disable_all_items(self):
+        """Disable all items in the view."""
+        for item in self.children:
+            item.disabled = True
 
     @discord.ui.select(
         placeholder="Select platforms to moderate (multiple allowed)",
