@@ -280,55 +280,64 @@ class ApplicationTypeView(discord.ui.View):
             await interaction.response.send_message("Please select at least one platform first!", ephemeral=True)
             return
 
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         self.disable_all_items()
         await interaction.message.edit(view=self)
 
-        # Start applications for all selected platforms
-        for platform in self.selected_platforms:
-            await interaction.followup.send(f"\n\n**Starting {self.platforms[platform]} Moderator Application**")
-            if not await self.start_application(interaction, platform):
-                return  # Stop if any application fails
+        try:
+            # Start applications for all selected platforms
+            for platform in self.selected_platforms:
+                await interaction.followup.send(f"\n\n**Starting {self.platforms[platform]} Moderator Application**", ephemeral=True)
+                if not await self.start_application(interaction, platform):
+                    return  # Stop if any application fails
 
-        await interaction.followup.send("All applications completed! Thank you for applying.")
+            await interaction.followup.send("All applications completed! Thank you for applying.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
+            raise
 
     async def start_application(self, interaction: discord.Interaction, platform: str) -> bool:
-        questions = await self.cog.config.guild(self.guild).questions()
-        answers = {}
-        platform_name = self.platforms[platform]
+        try:
+            questions = await self.cog.config.guild(self.guild).questions()
+            answers = {}
+            platform_name = self.platforms[platform]
 
-        for question in questions:
-            formatted_question = question["question"].format(platform=platform_name)
-            answer = await self.ask_question(interaction, formatted_question, question.get("valid_responses"))
-            
-            if question["required"] and not answer:
-                await interaction.followup.send("Required question was not answered. Application cancelled.")
-                return False
+            for question in questions:
+                formatted_question = question["question"].format(platform=platform_name)
+                answer = await self.ask_question(interaction, formatted_question, question.get("valid_responses"))
                 
-            if answer and question.get("valid_responses"):
-                if answer.lower() not in [r.lower() for r in question["valid_responses"]]:
-                    await interaction.followup.send(
-                        f"Invalid response. Please answer with one of: {', '.join(question['valid_responses'])}. Application cancelled."
-                    )
+                if question["required"] and not answer:
+                    await interaction.followup.send("Required question was not answered. Application cancelled.", ephemeral=True)
                     return False
                     
-            # Auto-reject conditions
-            if question["id"] == "age" and answer.lower() == "no":
-                await interaction.followup.send("Sorry, you must be 16 or older to apply for moderator positions. Application cancelled.")
-                return False
-                
-            if question["id"] == "tos" and answer.lower() == "no":
-                await interaction.followup.send("You must agree to the Terms of Service to apply. Application cancelled.")
-                return False
-                
-            answers[question["id"]] = answer
+                if answer and question.get("valid_responses"):
+                    if answer.lower() not in [r.lower() for r in question["valid_responses"]]:
+                        await interaction.followup.send(
+                            f"Invalid response. Please answer with one of: {', '.join(question['valid_responses'])}. Application cancelled.",
+                            ephemeral=True
+                        )
+                        return False
+                        
+                # Auto-reject conditions
+                if question["id"] == "age" and answer.lower() == "no":
+                    await interaction.followup.send("Sorry, you must be 16 or older to apply for moderator positions. Application cancelled.", ephemeral=True)
+                    return False
+                    
+                if question["id"] == "tos" and answer.lower() == "no":
+                    await interaction.followup.send("You must agree to the Terms of Service to apply. Application cancelled.", ephemeral=True)
+                    return False
+                    
+                answers[question["id"]] = answer
 
-        # Add platform to answers
-        answers["platform"] = platform_name
-        
-        # Create and send the application
-        await self.submit_application(platform_name, answers)
-        return True
+            # Add platform to answers
+            answers["platform"] = platform_name
+            
+            # Create and send the application
+            await self.submit_application(platform_name, answers)
+            return True
+        except Exception as e:
+            await interaction.followup.send(f"An error occurred during the application: {str(e)}", ephemeral=True)
+            return False
 
     async def ask_question(self, interaction: discord.Interaction, question: str, valid_responses: Optional[List[str]] = None) -> Optional[str]:
         await interaction.followup.send(f"**{question}**\nYou have 5 minutes to respond. Type 'cancel' to cancel.")
