@@ -586,33 +586,39 @@ class ApplicationTypeView(discord.ui.View):
         return True
 
     async def ask_question(self, interaction: discord.Interaction, question: str, valid_responses: Optional[List[str]] = None) -> Optional[str]:
-        await interaction.followup.send(f"**{question}**\nYou have 5 minutes to respond. Type 'cancel' to cancel.")
-        
-        def check(m):
-            return m.author == self.user and isinstance(m.channel, discord.DMChannel)
-            
-        try:
-            response_message = await self.cog.bot.wait_for(
-                "message",
-                check=check,
-                timeout=300
+        while True:  # Keep asking until we get a valid response or cancellation
+            await interaction.followup.send(
+                f"**{question}**\n" + 
+                (f"Please answer with one of: {', '.join(valid_responses)}\n" if valid_responses else "") +
+                "You have 5 minutes to respond. Type 'cancel' to cancel."
             )
             
-            if response_message.content.lower() == "cancel":
-                await interaction.followup.send("Application cancelled.")
-                return None
+            def check(m):
+                return m.author == self.user and isinstance(m.channel, discord.DMChannel)
                 
-            if valid_responses and response_message.content.lower() not in [r.lower() for r in valid_responses]:
-                await interaction.followup.send(
-                    f"Invalid response. Please answer with one of: {', '.join(valid_responses)}. Application cancelled."
+            try:
+                response_message = await self.cog.bot.wait_for(
+                    "message",
+                    check=check,
+                    timeout=300
                 )
-                return None
                 
-            return response_message.content
-            
-        except asyncio.TimeoutError:
-            await interaction.followup.send("Application timed out. Please start over.")
-            return None
+                if response_message.content.lower() == "cancel":
+                    await interaction.followup.send("Application cancelled.")
+                    return None
+                    
+                if valid_responses:
+                    if response_message.content.lower() not in [r.lower() for r in valid_responses]:
+                        await interaction.followup.send(
+                            f"Invalid response. Please try again with one of these options: {', '.join(valid_responses)}"
+                        )
+                        continue  # Ask the question again
+                    
+                return response_message.content
+                
+            except asyncio.TimeoutError:
+                await interaction.followup.send("Application timed out. Please start over.")
+                return None
 
 class ApplicationResponseView(discord.ui.View):
     def __init__(self, cog, applicant_id):
