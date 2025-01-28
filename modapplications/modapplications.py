@@ -225,10 +225,15 @@ class ModApplications(commands.Cog):
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
-        if interaction.type == discord.InteractionType.component:
-            if interaction.data["custom_id"] == "start_application":
-                await interaction.response.defer(ephemeral=True)
-                await self.start_application_process(interaction)
+        if not interaction.type == discord.InteractionType.component:
+            return
+
+        if interaction.data["custom_id"] == "start_application":
+            await self.start_application_process(interaction)
+        elif interaction.data["custom_id"] == "submit_application":
+            view = interaction.message.view
+            if isinstance(view, ApplicationTypeView):
+                await view.submit_platforms(interaction, None)
 
     async def start_application_process(self, interaction: discord.Interaction):
         # Check if applications are open
@@ -268,33 +273,41 @@ class ApplicationTypeView(discord.ui.View):
             discord.SelectOption(label="Kick", value="kick")
         ],
         min_values=1,
-        max_values=5  # Allow selecting all platforms
+        max_values=5,  # Allow selecting all platforms
+        custom_id="platform_select"
     )
     async def platform_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         self.selected_platforms = select.values
         await interaction.response.send_message("Click 'Submit' when you've selected all platforms you want to apply for.", ephemeral=True)
 
-    @discord.ui.button(label="Submit", style=discord.ButtonStyle.green)
+    @discord.ui.button(
+        label="Submit",
+        style=discord.ButtonStyle.green,
+        custom_id="submit_application"
+    )
     async def submit_platforms(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.selected_platforms:
             await interaction.response.send_message("Please select at least one platform first!", ephemeral=True)
             return
 
-        await interaction.response.defer(ephemeral=True)
+        # Disable the view immediately
         self.disable_all_items()
         await interaction.message.edit(view=self)
+        await interaction.response.send_message("Starting application process...", ephemeral=True)
 
+        # Start the application process in DMs
         try:
-            # Start applications for all selected platforms
+            await interaction.user.send("Starting your application process!")
             for platform in self.selected_platforms:
-                await interaction.followup.send(f"\n\n**Starting {self.platforms[platform]} Moderator Application**", ephemeral=True)
+                await interaction.user.send(f"\n**Starting {self.platforms[platform]} Moderator Application**")
                 if not await self.start_application(interaction, platform):
                     return  # Stop if any application fails
 
-            await interaction.followup.send("All applications completed! Thank you for applying.", ephemeral=True)
+            await interaction.user.send("All applications completed! Thank you for applying.")
+        except discord.Forbidden:
+            await interaction.followup.send("I couldn't DM you! Please enable DMs from server members and try again.", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
-            raise
 
     async def start_application(self, interaction: discord.Interaction, platform: str) -> bool:
         try:
