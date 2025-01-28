@@ -400,7 +400,8 @@ class ApplicationTypeView(discord.ui.View):
             await interaction.followup.send("Application timed out. Please start over.")
             return None
 
-    async def submit_application(self, platform: str, answers: Dict[str, str]):
+    async def submit_application(self, platform_name: str, answers: Dict[str, str]):
+        """Submit the completed application."""
         channel_id = await self.cog.config.guild(self.guild).app_channel()
         if not channel_id:
             await self.user.send("Error: Application channel not configured. Please contact an administrator.")
@@ -412,14 +413,17 @@ class ApplicationTypeView(discord.ui.View):
             return
 
         embed = discord.Embed(
-            title=f"New Moderator Application - {platform.title()}",
+            title=f"New Moderator Application - {platform_name}",
             description=f"Application from {self.user.mention} ({self.user.id})",
             color=discord.Color.blue(),
             timestamp=datetime.now()
         )
 
-        for question, answer in answers.items():
-            embed.add_field(name=question.title(), value=answer, inline=False)
+        # Add all answers to the embed
+        for question_id, answer in answers.items():
+            # Format the question ID to be more readable
+            field_name = question_id.replace("_", " ").title()
+            embed.add_field(name=field_name, value=answer, inline=False)
 
         view = ApplicationResponseView(self.cog, self.user.id)
         msg = await channel.send(embed=embed, view=view)
@@ -428,13 +432,13 @@ class ApplicationTypeView(discord.ui.View):
         async with self.cog.config.guild(self.guild).applications() as apps:
             apps[str(msg.id)] = {
                 "user_id": self.user.id,
-                "type": platform,
+                "platform": platform_name,
                 "answers": answers,
                 "status": "pending",
                 "timestamp": datetime.now().isoformat()
             }
 
-        await self.user.send("Your application has been submitted! You will be notified when it has been reviewed.")
+        await self.user.send(f"Your {platform_name} application has been submitted! You will be notified when it has been reviewed.")
 
 class ApplicationResponseView(discord.ui.View):
     def __init__(self, cog, applicant_id):
