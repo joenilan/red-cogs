@@ -1,0 +1,14 @@
+{
+    "name": "GameSubmissions",
+    "short": "Manage game submissions and create polls",
+    "description": "A cog that allows users to submit games they want to see played and create polls for voting.",
+    "end_user_data_statement": "This cog stores Discord user IDs for game submissions.",
+    "author": ["DreadedZombie"],
+    "required_cogs": {},
+    "requirements": [],
+    "tags": ["games", "polls", "submissions"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+} 
