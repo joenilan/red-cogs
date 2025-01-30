@@ -39,6 +39,35 @@ class GameSubmissions(commands.Cog):
 
         channels = await self.config.guild(ctx.guild).channels()
         
+        # Set up base permissions for read-only access
+        everyone_role = ctx.guild.default_role
+        read_only_permissions = {
+            everyone_role: discord.PermissionOverwrite(
+                read_messages=True,
+                read_message_history=True,
+                send_messages=False,
+                add_reactions=False,
+                embed_links=False,
+                attach_files=False,
+                external_emojis=True,
+                use_external_emojis=True
+            )
+        }
+
+        # Special permissions for poll channel to allow reactions
+        poll_permissions = {
+            everyone_role: discord.PermissionOverwrite(
+                read_messages=True,
+                read_message_history=True,
+                send_messages=False,
+                add_reactions=True,
+                embed_links=False,
+                attach_files=False,
+                external_emojis=True,
+                use_external_emojis=True
+            )
+        }
+        
         # Create or get winners channel
         winners_channel = None
         if channels["winners"]:
@@ -47,9 +76,12 @@ class GameSubmissions(commands.Cog):
             winners_channel = await ctx.guild.create_text_channel(
                 "game-winners",
                 category=category,
-                topic="Past winners of game polls"
+                topic="Past winners of game polls",
+                overwrites=read_only_permissions
             )
             channels["winners"] = winners_channel.id
+        else:
+            await winners_channel.edit(overwrites=read_only_permissions)
 
         # Create or get current poll channel
         poll_channel = None
@@ -59,9 +91,12 @@ class GameSubmissions(commands.Cog):
             poll_channel = await ctx.guild.create_text_channel(
                 "play-next",
                 category=category,
-                topic="Current game poll"
+                topic="Current game poll",
+                overwrites=poll_permissions
             )
             channels["current_poll"] = poll_channel.id
+        else:
+            await poll_channel.edit(overwrites=poll_permissions)
 
         # Create or get game list channel
         list_channel = None
@@ -71,9 +106,12 @@ class GameSubmissions(commands.Cog):
             list_channel = await ctx.guild.create_text_channel(
                 "game-submissions",
                 category=category,
-                topic="List of all submitted games"
+                topic="List of all submitted games",
+                overwrites=read_only_permissions
             )
             channels["game_list"] = list_channel.id
+        else:
+            await list_channel.edit(overwrites=read_only_permissions)
 
         await self.config.guild(ctx.guild).channels.set(channels)
         await self.config.guild(ctx.guild).poll_category_id.set(category.id)
