@@ -403,29 +403,20 @@ class ModApplications(commands.Cog):
             # Get all applications
             applications = await self.config.guild(guild).applications()
             
-            # Track latest application per user
-            user_latest_app = {}
-            
-            # First pass: find the latest application for each user
-            for thread_id, app in applications.items():
-                user_id = app['user_id']
-                timestamp = app.get('timestamp', '0')
-                
-                if user_id not in user_latest_app or timestamp > user_latest_app[user_id]['timestamp']:
-                    user_latest_app[user_id] = app
-            
-            # Sort applications by status using only the latest application per user
+            # Sort applications by status
             pending = []
             approved = []
             denied = []
             
-            for app in user_latest_app.values():
+            # Process each application
+            for thread_id, app in applications.items():
                 user = guild.get_member(app['user_id'])
                 if not user:
                     continue
                 
-                entry = f"{user.name} - {app.get('platforms', 'Unknown')}"
+                entry = f"{user.name} - {app['platforms']}"
                 
+                # Add to appropriate list based on status
                 if app['status'] == 'pending':
                     pending.append(entry)
                 elif app['status'] == 'approved':
@@ -458,9 +449,9 @@ class ModApplications(commands.Cog):
                 inline=False
             )
 
-            # Update the status message
+            # Find and update the status message
             for thread in forum.threads:
-                if "Application Status Overview" in thread.name:
+                if thread.name == "📊 Application Status Overview":
                     async for message in thread.history(limit=1):
                         if message.author == guild.me:
                             await message.edit(embed=embed)
@@ -482,18 +473,23 @@ class ModApplications(commands.Cog):
                 await user.send("Error: Could not find application channel. Please contact an administrator.")
                 return
 
+            # Get selected platforms
+            selected_platforms = answers.get('platforms', [])
+            platform_str = ' & '.join(selected_platforms)
+
             # Create the embed
             embed = discord.Embed(
                 title="New Moderator Application",
-                description=f"Application from {user.mention} ({user.id})",
+                description=f"Application from {user.mention} ({user.id})\nPlatforms: {platform_str}",
                 color=discord.Color.blue(),
                 timestamp=datetime.now()
             )
 
             # Add all answers to the embed
             for question_id, answer in answers.items():
-                field_name = question_id.replace("_", " ").title()
-                embed.add_field(name=field_name, value=answer, inline=False)
+                if question_id != 'platforms':  # Skip platforms as it's in description
+                    field_name = question_id.replace("_", " ").title()
+                    embed.add_field(name=field_name, value=answer, inline=False)
 
             # Create a new forum post
             thread_with_message = await forum.create_thread(
@@ -506,38 +502,18 @@ class ModApplications(commands.Cog):
             thread = thread_with_message.thread
             message = thread_with_message.message
 
-            print(f"Created thread: {thread.id} with message: {message.id}")
-
-            # Format the platforms string properly
-            platforms = []
-            if 'discord' in answers.get('platforms', []):
-                platforms.append('Discord')
-            if 'twitch' in answers.get('platforms', []):
-                platforms.append('Twitch')
-            if 'youtube' in answers.get('platforms', []):
-                platforms.append('YouTube')
-            if 'tiktok' in answers.get('platforms', []):
-                platforms.append('TikTok')
-            if 'kick' in answers.get('platforms', []):
-                platforms.append('Kick')
-            
-            platform_str = ' & '.join(platforms)
-
             # Store the application in the config
             async with self.config.guild(guild).applications() as apps:
                 apps[str(thread.id)] = {
                     "user_id": user.id,
-                    "answers": answers,
                     "platforms": platform_str,
+                    "answers": answers,
                     "status": "pending",
                     "timestamp": datetime.now().isoformat(),
-                    "message_id": message.id,
-                    "thread_id": thread.id
+                    "message_id": message.id
                 }
-                print(f"Stored application data: {apps[str(thread.id)]}")
 
             # Update the status overview
-            print("Updating status overview...")
             await self.update_status_embed(guild)
             
             await user.send("Your application has been submitted! You will be notified when it has been reviewed.")
