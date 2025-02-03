@@ -178,17 +178,14 @@ class ModApplications(commands.Cog):
                 if role:
                     overwrites[role] = discord.PermissionOverwrite(read_messages=True)
             
-            # First create a text channel
-            apps_forum = await ctx.guild.create_text_channel(
+            # First create a forum channel directly
+            apps_forum = await ctx.guild.create_forum_channel(
                 "mod-applications",
                 category=category,
                 overwrites=overwrites,
                 topic="Moderator Applications",
                 reason="Forum for moderator applications"
             )
-            
-            # Convert to forum channel
-            await apps_forum._edit(channel_type=discord.ChannelType.forum.value)
             
             # Set up forum tags
             tags = [
