@@ -246,16 +246,19 @@ class ModApplications(commands.Cog):
             )
             
             # Create a thread for the status overview
-            status_thread = await apps_forum.create_thread(
+            thread_with_message = await apps_forum.create_thread(
                 name="📊 Application Status Overview",
                 content="Status overview for all applications:",
                 embed=status_embed,
-                applied_tags=[discord.utils.get(apps_forum.available_tags, name="📝 Pending")]
+                applied_tags=[discord.utils.get(apps_forum.available_tags, name="Pending")]
             )
             
+            # The thread and starter message are separate now
+            status_thread = thread_with_message.thread
+            starter_message = thread_with_message.message
+            
             # Pin the status message
-            first_message = [message async for message in status_thread.history(limit=1)][0]
-            await first_message.pin()
+            await starter_message.pin()
             
             await ctx.send(
                 "📝 Moderator applications are now open!\n"
