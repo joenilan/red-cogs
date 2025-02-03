@@ -371,121 +371,136 @@ class ModApplications(commands.Cog):
 
     async def update_status_embed(self, guild):
         """Updates the status tracking embed in the reviewer channel."""
-        channel_id = await self.config.guild(guild).app_channel()
-        if not channel_id:
-            return
-            
-        channel = guild.get_channel(channel_id)
-        if not channel:
-            return
-
-        # Get all applications
-        applications = await self.config.guild(guild).applications()
-        
-        # Sort applications by status
-        pending = []
-        approved = []
-        denied = []
-        
-        for msg_id, app in applications.items():
-            user = guild.get_member(app['user_id'])
-            if not user:
-                continue
+        try:
+            channel_id = await self.config.guild(guild).app_channel()
+            if not channel_id:
+                return
                 
-            jump_url = f"https://discord.com/channels/{guild.id}/{channel_id}/{msg_id}"
-            entry = f"[{user.name}]({jump_url}) - {app['platforms']}"
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                return
+
+            # Get all applications
+            applications = await self.config.guild(guild).applications()
             
-            if app['status'] == 'pending':
-                pending.append(entry)
-            elif app['status'] == 'approved':
-                approved.append(entry)
-            elif app['status'] == 'denied':
-                denied.append(entry)
+            # Sort applications by status
+            pending = []
+            approved = []
+            denied = []
+            
+            for msg_id, app in applications.items():
+                user = guild.get_member(app['user_id'])
+                if not user:
+                    continue
+                    
+                jump_url = f"https://discord.com/channels/{guild.id}/{channel_id}/{msg_id}"
+                platforms = app.get('platforms', 'Unknown')
+                entry = f"[{user.name}]({jump_url}) - {platforms}"
+                
+                if app['status'] == 'pending':
+                    pending.append(entry)
+                elif app['status'] == 'approved':
+                    approved.append(entry)
+                elif app['status'] == 'denied':
+                    denied.append(entry)
 
-        # Create the status embed
-        embed = discord.Embed(
-            title="Application Status Overview",
-            color=discord.Color.blue(),
-            timestamp=datetime.now()
-        )
-        
-        embed.add_field(
-            name=f"📝 Pending Applications ({len(pending)})",
-            value="\n".join(pending) if pending else "No pending applications",
-            inline=False
-        )
-        
-        embed.add_field(
-            name=f"✅ Approved Applications ({len(approved)})",
-            value="\n".join(approved) if approved else "No approved applications",
-            inline=False
-        )
-        
-        embed.add_field(
-            name=f"❌ Denied Applications ({len(denied)})",
-            value="\n".join(denied) if denied else "No denied applications",
-            inline=False
-        )
+            # Create the status embed
+            embed = discord.Embed(
+                title="Application Status Overview",
+                color=discord.Color.blue(),
+                timestamp=datetime.now()
+            )
+            
+            embed.add_field(
+                name=f"📝 Pending Applications ({len(pending)})",
+                value="\n".join(pending) if pending else "No pending applications",
+                inline=False
+            )
+            
+            embed.add_field(
+                name=f"✅ Approved Applications ({len(approved)})",
+                value="\n".join(approved) if approved else "No approved applications",
+                inline=False
+            )
+            
+            embed.add_field(
+                name=f"❌ Denied Applications ({len(denied)})",
+                value="\n".join(denied) if denied else "No denied applications",
+                inline=False
+            )
 
-        # Try to find existing status embed
-        async for message in channel.history(limit=10):
-            if message.author == self.bot.user and message.embeds:
-                if message.embeds[0].title == "Application Status Overview":
-                    await message.edit(embed=embed)
-                    return
+            # Find and update existing status embed
+            async for message in channel.history(limit=10):
+                if message.author == guild.me and message.embeds:
+                    if message.embeds[0].title == "Application Status Overview":
+                        await message.edit(embed=embed)
+                        return
 
-        # If no existing embed found, send new one and pin it
-        status_msg = await channel.send(embed=embed)
-        await status_msg.pin()
+            # If no existing embed found, send new one and pin it
+            status_msg = await channel.send(embed=embed)
+            await status_msg.pin()
+
+        except Exception as e:
+            print(f"Error in update_status_embed: {str(e)}")
 
     async def submit_application(self, guild, user, answers: Dict[str, str]):
         """Submit the completed application."""
-        channel_id = await self.config.guild(guild).app_channel()
-        if not channel_id:
-            await user.send("Error: Application channel not configured. Please contact an administrator.")
-            return
+        try:
+            channel_id = await self.config.guild(guild).app_channel()
+            if not channel_id:
+                await user.send("Error: Application channel not configured. Please contact an administrator.")
+                return
 
-        channel = guild.get_channel(channel_id)
-        if not channel:
-            await user.send("Error: Could not find application channel. Please contact an administrator.")
-            return
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                await user.send("Error: Could not find application channel. Please contact an administrator.")
+                return
 
-        # Create the embed first without the platforms
-        embed = discord.Embed(
-            title="New Moderator Application",
-            description=f"Application from {user.mention} ({user.id})",
-            color=discord.Color.blue(),
-            timestamp=datetime.now()
-        )
+            # Create the embed
+            embed = discord.Embed(
+                title="New Moderator Application",
+                description=f"Application from {user.mention} ({user.id})",
+                color=discord.Color.blue(),
+                timestamp=datetime.now()
+            )
 
-        # Add platforms to description if available
-        if 'platforms' in answers:
-            embed.description += f"\nPlatforms: {answers['platforms']}"
+            # Add platforms field separately
+            if 'platforms' in answers:
+                embed.add_field(
+                    name="Platforms",
+                    value=answers['platforms'],
+                    inline=False
+                )
 
-        # Add all answers to the embed
-        for question_id, answer in answers.items():
-            if question_id != 'platforms':  # Skip platforms as it's in the description
-                # Format the question ID to be more readable
-                field_name = question_id.replace("_", " ").title()
-                embed.add_field(name=field_name, value=answer, inline=False)
+            # Add all other answers to the embed
+            for question_id, answer in answers.items():
+                if question_id != 'platforms':  # Skip platforms as we already added it
+                    # Format the question ID to be more readable
+                    field_name = question_id.replace("_", " ").title()
+                    embed.add_field(name=field_name, value=answer, inline=False)
 
-        view = ApplicationResponseView(self, user.id)
-        msg = await channel.send(embed=embed, view=view)
+            view = ApplicationResponseView(self, user.id)
+            msg = await channel.send(embed=embed, view=view)
 
-        # Store the application in the config
-        async with self.config.guild(guild).applications() as apps:
-            apps[str(msg.id)] = {
-                "user_id": user.id,
-                "platforms": answers.get("platforms", "Unknown"),  # Use get() with default value
-                "answers": answers,
-                "status": "pending",
-                "timestamp": datetime.now().isoformat()
-            }
+            # Store the application in the config
+            async with self.config.guild(guild).applications() as apps:
+                apps[str(msg.id)] = {
+                    "user_id": user.id,
+                    "platforms": answers.get('platforms', 'Unknown'),
+                    "answers": answers,
+                    "status": "pending",
+                    "timestamp": datetime.now().isoformat()
+                }
 
-        await user.send("Your application has been submitted! You will be notified when it has been reviewed.")
+            # Update the status embed
+            await self.update_status_embed(guild)
 
-        # After storing the application, update the status embed
-        await self.update_status_embed(guild)
+            await user.send("Your application has been submitted! You will be notified when it has been reviewed.")
+
+        except Exception as e:
+            print(f"Error in submit_application: {str(e)}")
+            await user.send(f"An error occurred while submitting your application: {str(e)}")
+            raise
 
 class ApplicationTypeView(discord.ui.View):
     def __init__(self, cog, user, guild):
