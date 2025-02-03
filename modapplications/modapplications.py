@@ -178,12 +178,12 @@ class ModApplications(commands.Cog):
                 if role:
                     overwrites[role] = discord.PermissionOverwrite(read_messages=True)
             
-            # Create forum using the newer API
-            apps_forum = await ctx.guild.create_channel(
+            # Create forum using text channel with forum type
+            apps_forum = await ctx.guild.create_text_channel(
                 "mod-applications",
-                discord.ChannelType.forum,
                 category=category,
                 overwrites=overwrites,
+                type=discord.ChannelType.forum,
                 topic="Moderator Applications",
                 reason="Forum for moderator applications"
             )
