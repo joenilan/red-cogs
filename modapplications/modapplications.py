@@ -188,9 +188,9 @@ class ModApplications(commands.Cog):
             
             # Set up forum tags
             tags = [
-                discord.ForumTag(name="📝 Pending", emoji="📝"),
-                discord.ForumTag(name="✅ Approved", emoji="✅"),
-                discord.ForumTag(name="❌ Denied", emoji="❌")
+                discord.ForumTag(name="Pending", emoji="📝"),
+                discord.ForumTag(name="Approved", emoji="✅"),
+                discord.ForumTag(name="Denied", emoji="❌")
             ]
             
             await apps_forum.edit(available_tags=tags)
@@ -517,7 +517,7 @@ class ModApplications(commands.Cog):
             thread = await forum.create_thread(
                 name=f"Application - {user.name}",
                 embed=embed,
-                applied_tags=[discord.utils.get(forum.available_tags, name="📝 Pending")],
+                applied_tags=[discord.utils.get(forum.available_tags, name="Pending")],
                 view=ApplicationResponseView(self, user.id)
             )
 
@@ -798,9 +798,9 @@ class ApplicationResponseView(discord.ui.View):
         thread = interaction.channel
         if isinstance(thread, discord.Thread):
             # Remove old status tags
-            current_tags = [tag for tag in thread.applied_tags if not any(s in tag.name for s in ["📝 Pending", "✅ Approved", "❌ Denied"])]
+            current_tags = [tag for tag in thread.applied_tags if not any(s in tag.name for s in ["Pending", "Approved", "Denied"])]
             # Add new status tag
-            new_tag = discord.utils.get(thread.parent.available_tags, name=f"{'✅' if status == 'approved' else '❌'} {status.title()}")
+            new_tag = discord.utils.get(thread.parent.available_tags, name=status.title())
             if new_tag:
                 current_tags.append(new_tag)
                 await thread.edit(applied_tags=current_tags)
