@@ -221,32 +221,41 @@ class ModApplications(commands.Cog):
             await self.config.guild(ctx.guild).applications_open.set(True)
             
             # Create initial status embed
-            embed = discord.Embed(
+            status_embed = discord.Embed(
                 title="Application Status Overview",
                 color=discord.Color.blue(),
                 timestamp=datetime.now()
             )
             
-            embed.add_field(
+            status_embed.add_field(
                 name="📝 Pending Applications (0)",
                 value="No pending applications",
                 inline=False
             )
             
-            embed.add_field(
+            status_embed.add_field(
                 name="✅ Approved Applications (0)",
                 value="No approved applications",
                 inline=False
             )
             
-            embed.add_field(
+            status_embed.add_field(
                 name="❌ Denied Applications (0)",
                 value="No denied applications",
                 inline=False
             )
             
-            status_msg = await apps_forum.send(embed=embed)
-            await status_msg.pin()
+            # Create a thread for the status overview
+            status_thread = await apps_forum.create_thread(
+                name="📊 Application Status Overview",
+                content="Status overview for all applications:",
+                embed=status_embed,
+                applied_tags=[discord.utils.get(apps_forum.available_tags, name="📝 Pending")]
+            )
+            
+            # Pin the status message
+            first_message = [message async for message in status_thread.history(limit=1)][0]
+            await first_message.pin()
             
             await ctx.send(
                 "📝 Moderator applications are now open!\n"
