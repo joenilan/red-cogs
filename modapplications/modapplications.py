@@ -383,33 +383,47 @@ class ModApplications(commands.Cog):
             # Get all applications
             applications = await self.config.guild(guild).applications()
             
-            # Sort applications by status, using user_id as key to prevent duplicates
-            pending = {}
-            approved = {}
-            denied = {}
+            # Track the latest status for each user
+            user_latest_status = {}
             
+            # First pass: determine the most recent status for each user
             for msg_id, app in applications.items():
-                user = guild.get_member(app['user_id'])
+                user_id = app['user_id']
+                timestamp = app.get('timestamp', '0')
+                
+                if user_id not in user_latest_status or timestamp > user_latest_status[user_id]['timestamp']:
+                    user_latest_status[user_id] = {
+                        'status': app['status'],
+                        'timestamp': timestamp,
+                        'msg_id': msg_id,
+                        'platforms': app.get('platforms', 'Unknown')
+                    }
+            
+            # Now organize by status using only the latest status for each user
+            pending = []
+            approved = []
+            denied = []
+            
+            for user_id, data in user_latest_status.items():
+                user = guild.get_member(user_id)
                 if not user:
                     continue
                     
-                jump_url = f"https://discord.com/channels/{guild.id}/{channel_id}/{msg_id}"
-                platforms = app.get('platforms', 'Unknown')
-                entry = f"[{user.name}]({jump_url}) - {platforms}"
+                jump_url = f"https://discord.com/channels/{guild.id}/{channel_id}/{data['msg_id']}"
+                entry = f"[{user.name}]({jump_url}) - {data['platforms']}"
                 
-                # Only add the most recent application for each user based on timestamp
-                timestamp = app.get('timestamp', '0')
-                
-                if app['status'] == 'pending':
-                    if user.id not in pending or timestamp > pending[user.id]['timestamp']:
-                        pending[user.id] = {'entry': entry, 'timestamp': timestamp}
-                elif app['status'] == 'approved':
-                    if user.id not in approved or timestamp > approved[user.id]['timestamp']:
-                        approved[user.id] = {'entry': entry, 'timestamp': timestamp}
-                elif app['status'] == 'denied':
-                    if user.id not in denied or timestamp > denied[user.id]['timestamp']:
-                        denied[user.id] = {'entry': entry, 'timestamp': timestamp}
-
+                if data['status'] == 'pending':
+                    pending.append((entry, data['timestamp']))
+                elif data['status'] == 'approved':
+                    approved.append((entry, data['timestamp']))
+                elif data['status'] == 'denied':
+                    denied.append((entry, data['timestamp']))
+            
+            # Sort each list by timestamp (most recent first)
+            pending.sort(key=lambda x: x[1], reverse=True)
+            approved.sort(key=lambda x: x[1], reverse=True)
+            denied.sort(key=lambda x: x[1], reverse=True)
+            
             # Create the status embed
             embed = discord.Embed(
                 title="Application Status Overview",
@@ -417,26 +431,21 @@ class ModApplications(commands.Cog):
                 timestamp=datetime.now()
             )
             
-            # Get just the entries, sorted by timestamp
-            pending_entries = [data['entry'] for data in sorted(pending.values(), key=lambda x: x['timestamp'], reverse=True)]
-            approved_entries = [data['entry'] for data in sorted(approved.values(), key=lambda x: x['timestamp'], reverse=True)]
-            denied_entries = [data['entry'] for data in sorted(denied.values(), key=lambda x: x['timestamp'], reverse=True)]
-            
             embed.add_field(
-                name=f"📝 Pending Applications ({len(pending_entries)})",
-                value="\n".join(pending_entries) if pending_entries else "No pending applications",
+                name=f"📝 Pending Applications ({len(pending)})",
+                value="\n".join(entry for entry, _ in pending) if pending else "No pending applications",
                 inline=False
             )
             
             embed.add_field(
-                name=f"✅ Approved Applications ({len(approved_entries)})",
-                value="\n".join(approved_entries) if approved_entries else "No approved applications",
+                name=f"✅ Approved Applications ({len(approved)})",
+                value="\n".join(entry for entry, _ in approved) if approved else "No approved applications",
                 inline=False
             )
             
             embed.add_field(
-                name=f"❌ Denied Applications ({len(denied_entries)})",
-                value="\n".join(denied_entries) if denied_entries else "No denied applications",
+                name=f"❌ Denied Applications ({len(denied)})",
+                value="\n".join(entry for entry, _ in denied) if denied else "No denied applications",
                 inline=False
             )
 
