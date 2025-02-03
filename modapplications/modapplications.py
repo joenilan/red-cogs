@@ -186,6 +186,9 @@ class ModApplications(commands.Cog):
                 reason="Forum for moderator applications"
             )
             
+            # Set up forum guidelines and settings
+            await self.setup_forum_guidelines(apps_forum)
+            
             # Set up forum tags
             tags = [
                 discord.ForumTag(name="Pending", emoji="📝"),
@@ -387,14 +390,30 @@ class ModApplications(commands.Cog):
             self.persistent_views_added = True
 
     async def update_status_embed(self, guild):
-        """Updates the status tracking embed in the reviewer channel."""
+        """Updates the status tracking embed in the forum."""
         try:
             channel_id = await self.config.guild(guild).app_channel()
             if not channel_id:
                 return
                 
-            channel = guild.get_channel(channel_id)
-            if not channel:
+            forum = guild.get_channel(channel_id)
+            if not forum:
+                return
+
+            # Find the status thread
+            status_thread = None
+            async for thread in forum.archived_threads(limit=100):
+                if thread.name == "📊 Application Status Overview":
+                    status_thread = thread
+                    break
+                    
+            if not status_thread:
+                async for thread in forum.threads:
+                    if thread.name == "📊 Application Status Overview":
+                        status_thread = thread
+                        break
+
+            if not status_thread:
                 return
 
             # Get all applications
@@ -409,38 +428,32 @@ class ModApplications(commands.Cog):
                 timestamp = app.get('timestamp', '0')
                 
                 if user_id not in user_latest_status or timestamp > user_latest_status[user_id]['timestamp']:
-                    user_latest_status[user_id] = {
-                        'status': app['status'],
-                        'timestamp': timestamp,
-                        'msg_id': msg_id,
-                        'platforms': app.get('platforms', 'Unknown')
-                    }
+                    user = guild.get_member(user_id)
+                    if user:
+                        user_latest_status[user_id] = {
+                            'status': app['status'],
+                            'timestamp': timestamp,
+                            'msg_id': msg_id,
+                            'platforms': app.get('platforms', 'Unknown'),
+                            'name': user.name
+                        }
             
-            # Now organize by status using only the latest status for each user
+            # Organize by status
             pending = []
             approved = []
             denied = []
             
-            for user_id, data in user_latest_status.items():
-                user = guild.get_member(user_id)
-                if not user:
-                    continue
-                    
-                jump_url = f"https://discord.com/channels/{guild.id}/{channel_id}/{data['msg_id']}"
-                entry = f"[{user.name}]({jump_url}) - {data['platforms']}"
+            for data in user_latest_status.values():
+                thread_url = f"https://discord.com/channels/{guild.id}/{channel_id}/{data['msg_id']}"
+                entry = f"[{data['name']}]({thread_url}) - {data['platforms']}"
                 
                 if data['status'] == 'pending':
-                    pending.append((entry, data['timestamp']))
+                    pending.append(entry)
                 elif data['status'] == 'approved':
-                    approved.append((entry, data['timestamp']))
+                    approved.append(entry)
                 elif data['status'] == 'denied':
-                    denied.append((entry, data['timestamp']))
-            
-            # Sort each list by timestamp (most recent first)
-            pending.sort(key=lambda x: x[1], reverse=True)
-            approved.sort(key=lambda x: x[1], reverse=True)
-            denied.sort(key=lambda x: x[1], reverse=True)
-            
+                    denied.append(entry)
+
             # Create the status embed
             embed = discord.Embed(
                 title="Application Status Overview",
@@ -450,32 +463,28 @@ class ModApplications(commands.Cog):
             
             embed.add_field(
                 name=f"📝 Pending Applications ({len(pending)})",
-                value="\n".join(entry for entry, _ in pending) if pending else "No pending applications",
+                value="\n".join(pending) if pending else "No pending applications",
                 inline=False
             )
             
             embed.add_field(
                 name=f"✅ Approved Applications ({len(approved)})",
-                value="\n".join(entry for entry, _ in approved) if approved else "No approved applications",
+                value="\n".join(approved) if approved else "No approved applications",
                 inline=False
             )
             
             embed.add_field(
                 name=f"❌ Denied Applications ({len(denied)})",
-                value="\n".join(entry for entry, _ in denied) if denied else "No denied applications",
+                value="\n".join(denied) if denied else "No denied applications",
                 inline=False
             )
 
-            # Find and update existing status embed
-            async for message in channel.history(limit=10):
+            # Update the status message
+            async for message in status_thread.history(limit=10):
                 if message.author == guild.me and message.embeds:
                     if message.embeds[0].title == "Application Status Overview":
                         await message.edit(embed=embed)
                         return
-
-            # If no existing embed found, send new one and pin it
-            status_msg = await channel.send(embed=embed)
-            await status_msg.pin()
 
         except Exception as e:
             print(f"Error in update_status_embed: {str(e)}")
@@ -544,6 +553,32 @@ class ModApplications(commands.Cog):
             print(f"Error in submit_application: {str(e)}")
             await user.send(f"An error occurred while submitting your application: {str(e)}")
             raise
+
+    async def setup_forum_guidelines(self, forum):
+        """Set up forum guidelines and settings."""
+        try:
+            # Set forum guidelines
+            guidelines = (
+                "# Moderator Application Guidelines\n\n"
+                "- Be honest in your responses\n"
+                "- Provide detailed answers\n"
+                "- Include relevant experience\n"
+                "- Applications are reviewed by The One and Agent roles\n"
+                "- You will be notified of the decision via DM"
+            )
+            
+            # Set default reaction
+            default_reaction = "👍"
+            
+            # Update forum settings
+            await forum.edit(
+                topic=guidelines,
+                default_auto_archive_duration=4320,  # 3 days
+                default_reaction_emoji=default_reaction
+            )
+            
+        except Exception as e:
+            print(f"Error setting up forum guidelines: {str(e)}")
 
 class ApplicationTypeView(discord.ui.View):
     def __init__(self, cog, user, guild):
