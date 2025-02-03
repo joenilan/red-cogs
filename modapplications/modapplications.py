@@ -517,16 +517,20 @@ class ModApplications(commands.Cog):
                     embed.add_field(name=field_name, value=answer, inline=False)
 
             # Create a new forum post
-            thread = await forum.create_thread(
+            thread_with_message = await forum.create_thread(
                 name=f"Application - {user.name}",
                 embed=embed,
                 applied_tags=[discord.utils.get(forum.available_tags, name="Pending")],
                 view=ApplicationResponseView(self, user.id)
             )
+            
+            # Get the thread and message separately
+            thread = thread_with_message.thread
+            message = thread_with_message.message
 
-            # Store the application in the config
+            # Store the application in the config using the message ID
             async with self.config.guild(guild).applications() as apps:
-                apps[str(thread.id)] = {
+                apps[str(message.id)] = {
                     "user_id": user.id,
                     "platforms": answers.get('platforms', 'Unknown'),
                     "answers": answers,
