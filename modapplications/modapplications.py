@@ -205,20 +205,14 @@ class ModApplications(commands.Cog):
                 }
             )
             
-            # Get the bot's command prefix
-            prefix = (await self.bot.get_prefix(ctx.message))[0]
-            
             # Send the application button message
             embed = discord.Embed(
                 title="Moderator Applications",
-                description=(
-                    "Click the button below to start your moderator application!\n\n"
-                    f"You can also use `{prefix}apply` to start the application process."
-                ),
+                description="Click the button below to start your moderator application!",
                 color=discord.Color.blue()
             )
             
-            view = ApplicationStartView(self)  # Create a new view class for the start button
+            view = ApplicationStartView(self)
             await info_channel.send(embed=embed, view=view)
             
             # Save the IDs to config
