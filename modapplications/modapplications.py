@@ -178,8 +178,10 @@ class ModApplications(commands.Cog):
                 if role:
                     overwrites[role] = discord.PermissionOverwrite(read_messages=True)
             
-            apps_forum = await ctx.guild.create_forum_channel(
+            # Create forum using the newer API
+            apps_forum = await ctx.guild.create_channel(
                 "mod-applications",
+                discord.ChannelType.forum,
                 category=category,
                 overwrites=overwrites,
                 topic="Moderator Applications",
@@ -187,9 +189,12 @@ class ModApplications(commands.Cog):
             )
             
             # Set up forum tags
-            await apps_forum.create_tag(name="📝 Pending", emoji="📝")
-            await apps_forum.create_tag(name="✅ Approved", emoji="✅")
-            await apps_forum.create_tag(name="❌ Denied", emoji="❌")
+            tags = [
+                discord.ForumTag(name="📝 Pending", emoji="📝"),
+                discord.ForumTag(name="✅ Approved", emoji="✅"),
+                discord.ForumTag(name="❌ Denied", emoji="❌")
+            ]
+            await apps_forum.edit(available_tags=tags)
             
             # Create the public info channel
             info_channel = await ctx.guild.create_text_channel(
