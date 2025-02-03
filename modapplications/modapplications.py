@@ -167,7 +167,7 @@ class ModApplications(commands.Cog):
                 ctx.guild.get_role(735167487854903377)   # Agent
             ]
             
-            # Create the private applications channel for reviewers
+            # Create the applications forum
             overwrites = {
                 ctx.guild.default_role: discord.PermissionOverwrite(read_messages=False),
                 ctx.guild.me: discord.PermissionOverwrite(read_messages=True)
@@ -178,11 +178,18 @@ class ModApplications(commands.Cog):
                 if role:
                     overwrites[role] = discord.PermissionOverwrite(read_messages=True)
             
-            apps_channel = await ctx.guild.create_text_channel(
+            apps_forum = await ctx.guild.create_forum_channel(
                 "mod-applications",
                 category=category,
-                overwrites=overwrites
+                overwrites=overwrites,
+                topic="Moderator Applications",
+                reason="Forum for moderator applications"
             )
+            
+            # Set up forum tags
+            await apps_forum.create_tag(name="📝 Pending", emoji="📝")
+            await apps_forum.create_tag(name="✅ Approved", emoji="✅")
+            await apps_forum.create_tag(name="❌ Denied", emoji="❌")
             
             # Create the public info channel
             info_channel = await ctx.guild.create_text_channel(
@@ -210,7 +217,7 @@ class ModApplications(commands.Cog):
             await info_channel.send(embed=embed, view=view)
             
             # Save the IDs to config
-            await self.config.guild(ctx.guild).app_channel.set(apps_channel.id)
+            await self.config.guild(ctx.guild).app_channel.set(apps_forum.id)
             await self.config.guild(ctx.guild).info_channel.set(info_channel.id)
             await self.config.guild(ctx.guild).category_id.set(category.id)
             await self.config.guild(ctx.guild).applications_open.set(True)
@@ -240,13 +247,13 @@ class ModApplications(commands.Cog):
                 inline=False
             )
             
-            status_msg = await apps_channel.send(embed=embed)
+            status_msg = await apps_forum.send(embed=embed)
             await status_msg.pin()
             
             await ctx.send(
                 "📝 Moderator applications are now open!\n"
                 f"Category: {category.name}\n"
-                f"Applications Channel: {apps_channel.mention}\n"
+                f"Applications Forum: {apps_forum.mention}\n"
                 f"Info Channel: {info_channel.mention}\n"
                 "Reviewer Roles: The One and Agent\n"
             )
@@ -471,8 +478,8 @@ class ModApplications(commands.Cog):
                 await user.send("Error: Application channel not configured. Please contact an administrator.")
                 return
 
-            channel = guild.get_channel(channel_id)
-            if not channel:
+            forum = guild.get_channel(channel_id)
+            if not forum:
                 await user.send("Error: Could not find application channel. Please contact an administrator.")
                 return
 
@@ -499,21 +506,23 @@ class ModApplications(commands.Cog):
                     field_name = question_id.replace("_", " ").title()
                     embed.add_field(name=field_name, value=answer, inline=False)
 
-            view = ApplicationResponseView(self, user.id)
-            msg = await channel.send(embed=embed, view=view)
+            # Create a new forum post
+            thread = await forum.create_thread(
+                name=f"Application - {user.name}",
+                embed=embed,
+                applied_tags=[discord.utils.get(forum.available_tags, name="📝 Pending")],
+                view=ApplicationResponseView(self, user.id)
+            )
 
             # Store the application in the config
             async with self.config.guild(guild).applications() as apps:
-                apps[str(msg.id)] = {
+                apps[str(thread.id)] = {
                     "user_id": user.id,
                     "platforms": answers.get('platforms', 'Unknown'),
                     "answers": answers,
                     "status": "pending",
                     "timestamp": datetime.now().isoformat()
                 }
-
-            # Update the status embed
-            await self.update_status_embed(guild)
 
             await user.send("Your application has been submitted! You will be notified when it has been reviewed.")
 
@@ -777,6 +786,21 @@ class ApplicationResponseView(discord.ui.View):
         async with self.cog.config.guild(interaction.guild).applications() as apps:
             if str(interaction.message.id) in apps:
                 apps[str(interaction.message.id)]["status"] = status
+
+        # Update forum post tags
+        thread = interaction.channel
+        if isinstance(thread, discord.Thread):
+            # Remove old status tags
+            current_tags = [tag for tag in thread.applied_tags if not any(s in tag.name for s in ["📝 Pending", "✅ Approved", "❌ Denied"])]
+            # Add new status tag
+            new_tag = discord.utils.get(thread.parent.available_tags, name=f"{'✅' if status == 'approved' else '❌'} {status.title()}")
+            if new_tag:
+                current_tags.append(new_tag)
+                await thread.edit(applied_tags=current_tags)
+
+            # Auto-archive if denied
+            if status == "denied":
+                await thread.edit(archived=True, locked=True)
 
         # Notify the applicant
         try:
