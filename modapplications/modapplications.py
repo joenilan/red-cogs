@@ -427,28 +427,20 @@ class ModApplications(commands.Cog):
     async def update_status_embed(self, guild):
         """Updates the status tracking embed in the forum."""
         try:
-            # Get the stored IDs
-            thread_id = await self.config.guild(guild).status_thread_id()
-            message_id = await self.config.guild(guild).status_message_id()
+            print("Starting status embed update")  # Debug print
             channel_id = await self.config.guild(guild).app_channel()
-            
-            if not all([thread_id, message_id, channel_id]):
-                print("Missing required IDs")
+            if not channel_id:
+                print("No channel ID found")
                 return
                 
             forum = guild.get_channel(channel_id)
             if not forum:
-                print("Forum channel not found")
-                return
-
-            # Get the status thread
-            thread = forum.get_thread(thread_id)
-            if not thread:
-                print("Status thread not found")
+                print("No forum found")
                 return
 
             # Get all applications
             applications = await self.config.guild(guild).applications()
+            print(f"Found {len(applications)} applications")  # Debug print
             
             # Sort applications by status
             pending = []
@@ -456,14 +448,17 @@ class ModApplications(commands.Cog):
             denied = []
             
             for thread_id, app in applications.items():
+                print(f"Processing application {thread_id}")  # Debug print
                 user = guild.get_member(app['user_id'])
                 if not user:
+                    print(f"User not found: {app['user_id']}")
                     continue
                 
                 # Get selected platforms
                 platforms = app['answers'].get('platforms', [])
                 platform_str = ' & '.join(platforms)
                 entry = f"{user.mention} - {platform_str}"
+                print(f"Created entry: {entry} with status: {app['status']}")  # Debug print
                 
                 if app['status'] == 'pending':
                     pending.append(entry)
@@ -471,6 +466,8 @@ class ModApplications(commands.Cog):
                     approved.append(entry)
                 elif app['status'] == 'denied':
                     denied.append(entry)
+
+            print(f"Pending: {len(pending)}, Approved: {len(approved)}, Denied: {len(denied)}")  # Debug print
 
             # Create the status embed
             embed = discord.Embed(
@@ -497,28 +494,40 @@ class ModApplications(commands.Cog):
                 inline=False
             )
 
-            try:
-                # Get and update the specific message
-                message = await thread.fetch_message(message_id)
-                await message.edit(embed=embed)
-                print(f"Updated status message with {len(pending)} pending applications")
-            except discord.NotFound:
-                print("Status message not found")
-                
+            # Find the status thread
+            status_thread = None
+            for thread in forum.threads:
+                if "Application Status Overview" in thread.name:
+                    status_thread = thread
+                    break
+
+            if status_thread:
+                print("Found status thread")  # Debug print
+                async for message in status_thread.history(limit=2):
+                    if not message.flags.system and message.author == guild.me:
+                        print("Found status message, updating...")  # Debug print
+                        await message.edit(embed=embed)
+                        print("Status message updated")  # Debug print
+                        return
+            else:
+                print("Status thread not found")  # Debug print
+
         except Exception as e:
             print(f"Error in update_status_embed: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     async def submit_application(self, guild, user, answers: Dict[str, str]):
         """Submit the completed application."""
         try:
             channel_id = await self.config.guild(guild).app_channel()
             if not channel_id:
-                await user.send("Error: Application channel not configured. Please contact an administrator.")
+                await user.send("Error: Application channel not configured.")
                 return
 
             forum = guild.get_channel(channel_id)
             if not forum:
-                await user.send("Error: Could not find application channel. Please contact an administrator.")
+                await user.send("Error: Could not find application channel.")
                 return
 
             # Create the embed
@@ -545,7 +554,7 @@ class ModApplications(commands.Cog):
             thread = thread_with_message.thread
             message = thread_with_message.message
 
-            print(f"Created application thread: {thread.id}")  # Debug print
+            print(f"Created application for {user.name} with thread ID: {thread.id}")  # Debug print
 
             # Store the application in the config
             async with self.config.guild(guild).applications() as apps:
@@ -556,11 +565,11 @@ class ModApplications(commands.Cog):
                     "timestamp": datetime.now().isoformat(),
                     "message_id": message.id
                 }
-                print(f"Stored application: {apps[str(thread.id)]}")  # Debug print
+                print(f"Stored application data: {apps[str(thread.id)]}")  # Debug print
 
             # Update the status overview
+            print("Calling update_status_embed...")  # Debug print
             await self.update_status_embed(guild)
-            print("Updated status embed")  # Debug print
             
             await user.send("Your application has been submitted! You will be notified when it has been reviewed.")
 
