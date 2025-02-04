@@ -180,16 +180,13 @@ class ModApplications(commands.Cog):
                 if role:
                     overwrites[role] = discord.PermissionOverwrite(read_messages=True)
             
-            # Create forum channel with proper type
+            # Create forum channel
             apps_forum = await category.create_forum(
                 "mod-applications",
                 overwrites=overwrites,
                 topic="Moderator Applications",
                 reason="Forum for moderator applications"
             )
-            
-            # Set up forum guidelines and settings
-            await self.setup_forum_guidelines(apps_forum)
             
             # Set up forum tags
             tags = [
@@ -219,12 +216,6 @@ class ModApplications(commands.Cog):
             view = ApplicationStartView(self)
             await info_channel.send(embed=embed, view=view)
             
-            # Save the IDs to config
-            await self.config.guild(ctx.guild).app_channel.set(apps_forum.id)
-            await self.config.guild(ctx.guild).info_channel.set(info_channel.id)
-            await self.config.guild(ctx.guild).category_id.set(category.id)
-            await self.config.guild(ctx.guild).applications_open.set(True)
-            
             # Create initial status embed
             status_embed = discord.Embed(
                 title="Application Status Overview",
@@ -251,27 +242,27 @@ class ModApplications(commands.Cog):
             )
 
             # Create the status overview thread and store its message ID
-            thread_with_message = await apps_forum.create_thread(
+            status_thread = await apps_forum.create_thread(
                 name="📊 Application Status Overview",
-                content="Status overview for all applications:",
-                embed=status_embed,
-                applied_tags=[discord.utils.get(apps_forum.available_tags, name="Pending")]
+                content="",  # Empty content to avoid system message
+                embed=status_embed
             )
             
-            # Store both thread and message IDs
-            await self.config.guild(ctx.guild).status_thread_id.set(thread_with_message.thread.id)
-            await self.config.guild(ctx.guild).status_message_id.set(thread_with_message.message.id)
+            # Store the IDs in config
+            await self.config.guild(ctx.guild).app_channel.set(apps_forum.id)
+            await self.config.guild(ctx.guild).info_channel.set(info_channel.id)
+            await self.config.guild(ctx.guild).category_id.set(category.id)
+            await self.config.guild(ctx.guild).status_thread_id.set(status_thread.thread.id)
+            await self.config.guild(ctx.guild).status_message_id.set(status_thread.message.id)
+            await self.config.guild(ctx.guild).applications_open.set(True)
             
             await ctx.send(
                 "📝 Moderator applications are now open!\n"
                 f"Category: {category.name}\n"
                 f"Applications Forum: {apps_forum.mention}\n"
-                f"Info Channel: {info_channel.mention}\n"
-                "Reviewer Roles: The One and Agent\n"
+                f"Info Channel: {info_channel.mention}"
             )
             
-        except discord.Forbidden:
-            await ctx.send("I don't have the required permissions to create channels and roles.")
         except Exception as e:
             await ctx.send(f"An error occurred during setup: {str(e)}")
 
@@ -436,60 +427,42 @@ class ModApplications(commands.Cog):
     async def update_status_embed(self, guild):
         """Updates the status tracking embed in the forum."""
         try:
+            # Get the stored IDs
+            thread_id = await self.config.guild(guild).status_thread_id()
+            message_id = await self.config.guild(guild).status_message_id()
             channel_id = await self.config.guild(guild).app_channel()
-            if not channel_id:
+            
+            if not all([thread_id, message_id, channel_id]):
+                print("Missing required IDs")
                 return
                 
             forum = guild.get_channel(channel_id)
             if not forum:
+                print("Forum channel not found")
+                return
+
+            # Get the status thread
+            thread = forum.get_thread(thread_id)
+            if not thread:
+                print("Status thread not found")
                 return
 
             # Get all applications
             applications = await self.config.guild(guild).applications()
-            
-            # Track latest application per user
-            user_latest_app = {}
-            
-            # First pass: find the latest application for each user
-            for thread_id, app in applications.items():
-                user_id = app['user_id']
-                timestamp = app.get('timestamp', '0')
-                
-                if user_id not in user_latest_app or timestamp > user_latest_app[user_id]['timestamp']:
-                    user_latest_app[user_id] = app
             
             # Sort applications by status
             pending = []
             approved = []
             denied = []
             
-            for app in user_latest_app.values():
+            for thread_id, app in applications.items():
                 user = guild.get_member(app['user_id'])
                 if not user:
                     continue
-
-                # Get selected platforms and clean up the format
+                
+                # Get selected platforms
                 platforms = app['answers'].get('platforms', [])
-                if isinstance(platforms, str):
-                    # If platforms is a string, split and clean it
-                    platforms = [p.strip() for p in platforms.split(',')]
-                
-                # Clean up platform names
-                clean_platforms = []
-                for platform in platforms:
-                    platform = platform.lower()
-                    if 'discord' in platform:
-                        clean_platforms.append('Discord')
-                    if 'twitch' in platform:
-                        clean_platforms.append('Twitch')
-                    if 'youtube' in platform:
-                        clean_platforms.append('YouTube')
-                    if 'tiktok' in platform:
-                        clean_platforms.append('TikTok')
-                    if 'kick' in platform:
-                        clean_platforms.append('Kick')
-                
-                platform_str = ' & '.join(clean_platforms) if clean_platforms else 'Unknown'
+                platform_str = ' & '.join(platforms)
                 entry = f"{user.mention} - {platform_str}"
                 
                 if app['status'] == 'pending':
@@ -524,14 +497,14 @@ class ModApplications(commands.Cog):
                 inline=False
             )
 
-            # Find and update the status message
-            for thread in forum.threads:
-                if thread.name == "📊 Application Status Overview":
-                    async for message in thread.history(limit=1):
-                        if message.author == guild.me and not message.flags.system:
-                            await message.edit(embed=embed)
-                            return
-
+            try:
+                # Get and update the specific message
+                message = await thread.fetch_message(message_id)
+                await message.edit(embed=embed)
+                print(f"Updated status message with {len(pending)} pending applications")
+            except discord.NotFound:
+                print("Status message not found")
+                
         except Exception as e:
             print(f"Error in update_status_embed: {str(e)}")
 
