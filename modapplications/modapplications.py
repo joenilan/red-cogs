@@ -119,7 +119,8 @@ class ModApplications(commands.Cog):
             "applications_open": False,
             "mod_role": None,  # New: Role for moderator reviewers
             "category_id": None,  # New: Category for application channels
-            "info_channel": None  # New: Info channel for application button
+            "info_channel": None,  # New: Info channel for application button
+            "status_message": None  # New: Status message ID for the status overview thread
         }
         
         self.config.register_guild(**default_guild)
@@ -247,21 +248,17 @@ class ModApplications(commands.Cog):
                 value="No denied applications",
                 inline=False
             )
-            
-            # Create a thread for the status overview
+
+            # Create the status overview thread
             thread_with_message = await apps_forum.create_thread(
                 name="📊 Application Status Overview",
-                content="Status overview for all applications:",
+                content="",  # No content to avoid system message
                 embed=status_embed,
                 applied_tags=[discord.utils.get(apps_forum.available_tags, name="Pending")]
             )
             
-            # The thread and starter message are separate now
-            status_thread = thread_with_message.thread
-            starter_message = thread_with_message.message
-            
-            # Pin the status message
-            await starter_message.pin()
+            # Store the status message ID in config
+            await self.config.guild(ctx.guild).status_message.set(thread_with_message.message.id)
             
             await ctx.send(
                 "📝 Moderator applications are now open!\n"
@@ -392,20 +389,16 @@ class ModApplications(commands.Cog):
     async def update_status_embed(self, guild):
         """Updates the status tracking embed in the forum."""
         try:
-            print("Starting status embed update")  # Debug print
             channel_id = await self.config.guild(guild).app_channel()
             if not channel_id:
-                print("No channel ID found")
                 return
                 
             forum = guild.get_channel(channel_id)
             if not forum:
-                print("No forum found")
                 return
 
             # Get all applications
             applications = await self.config.guild(guild).applications()
-            print(f"Found {len(applications)} applications")  # Debug print
             
             # Sort applications by status
             pending = []
@@ -414,22 +407,14 @@ class ModApplications(commands.Cog):
             
             # Process each application
             for thread_id, app in applications.items():
-                print(f"Processing application {thread_id}")  # Debug print
                 user = guild.get_member(app['user_id'])
                 if not user:
-                    print(f"User not found: {app['user_id']}")
                     continue
-
-                # Get selected platforms from answers
-                platforms = []
-                if 'discord' in app['answers'].get('platforms', '').lower():
-                    platforms.append('Discord')
-                if 'twitch' in app['answers'].get('platforms', '').lower():
-                    platforms.append('Twitch')
                 
-                platform_str = ' & '.join(platforms) if platforms else 'Unknown'
+                # Get platforms from answers
+                platforms = app['answers'].get('platforms', [])
+                platform_str = ' & '.join(platforms)
                 entry = f"{user.name} - {platform_str}"
-                print(f"Created entry: {entry} with status: {app['status']}")  # Debug print
                 
                 if app['status'] == 'pending':
                     pending.append(entry)
@@ -437,8 +422,6 @@ class ModApplications(commands.Cog):
                     approved.append(entry)
                 elif app['status'] == 'denied':
                     denied.append(entry)
-
-            print(f"Pending: {len(pending)}, Approved: {len(approved)}, Denied: {len(denied)}")  # Debug print
 
             # Create the status embed
             embed = discord.Embed(
@@ -465,26 +448,23 @@ class ModApplications(commands.Cog):
                 inline=False
             )
 
-            # Find and update the status message
-            status_thread = None
+            # Find the status thread and our message
+            status_message_id = await self.config.guild(guild).status_message()
+            
             for thread in forum.threads:
                 if thread.name == "📊 Application Status Overview":
-                    status_thread = thread
-                    break
-
-            if status_thread:
-                print("Found status thread")  # Debug print
-                async for message in status_thread.history(limit=1):
-                    if message.author == guild.me:
+                    try:
+                        message = await thread.fetch_message(status_message_id)
                         await message.edit(embed=embed)
-                        print("Updated status message")  # Debug print
                         return
-            else:
-                print("Status thread not found")  # Debug print
+                    except discord.NotFound:
+                        # If message not found, create a new one
+                        new_message = await thread.send(embed=embed)
+                        await self.config.guild(guild).status_message.set(new_message.id)
+                        return
 
         except Exception as e:
             print(f"Error in update_status_embed: {str(e)}")
-            raise  # Re-raise to see full traceback
 
     async def submit_application(self, guild, user, answers: Dict[str, str]):
         """Submit the completed application."""
