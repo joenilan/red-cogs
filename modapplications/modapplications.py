@@ -269,36 +269,25 @@ class ModApplications(commands.Cog):
     @modapp.command(name="close")
     @commands.is_owner()
     async def modapp_close(self, ctx):
-        """Close applications and remove channels/roles."""
+        """Close applications and clean up."""
         try:
-            # Get saved IDs
-            category_id = await self.config.guild(ctx.guild).category_id()
-            mod_role_id = await self.config.guild(ctx.guild).mod_role()
+            # Clear all application data
+            await self.config.guild(ctx.guild).applications.set({})
+            await self.config.guild(ctx.guild).status_thread_id.set(None)
+            await self.config.guild(ctx.guild).status_message_id.set(None)
+            await self.config.guild(ctx.guild).applications_open.set(False)
             
+            # Delete channels if they exist
+            category_id = await self.config.guild(ctx.guild).category_id()
             if category_id:
                 category = ctx.guild.get_channel(category_id)
                 if category:
-                    # Delete all channels in the category first
                     for channel in category.channels:
-                        try:
-                            await channel.delete(reason="Closing mod applications")
-                        except discord.HTTPException:
-                            continue
-                    
-                    # Then delete the category
-                    await category.delete(reason="Closing mod applications")
+                        await channel.delete()
+                    await category.delete()
             
-            # Clear config
-            await self.config.guild(ctx.guild).app_channel.set(None)
-            await self.config.guild(ctx.guild).mod_role.set(None)
-            await self.config.guild(ctx.guild).category_id.set(None)
-            await self.config.guild(ctx.guild).info_channel.set(None)
-            await self.config.guild(ctx.guild).applications_open.set(False)
+            await ctx.send("Applications closed and data cleared.")
             
-            await ctx.send("❌ Moderator applications are now closed and all related channels/roles have been removed.")
-            
-        except discord.Forbidden:
-            await ctx.send("I don't have the required permissions to delete channels and roles.")
         except Exception as e:
             await ctx.send(f"An error occurred while closing applications: {str(e)}")
 
@@ -469,23 +458,11 @@ class ModApplications(commands.Cog):
                 if not user:
                     continue
 
-                # Get selected platforms from the answers
-                selected_platforms = []
-                if 'discord' in app['answers'].get('platforms', []):
-                    selected_platforms.append('Discord')
-                if 'twitch' in app['answers'].get('platforms', []):
-                    selected_platforms.append('Twitch')
-                if 'youtube' in app['answers'].get('platforms', []):
-                    selected_platforms.append('YouTube')
-                if 'tiktok' in app['answers'].get('platforms', []):
-                    selected_platforms.append('TikTok')
-                if 'kick' in app['answers'].get('platforms', []):
-                    selected_platforms.append('Kick')
-
-                platform_str = ' & '.join(selected_platforms) if selected_platforms else 'Unknown'
+                # Get platforms directly from stored data
+                platforms = app.get('platforms', [])
+                platform_str = ' & '.join(platforms) if platforms else 'Unknown'
                 entry = f"{user.name} - {platform_str}"
                 
-                # Add to appropriate list based on status
                 if app['status'] == 'pending':
                     pending.append(entry)
                 elif app['status'] == 'approved':
@@ -535,13 +512,26 @@ class ModApplications(commands.Cog):
         try:
             channel_id = await self.config.guild(guild).app_channel()
             if not channel_id:
-                await user.send("Error: Application channel not configured.")
+                await user.send("Error: Application channel not configured. Please contact an administrator.")
                 return
 
             forum = guild.get_channel(channel_id)
             if not forum:
-                await user.send("Error: Could not find application channel.")
+                await user.send("Error: Could not find application channel. Please contact an administrator.")
                 return
+
+            # Get selected platforms
+            selected_platforms = []
+            if 'Discord' in self.selected_platforms:
+                selected_platforms.append('Discord')
+            if 'Twitch' in self.selected_platforms:
+                selected_platforms.append('Twitch')
+            if 'YouTube' in self.selected_platforms:
+                selected_platforms.append('YouTube')
+            if 'TikTok' in self.selected_platforms:
+                selected_platforms.append('TikTok')
+            if 'Kick' in self.selected_platforms:
+                selected_platforms.append('Kick')
 
             # Create the embed
             embed = discord.Embed(
@@ -551,10 +541,18 @@ class ModApplications(commands.Cog):
                 timestamp=datetime.now()
             )
 
-            # Add all answers to the embed
+            # Add platforms field
+            embed.add_field(
+                name="Platforms",
+                value=' & '.join(selected_platforms),
+                inline=False
+            )
+
+            # Add all other answers to the embed
             for question_id, answer in answers.items():
-                field_name = question_id.replace("_", " ").title()
-                embed.add_field(name=field_name, value=answer, inline=False)
+                if question_id != 'platforms':  # Skip platforms as we added it separately
+                    field_name = question_id.replace("_", " ").title()
+                    embed.add_field(name=field_name, value=answer, inline=False)
 
             # Create a new forum post
             thread_with_message = await forum.create_thread(
@@ -572,10 +570,10 @@ class ModApplications(commands.Cog):
                 apps[str(thread.id)] = {
                     "user_id": user.id,
                     "answers": answers,
+                    "platforms": selected_platforms,  # Store platforms list directly
                     "status": "pending",
                     "timestamp": datetime.now().isoformat(),
-                    "message_id": message.id,
-                    "thread_id": thread.id
+                    "message_id": message.id
                 }
 
             # Update the status overview
