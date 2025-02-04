@@ -120,7 +120,8 @@ class ModApplications(commands.Cog):
             "mod_role": None,  # New: Role for moderator reviewers
             "category_id": None,  # New: Category for application channels
             "info_channel": None,  # New: Info channel for application button
-            "status_message": None  # New: Status message ID for the status overview thread
+            "status_thread_id": None,  # New: Thread ID for the status overview
+            "status_message_id": None  # New: Message ID for the status overview
         }
         
         self.config.register_guild(**default_guild)
@@ -249,16 +250,17 @@ class ModApplications(commands.Cog):
                 inline=False
             )
 
-            # Create the status overview thread
+            # Create the status overview thread and store its message ID
             thread_with_message = await apps_forum.create_thread(
                 name="📊 Application Status Overview",
-                content="",  # No content to avoid system message
+                content="Status overview for all applications:",
                 embed=status_embed,
                 applied_tags=[discord.utils.get(apps_forum.available_tags, name="Pending")]
             )
             
-            # Store the status message ID in config
-            await self.config.guild(ctx.guild).status_message.set(thread_with_message.message.id)
+            # Store both thread and message IDs
+            await self.config.guild(ctx.guild).status_thread_id.set(thread_with_message.thread.id)
+            await self.config.guild(ctx.guild).status_message_id.set(thread_with_message.message.id)
             
             await ctx.send(
                 "📝 Moderator applications are now open!\n"
@@ -389,12 +391,22 @@ class ModApplications(commands.Cog):
     async def update_status_embed(self, guild):
         """Updates the status tracking embed in the forum."""
         try:
-            channel_id = await self.config.guild(guild).app_channel()
-            if not channel_id:
+            # Get stored thread and message IDs
+            thread_id = await self.config.guild(guild).status_thread_id()
+            message_id = await self.config.guild(guild).status_message_id()
+            
+            if not thread_id or not message_id:
+                print("No stored thread or message ID")
                 return
-                
-            forum = guild.get_channel(channel_id)
+
+            forum = guild.get_channel(await self.config.guild(guild).app_channel())
             if not forum:
+                return
+
+            # Get the status thread
+            thread = forum.get_thread(thread_id)
+            if not thread:
+                print("Could not find status thread")
                 return
 
             # Get all applications
@@ -404,14 +416,14 @@ class ModApplications(commands.Cog):
             user_latest_app = {}
             
             # First pass: find the latest application for each user
-            for thread_id, app in applications.items():
+            for app_id, app in applications.items():
                 user_id = app['user_id']
                 timestamp = app.get('timestamp', '0')
                 
                 if user_id not in user_latest_app or timestamp > user_latest_app[user_id]['timestamp']:
                     user_latest_app[user_id] = app
-            
-            # Sort applications by status using only the latest application per user
+
+            # Sort applications by status
             pending = []
             approved = []
             denied = []
@@ -420,20 +432,9 @@ class ModApplications(commands.Cog):
                 user = guild.get_member(app['user_id'])
                 if not user:
                     continue
-                
-                # Get the selected platforms
-                selected_platforms = []
-                if app['answers'].get('discord_username'):
-                    selected_platforms.append('Discord')
-                if app['answers'].get('twitch_username'):
-                    selected_platforms.append('Twitch')
-                if app['answers'].get('youtube_username'):
-                    selected_platforms.append('YouTube')
-                if app['answers'].get('tiktok_username'):
-                    selected_platforms.append('TikTok')
-                if app['answers'].get('kick_username'):
-                    selected_platforms.append('Kick')
-                
+
+                # Get selected platforms
+                selected_platforms = app['answers'].get('platforms', [])
                 platform_str = ' & '.join(selected_platforms) if selected_platforms else 'Unknown'
                 entry = f"{user.name} - {platform_str}"
                 
@@ -469,16 +470,21 @@ class ModApplications(commands.Cog):
                 inline=False
             )
 
-            # Find and update the status message
-            for thread in forum.threads:
-                if thread.name == "📊 Application Status Overview":
-                    async for message in thread.history(limit=1):
-                        if message.author == guild.me and not message.flags.system:
-                            await message.edit(embed=embed)
-                            return
+            try:
+                # Get and update the status message
+                message = await thread.fetch_message(message_id)
+                await message.edit(embed=embed)
+                print(f"Updated status message with {len(pending)} pending applications")
+            except discord.NotFound:
+                # If message not found, create a new one
+                new_message = await thread.send(embed=embed)
+                await self.config.guild(guild).status_message_id.set(new_message.id)
+                print("Created new status message")
 
         except Exception as e:
             print(f"Error in update_status_embed: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     async def submit_application(self, guild, user, answers: Dict[str, str]):
         """Submit the completed application."""
