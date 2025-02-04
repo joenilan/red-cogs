@@ -400,20 +400,41 @@ class ModApplications(commands.Cog):
             # Get all applications
             applications = await self.config.guild(guild).applications()
             
-            # Sort applications by status
+            # Track latest application per user
+            user_latest_app = {}
+            
+            # First pass: find the latest application for each user
+            for thread_id, app in applications.items():
+                user_id = app['user_id']
+                timestamp = app.get('timestamp', '0')
+                
+                if user_id not in user_latest_app or timestamp > user_latest_app[user_id]['timestamp']:
+                    user_latest_app[user_id] = app
+            
+            # Sort applications by status using only the latest application per user
             pending = []
             approved = []
             denied = []
             
-            # Process each application
-            for thread_id, app in applications.items():
+            for app in user_latest_app.values():
                 user = guild.get_member(app['user_id'])
                 if not user:
                     continue
                 
-                # Get platforms from answers
-                platforms = app['answers'].get('platforms', [])
-                platform_str = ' & '.join(platforms)
+                # Get the selected platforms
+                selected_platforms = []
+                if app['answers'].get('discord_username'):
+                    selected_platforms.append('Discord')
+                if app['answers'].get('twitch_username'):
+                    selected_platforms.append('Twitch')
+                if app['answers'].get('youtube_username'):
+                    selected_platforms.append('YouTube')
+                if app['answers'].get('tiktok_username'):
+                    selected_platforms.append('TikTok')
+                if app['answers'].get('kick_username'):
+                    selected_platforms.append('Kick')
+                
+                platform_str = ' & '.join(selected_platforms) if selected_platforms else 'Unknown'
                 entry = f"{user.name} - {platform_str}"
                 
                 if app['status'] == 'pending':
@@ -448,20 +469,13 @@ class ModApplications(commands.Cog):
                 inline=False
             )
 
-            # Find the status thread and our message
-            status_message_id = await self.config.guild(guild).status_message()
-            
+            # Find and update the status message
             for thread in forum.threads:
                 if thread.name == "📊 Application Status Overview":
-                    try:
-                        message = await thread.fetch_message(status_message_id)
-                        await message.edit(embed=embed)
-                        return
-                    except discord.NotFound:
-                        # If message not found, create a new one
-                        new_message = await thread.send(embed=embed)
-                        await self.config.guild(guild).status_message.set(new_message.id)
-                        return
+                    async for message in thread.history(limit=1):
+                        if message.author == guild.me and not message.flags.system:
+                            await message.edit(embed=embed)
+                            return
 
         except Exception as e:
             print(f"Error in update_status_embed: {str(e)}")
