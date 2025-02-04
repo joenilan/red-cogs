@@ -520,12 +520,9 @@ class ModApplications(commands.Cog):
                 await user.send("Error: Could not find application channel. Please contact an administrator.")
                 return
 
-            # Get selected platforms from the answers
-            selected_platforms = []
-            for platform in ['Discord', 'Twitch', 'YouTube', 'TikTok', 'Kick']:
-                platform_key = f"{platform.lower()}_username"
-                if platform_key in answers:
-                    selected_platforms.append(platform)
+            # Get platforms from the answers
+            platforms = answers.get('platforms', [])
+            platform_str = ' & '.join(platforms) if platforms else 'None'
 
             # Create the embed
             embed = discord.Embed(
@@ -536,7 +533,6 @@ class ModApplications(commands.Cog):
             )
 
             # Add platforms field
-            platform_str = ' & '.join(selected_platforms) if selected_platforms else 'None'
             embed.add_field(
                 name="Platforms",
                 value=platform_str,
@@ -545,7 +541,7 @@ class ModApplications(commands.Cog):
 
             # Add all other answers to the embed
             for question_id, answer in answers.items():
-                if not question_id.endswith('_username'):  # Skip platform usernames as we added them separately
+                if question_id != 'platforms':  # Skip platforms as we added it separately
                     field_name = question_id.replace("_", " ").title()
                     embed.add_field(name=field_name, value=answer, inline=False)
 
@@ -565,7 +561,7 @@ class ModApplications(commands.Cog):
                 apps[str(thread.id)] = {
                     "user_id": user.id,
                     "answers": answers,
-                    "platforms": selected_platforms,  # Store platforms list directly
+                    "platforms": platforms,  # Store the platform list directly
                     "status": "pending",
                     "timestamp": datetime.now().isoformat(),
                     "message_id": message.id
@@ -573,8 +569,6 @@ class ModApplications(commands.Cog):
 
             # Update the status overview
             await self.update_status_embed(guild)
-            
-            await user.send("Your application has been submitted! You will be notified when it has been reviewed.")
 
         except Exception as e:
             print(f"Error in submit_application: {str(e)}")
@@ -613,13 +607,6 @@ class ApplicationTypeView(discord.ui.View):
         self.cog = cog
         self.user = user
         self.guild = guild
-        self.platforms = {
-            "discord": "Discord",
-            "twitch": "Twitch",
-            "youtube": "YouTube",
-            "tiktok": "TikTok",
-            "kick": "Kick"
-        }
         self.selected_platforms = []
 
     def disable_all_items(self):
@@ -645,15 +632,11 @@ class ApplicationTypeView(discord.ui.View):
             await interaction.response.send_message("This is not your application!", ephemeral=True)
             return
 
-        self.selected_platforms = select.values
-        # Just acknowledge the selection without sending a new message
+        # Store the selected platforms with proper capitalization
+        self.selected_platforms = [p.title() for p in select.values]
         await interaction.response.defer()
 
-    @discord.ui.button(
-        label="Submit",
-        style=discord.ButtonStyle.green,
-        custom_id="submit_platforms"  # Add custom_id for persistence
-    )
+    @discord.ui.button(label="Submit", style=discord.ButtonStyle.primary, custom_id="submit_platforms")
     async def submit_platforms(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user != self.user:
             await interaction.response.send_message("This is not your application!", ephemeral=True)
@@ -664,98 +647,26 @@ class ApplicationTypeView(discord.ui.View):
             return
 
         try:
-            # Acknowledge the interaction first
             await interaction.response.defer(ephemeral=True)
-            
-            # Disable the view
             self.disable_all_items()
             await interaction.message.edit(view=self)
-            
-            # Send confirmation
             await interaction.followup.send("Starting your application process...", ephemeral=True)
             
-            # Start single application process
-            if await self.start_application(interaction):
+            # Pass the selected platforms to the application process
+            answers = {'platforms': self.selected_platforms}
+            if await self.start_application(interaction, answers):
                 await interaction.user.send("Application completed! Thank you for applying.")
             
         except Exception as e:
             await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
 
-    async def start_application(self, interaction: discord.Interaction) -> bool:
+    async def start_application(self, interaction: discord.Interaction, initial_answers: dict) -> bool:
         try:
-            answers = {}
-            
-            # Set platforms FIRST before asking any questions
-            platform_names = [self.platforms[p] for p in self.selected_platforms]
-            answers["platforms"] = ", ".join(platform_names)
-            
-            # Define base questions directly
-            base_questions = [
-                {
-                    "id": "age",
-                    "question": "Are you over the age of 16? (Yes/No)",
-                    "required": True,
-                    "valid_responses": ["yes", "no"]
-                },
-                {
-                    "id": "timezone",
-                    "question": "What timezone are you in? (e.g. EST, PST, GMT)",
-                    "required": True
-                },
-                {
-                    "id": "experience",
-                    "question": "Do you have any previous moderation experience? If yes, please describe.",
-                    "required": False
-                },
-                {
-                    "id": "motivation",
-                    "question": "Why do you want to be a moderator?",
-                    "required": True
-                },
-                {
-                    "id": "activity",
-                    "question": "How active are you in our community? (Rate 1-5)",
-                    "required": True,
-                    "valid_responses": ["1", "2", "3", "4", "5"]
-                },
-                {
-                    "id": "tos",
-                    "question": "Do you agree to follow our Terms of Service? (Yes/No)",
-                    "required": True,
-                    "valid_responses": ["yes", "no"]
-                }
-            ]
-            
-            # Define platform questions directly
-            platform_questions = {
-                "discord": [
-                    {
-                        "id": "discord_username",
-                        "question": "What is your Discord Username?",
-                        "required": True
-                    },
-                    {
-                        "id": "discord_experience",
-                        "question": "How long have you been using Discord?",
-                        "required": True
-                    }
-                ],
-                "twitch": [
-                    {
-                        "id": "twitch_username",
-                        "question": "What is your Twitch username?",
-                        "required": True
-                    },
-                    {
-                        "id": "twitch_following",
-                        "question": "How long have you been following our Twitch channel?",
-                        "required": True
-                    }
-                ]
-            }
+            questions = await self.cog.config.guild(self.guild).base_questions()
+            answers = initial_answers.copy()  # Start with the platforms
             
             # Ask base questions first
-            for question in base_questions:
+            for question in questions:
                 answer = await self.ask_question(interaction, question["question"], question.get("valid_responses"))
                 if not self.validate_answer(question, answer):
                     return False
@@ -763,24 +674,22 @@ class ApplicationTypeView(discord.ui.View):
 
             # Ask platform-specific questions for each selected platform
             for platform in self.selected_platforms:
-                if platform in platform_questions:
-                    for question in platform_questions[platform]:
+                if platform in self.cog.config.guild(self.guild).platform_questions():
+                    for question in self.cog.config.guild(self.guild).platform_questions()[platform]:
                         answer = await self.ask_question(
                             interaction,
-                            f"[{self.platforms[platform]}] {question['question']}", 
+                            f"[{platform}] {question['question']}", 
                             question.get("valid_responses")
                         )
                         if not self.validate_answer(question, answer):
                             return False
                         answers[f"{platform}_{question['id']}"] = answer
 
-            # Submit the application through the cog
+            # Submit the application with the platforms included
             await self.cog.submit_application(self.guild, self.user, answers)
-            await interaction.followup.send("Application completed! Thank you for applying.", ephemeral=True)
             return True
             
         except Exception as e:
-            print(f"Debug - Error occurred: {str(e)}")
             await interaction.followup.send(f"An error occurred during the application: {str(e)}", ephemeral=True)
             return False
 
