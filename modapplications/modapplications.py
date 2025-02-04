@@ -520,18 +520,12 @@ class ModApplications(commands.Cog):
                 await user.send("Error: Could not find application channel. Please contact an administrator.")
                 return
 
-            # Get selected platforms
+            # Get selected platforms from the answers
             selected_platforms = []
-            if 'Discord' in self.selected_platforms:
-                selected_platforms.append('Discord')
-            if 'Twitch' in self.selected_platforms:
-                selected_platforms.append('Twitch')
-            if 'YouTube' in self.selected_platforms:
-                selected_platforms.append('YouTube')
-            if 'TikTok' in self.selected_platforms:
-                selected_platforms.append('TikTok')
-            if 'Kick' in self.selected_platforms:
-                selected_platforms.append('Kick')
+            for platform in ['Discord', 'Twitch', 'YouTube', 'TikTok', 'Kick']:
+                platform_key = f"{platform.lower()}_username"
+                if platform_key in answers:
+                    selected_platforms.append(platform)
 
             # Create the embed
             embed = discord.Embed(
@@ -542,15 +536,16 @@ class ModApplications(commands.Cog):
             )
 
             # Add platforms field
+            platform_str = ' & '.join(selected_platforms) if selected_platforms else 'None'
             embed.add_field(
                 name="Platforms",
-                value=' & '.join(selected_platforms),
+                value=platform_str,
                 inline=False
             )
 
             # Add all other answers to the embed
             for question_id, answer in answers.items():
-                if question_id != 'platforms':  # Skip platforms as we added it separately
+                if not question_id.endswith('_username'):  # Skip platform usernames as we added them separately
                     field_name = question_id.replace("_", " ").title()
                     embed.add_field(name=field_name, value=answer, inline=False)
 
