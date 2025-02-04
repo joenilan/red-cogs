@@ -427,34 +427,65 @@ class ModApplications(commands.Cog):
     async def update_status_embed(self, guild):
         """Updates the status tracking embed in the forum."""
         try:
-            print("Starting status update...")
-            channel_id = await self.config.guild(guild).app_channel()
-            if not channel_id:
+            # Get stored thread and message IDs
+            thread_id = await self.config.guild(guild).status_thread_id()
+            message_id = await self.config.guild(guild).status_message_id()
+            
+            if not thread_id or not message_id:
+                print("No stored thread or message ID")
                 return
-                
-            forum = guild.get_channel(channel_id)
+
+            forum = guild.get_channel(await self.config.guild(guild).app_channel())
             if not forum:
+                return
+
+            # Get the status thread
+            thread = forum.get_thread(thread_id)
+            if not thread:
+                print("Could not find status thread")
                 return
 
             # Get all applications
             applications = await self.config.guild(guild).applications()
-            print(f"Found applications: {applications}")
             
+            # Track latest application per user
+            user_latest_app = {}
+            
+            # First pass: find the latest application for each user
+            for app_id, app in applications.items():
+                user_id = app['user_id']
+                timestamp = app.get('timestamp', '0')
+                
+                if user_id not in user_latest_app or timestamp > user_latest_app[user_id]['timestamp']:
+                    user_latest_app[user_id] = app
+
             # Sort applications by status
             pending = []
             approved = []
             denied = []
             
-            for thread_id, app in applications.items():
+            for app in user_latest_app.values():
                 user = guild.get_member(app['user_id'])
                 if not user:
                     continue
+
+                # Get selected platforms from the answers
+                selected_platforms = []
+                if 'discord' in app['answers'].get('platforms', []):
+                    selected_platforms.append('Discord')
+                if 'twitch' in app['answers'].get('platforms', []):
+                    selected_platforms.append('Twitch')
+                if 'youtube' in app['answers'].get('platforms', []):
+                    selected_platforms.append('YouTube')
+                if 'tiktok' in app['answers'].get('platforms', []):
+                    selected_platforms.append('TikTok')
+                if 'kick' in app['answers'].get('platforms', []):
+                    selected_platforms.append('Kick')
+
+                platform_str = ' & '.join(selected_platforms) if selected_platforms else 'Unknown'
+                entry = f"{user.name} - {platform_str}"
                 
-                # Get selected platforms
-                platforms = app['answers'].get('platforms', [])
-                platform_str = ' & '.join(platforms)
-                entry = f"{user.mention} - {platform_str}"
-                
+                # Add to appropriate list based on status
                 if app['status'] == 'pending':
                     pending.append(entry)
                 elif app['status'] == 'approved':
@@ -487,37 +518,17 @@ class ModApplications(commands.Cog):
                 inline=False
             )
 
-            # Find the status thread
-            status_thread = None
-            for thread in forum.threads:
-                if "Application Status Overview" in thread.name:
-                    status_thread = thread
-                    break
-
-            if status_thread:
-                # Delete old status messages
-                async for message in status_thread.history(limit=10):
-                    if message.author == guild.me and not message.flags.system:
-                        try:
-                            await message.delete()
-                        except:
-                            pass
-
-                # Send new status message
-                await status_thread.send(embed=embed)
-            else:
-                # Create new status thread if it doesn't exist
-                await forum.create_thread(
-                    name="📊 Application Status Overview",
-                    content="",
-                    embed=embed,
-                    applied_tags=[discord.utils.get(forum.available_tags, name="Pending")]
-                )
+            try:
+                # Get and update the status message
+                message = await thread.fetch_message(message_id)
+                await message.edit(embed=embed)
+            except discord.NotFound:
+                # If message not found, create a new one
+                new_message = await thread.send(embed=embed)
+                await self.config.guild(guild).status_message_id.set(new_message.id)
 
         except Exception as e:
             print(f"Error in update_status_embed: {str(e)}")
-            import traceback
-            traceback.print_exc()
 
     async def submit_application(self, guild, user, answers: Dict[str, str]):
         """Submit the completed application."""
