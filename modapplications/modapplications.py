@@ -382,31 +382,66 @@ class ModApplications(commands.Cog):
 
     async def cog_load(self):
         """This is called when the cog is loaded."""
-        if not self.persistent_views_added:
-            self.bot.add_view(ApplicationStartView(self))
-            self.bot.add_view(ApplicationTypeView(self, None, None))
-            self.bot.add_view(ApplicationResponseView(self, None))
-            self.persistent_views_added = True
+        self.persistent_views_added = False
+        await self.cleanup_old_applications()
+        self.bot.add_view(ApplicationStartView(self))
+        self.bot.add_view(ApplicationTypeView(self, None, None))
+        self.bot.add_view(ApplicationResponseView(self, None))
+        self.persistent_views_added = True
+
+    async def cleanup_old_applications(self):
+        """Clean up old applications from the config."""
+        try:
+            for guild in self.bot.guilds:
+                # Get all applications for this guild
+                applications = await self.config.guild(guild).applications()
+                if not applications:
+                    continue
+
+                # Get the applications channel
+                channel_id = await self.config.guild(guild).app_channel()
+                if not channel_id:
+                    continue
+                    
+                forum = guild.get_channel(channel_id)
+                if not forum:
+                    continue
+
+                # Track which applications to keep
+                valid_applications = {}
+                
+                # Check each application
+                for thread_id, app in applications.items():
+                    # Check if the thread still exists
+                    thread = forum.get_thread(int(thread_id))
+                    if not thread:
+                        continue
+                        
+                    # Check if the user is still in the guild
+                    user = guild.get_member(app['user_id'])
+                    if not user:
+                        continue
+                        
+                    # Keep valid applications
+                    valid_applications[thread_id] = app
+
+                # Update the config with only valid applications
+                await self.config.guild(guild).applications.set(valid_applications)
+                
+                print(f"Cleaned up applications for guild {guild.name}: {len(applications)} -> {len(valid_applications)}")
+
+        except Exception as e:
+            print(f"Error cleaning up applications: {str(e)}")
 
     async def update_status_embed(self, guild):
         """Updates the status tracking embed in the forum."""
         try:
-            # Get stored thread and message IDs
-            thread_id = await self.config.guild(guild).status_thread_id()
-            message_id = await self.config.guild(guild).status_message_id()
-            
-            if not thread_id or not message_id:
-                print("No stored thread or message ID")
+            channel_id = await self.config.guild(guild).app_channel()
+            if not channel_id:
                 return
-
-            forum = guild.get_channel(await self.config.guild(guild).app_channel())
+                
+            forum = guild.get_channel(channel_id)
             if not forum:
-                return
-
-            # Get the status thread
-            thread = forum.get_thread(thread_id)
-            if not thread:
-                print("Could not find status thread")
                 return
 
             # Get all applications
@@ -416,13 +451,13 @@ class ModApplications(commands.Cog):
             user_latest_app = {}
             
             # First pass: find the latest application for each user
-            for app_id, app in applications.items():
+            for thread_id, app in applications.items():
                 user_id = app['user_id']
                 timestamp = app.get('timestamp', '0')
                 
                 if user_id not in user_latest_app or timestamp > user_latest_app[user_id]['timestamp']:
                     user_latest_app[user_id] = app
-
+            
             # Sort applications by status
             pending = []
             approved = []
@@ -433,10 +468,29 @@ class ModApplications(commands.Cog):
                 if not user:
                     continue
 
-                # Get selected platforms
-                selected_platforms = app['answers'].get('platforms', [])
-                platform_str = ' & '.join(selected_platforms) if selected_platforms else 'Unknown'
-                entry = f"{user.name} - {platform_str}"
+                # Get selected platforms and clean up the format
+                platforms = app['answers'].get('platforms', [])
+                if isinstance(platforms, str):
+                    # If platforms is a string, split and clean it
+                    platforms = [p.strip() for p in platforms.split(',')]
+                
+                # Clean up platform names
+                clean_platforms = []
+                for platform in platforms:
+                    platform = platform.lower()
+                    if 'discord' in platform:
+                        clean_platforms.append('Discord')
+                    if 'twitch' in platform:
+                        clean_platforms.append('Twitch')
+                    if 'youtube' in platform:
+                        clean_platforms.append('YouTube')
+                    if 'tiktok' in platform:
+                        clean_platforms.append('TikTok')
+                    if 'kick' in platform:
+                        clean_platforms.append('Kick')
+                
+                platform_str = ' & '.join(clean_platforms) if clean_platforms else 'Unknown'
+                entry = f"{user.mention} - {platform_str}"
                 
                 if app['status'] == 'pending':
                     pending.append(entry)
@@ -470,21 +524,16 @@ class ModApplications(commands.Cog):
                 inline=False
             )
 
-            try:
-                # Get and update the status message
-                message = await thread.fetch_message(message_id)
-                await message.edit(embed=embed)
-                print(f"Updated status message with {len(pending)} pending applications")
-            except discord.NotFound:
-                # If message not found, create a new one
-                new_message = await thread.send(embed=embed)
-                await self.config.guild(guild).status_message_id.set(new_message.id)
-                print("Created new status message")
+            # Find and update the status message
+            for thread in forum.threads:
+                if thread.name == "📊 Application Status Overview":
+                    async for message in thread.history(limit=1):
+                        if message.author == guild.me and not message.flags.system:
+                            await message.edit(embed=embed)
+                            return
 
         except Exception as e:
             print(f"Error in update_status_embed: {str(e)}")
-            import traceback
-            traceback.print_exc()
 
     async def submit_application(self, guild, user, answers: Dict[str, str]):
         """Submit the completed application."""
