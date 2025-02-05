@@ -461,7 +461,7 @@ class ModApplications(commands.Cog):
                 # Get platforms directly from stored data
                 platforms = app.get('platforms', [])
                 platform_str = ' & '.join(platforms) if platforms else 'Unknown'
-                entry = f"{user.name} - {platform_str}"
+                entry = f"{user.mention} - {platform_str}"
                 
                 if app['status'] == 'pending':
                     pending.append(entry)
