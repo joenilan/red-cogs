@@ -672,10 +672,14 @@ class ApplicationTypeView(discord.ui.View):
                     return False
                 answers[question["id"]] = answer
 
+            # Get platform questions data
+            platform_questions = await self.cog.config.guild(self.guild).platform_questions()
+
             # Ask platform-specific questions for each selected platform
             for platform in self.selected_platforms:
-                if platform in self.cog.config.guild(self.guild).platform_questions():
-                    for question in self.cog.config.guild(self.guild).platform_questions()[platform]:
+                platform_lower = platform.lower()  # Convert to lowercase to match config keys
+                if platform_lower in platform_questions:
+                    for question in platform_questions[platform_lower]:
                         answer = await self.ask_question(
                             interaction,
                             f"[{platform}] {question['question']}", 
@@ -683,7 +687,7 @@ class ApplicationTypeView(discord.ui.View):
                         )
                         if not self.validate_answer(question, answer):
                             return False
-                        answers[f"{platform}_{question['id']}"] = answer
+                        answers[f"{platform_lower}_{question['id']}"] = answer
 
             # Submit the application with the platforms included
             await self.cog.submit_application(self.guild, self.user, answers)
