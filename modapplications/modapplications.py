@@ -460,7 +460,16 @@ class ModApplications(commands.Cog):
 
                 # Get platforms directly from stored data
                 platforms = app.get('platforms', [])
-                platform_str = ' & '.join(platforms) if platforms else 'Unknown'
+                if not platforms:
+                    platform_str = 'Unknown'
+                elif len(platforms) == 1:
+                    platform_str = platforms[0]
+                else:
+                    # Join all platforms except the last with commas
+                    platform_str = ", ".join(platforms[:-1])
+                    # Add the last platform with '& '
+                    platform_str = f"{platform_str} & {platforms[-1]}"
+                
                 entry = f"{user.mention} - {platform_str}"
                 
                 if app['status'] == 'pending':
