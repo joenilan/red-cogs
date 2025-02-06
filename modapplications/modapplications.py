@@ -529,9 +529,17 @@ class ModApplications(commands.Cog):
                 await user.send("Error: Could not find application channel. Please contact an administrator.")
                 return
 
-            # Get platforms from the answers
+            # Get platforms from the answers and format them properly
             platforms = answers.get('platforms', [])
-            platform_str = ' & '.join(platforms) if platforms else 'None'
+            if not platforms:
+                platform_str = 'None'
+            elif len(platforms) == 1:
+                platform_str = platforms[0]
+            else:
+                # Join all platforms except the last with commas
+                platform_str = ", ".join(platforms[:-1])
+                # Add the last platform with '& '
+                platform_str = f"{platform_str} & {platforms[-1]}"
 
             # Create the embed
             embed = discord.Embed(
@@ -570,7 +578,7 @@ class ModApplications(commands.Cog):
                 apps[str(thread.id)] = {
                     "user_id": user.id,
                     "answers": answers,
-                    "platforms": platforms,  # Store the platform list directly
+                    "platforms": platforms,
                     "status": "pending",
                     "timestamp": datetime.now().isoformat(),
                     "message_id": message.id
