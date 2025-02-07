@@ -493,25 +493,17 @@ class ApplicationModal(discord.ui.Modal, title="Tournament Application"):
         )
         self.add_item(self.rank)
         
-        self.platform = discord.ui.Select(
-            placeholder="Select your platform",
-            options=[
-                discord.SelectOption(label="PC", value="pc"),
-                discord.SelectOption(label="PlayStation", value="ps"),
-                discord.SelectOption(label="Xbox", value="xbox"),
-                discord.SelectOption(label="Switch", value="switch")
-            ]
+        self.platform = discord.ui.TextInput(
+            label="Platform",
+            placeholder="PC, PlayStation, Xbox, or Switch",
+            required=True
         )
         self.add_item(self.platform)
         
-        self.region = discord.ui.Select(
-            placeholder="Select your region",
-            options=[
-                discord.SelectOption(label="NA East", value="nae"),
-                discord.SelectOption(label="NA West", value="naw"),
-                discord.SelectOption(label="EU", value="eu"),
-                discord.SelectOption(label="Other", value="other")
-            ]
+        self.region = discord.ui.TextInput(
+            label="Region",
+            placeholder="NA East, NA West, EU, or Other",
+            required=True
         )
         self.add_item(self.region)
 
@@ -532,8 +524,8 @@ class ApplicationModal(discord.ui.Modal, title="Tournament Application"):
         )
         embed.add_field(name="Epic ID", value=self.epic_id.value)
         embed.add_field(name="Rank", value=self.rank.value)
-        embed.add_field(name="Platform", value=self.platform.values[0])
-        embed.add_field(name="Region", value=self.region.values[0])
+        embed.add_field(name="Platform", value=self.platform.value)
+        embed.add_field(name="Region", value=self.region.value)
         embed.set_author(name=interaction.user.name, icon_url=interaction.user.avatar.url)
         
         # Add review buttons
@@ -710,6 +702,75 @@ class SetupModal(discord.ui.Modal, title="Tournament Setup"):
             required=True
         )
         self.add_item(self.duration)
+
+class DenialReasonModal(discord.ui.Modal, title="Application Denial"):
+    def __init__(self, cog, applicant_id):
+        super().__init__()
+        self.cog = cog
+        self.applicant_id = applicant_id
+        
+        self.reason = discord.ui.TextInput(
+            label="Denial Reason",
+            placeholder="Enter the reason for denying this application",
+            style=discord.TextStyle.paragraph,
+            required=True
+        )
+        self.add_item(self.reason)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        thread = interaction.channel
+        # Update thread tags
+        await thread.edit(applied_tags=[tag for tag in thread.parent.available_tags if tag.name == "Denied"])
+        
+        # Send notifications
+        await thread.send(f"Application denied by {interaction.user.mention}\nReason: {self.reason.value}")
+        
+        member = interaction.guild.get_member(self.applicant_id)
+        if member:
+            try:
+                await member.send(f"Your tournament application has been denied.\nReason: {self.reason.value}")
+            except discord.HTTPException:
+                pass
+
+class TournamentPhaseScheduleModal(discord.ui.Modal):
+    def __init__(self, cog, phase):
+        super().__init__(title=f"Schedule {phase.title()} Phase")
+        self.cog = cog
+        self.phase = phase
+        
+        self.start_time = discord.ui.TextInput(
+            label="Start Time",
+            placeholder="YYYY-MM-DD HH:MM:SS",
+            required=True
+        )
+        self.add_item(self.start_time)
+        
+        self.duration = discord.ui.TextInput(
+            label="Duration (hours)",
+            placeholder="Enter duration in hours",
+            required=True
+        )
+        self.add_item(self.duration)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            start = datetime.fromisoformat(self.start_time.value).replace(tzinfo=timezone.utc)
+            duration = float(self.duration.value)
+            
+            embed = discord.Embed(
+                title=f"Tournament {self.phase.title()} Phase Scheduled",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="Start Time", value=f"<t:{int(start.timestamp())}:F>")
+            embed.add_field(name="Duration", value=f"{duration} hours")
+            
+            await interaction.response.send_message(embed=embed)
+            
+        except ValueError:
+            await interaction.response.send_message(
+                "Invalid time format or duration. Please use YYYY-MM-DD HH:MM:SS for time and a number for duration.",
+                ephemeral=True
+            )
 
 async def setup(bot):
     cog = ChampionsCircle(bot)
