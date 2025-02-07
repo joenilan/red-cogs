@@ -409,29 +409,31 @@ class ChampionsCircle(commands.Cog):
         embed.add_field(name="cchelp", value="Display this help message", inline=False)
         embed.add_field(name="list_champions", value="List current champions", inline=False)
 
-        # Admin commands
-        embed.add_field(name="Admin Commands", value="\u200b", inline=False)
-        embed.add_field(name="cc setup", value="Complete tournament setup and configuration", inline=False)
-        embed.add_field(name="setchampionschannel", value="Set the Champions Circle channel", inline=False)
-        embed.add_field(name="setapplicationduration", value="Set the duration for which applications remain open", inline=False)
-        embed.add_field(name="setchampionsrole", value="Set the Champions Circle role", inline=False)
-        embed.add_field(name="cc end", value="End the current tournament and reset the cog", inline=False)
-        embed.add_field(name="clearall", value="Clear all messages in the Champions Circle channel", inline=False)
+        # Setup and Configuration
+        embed.add_field(name="Setup Commands", value="\u200b", inline=False)
+        embed.add_field(name="cc setup init", value="Initialize tournament system", inline=False)
+        embed.add_field(name="cc setup title", value="Set tournament title", inline=False)
+        embed.add_field(name="cc setup description", value="Set tournament description", inline=False)
+        embed.add_field(name="cc setup time", value="Set tournament time (YYYY-MM-DD HH:MM:SS)", inline=False)
+        embed.add_field(name="cc setup role", value="Set champions role", inline=False)
+        embed.add_field(name="cc setup duration", value="Set application duration in days", inline=False)
+
+        # Tournament Management
+        embed.add_field(name="Tournament Commands", value="\u200b", inline=False)
+        embed.add_field(name="cc start", value="Start tournament and open applications", inline=False)
+        embed.add_field(name="cc end", value="End tournament and cleanup", inline=False)
+        embed.add_field(name="clearall", value="Clear all messages in tournament channel", inline=False)
+
+        # Question Management
+        embed.add_field(name="Question Commands", value="\u200b", inline=False)
+        embed.add_field(name="cc questions add", value="Add application question", inline=False)
+        embed.add_field(name="cc questions remove", value="Remove question by index", inline=False)
+        embed.add_field(name="cc questions list", value="List all questions", inline=False)
+
+        # Utility Commands
+        embed.add_field(name="Utility Commands", value="\u200b", inline=False)
+        embed.add_field(name="championssettings", value="Display current settings", inline=False)
         embed.add_field(name="test_role_assign", value="Test role assignment", inline=False)
-        embed.add_field(name="questions add", value="Add a tournament application question", inline=False)
-        embed.add_field(name="questions remove", value="Remove a tournament application question by its index", inline=False)
-        embed.add_field(name="questions list", value="List all tournament application questions", inline=False)
-
-        # Tournament management commands
-        embed.add_field(name="Tournament Management", value="\u200b", inline=False)
-        embed.add_field(name="cc start", value="Start the tournament and open applications", inline=False)
-        embed.add_field(name="cc end", value="End the current tournament and reset the cog", inline=False)
-
-        # Question management commands
-        embed.add_field(name="Question Management", value="\u200b", inline=False)
-        embed.add_field(name="questions add", value="Add a tournament application question", inline=False)
-        embed.add_field(name="questions remove", value="Remove a tournament application question by its index", inline=False)
-        embed.add_field(name="questions list", value="List all tournament application questions", inline=False)
 
         await ctx.send(embed=embed)
 
