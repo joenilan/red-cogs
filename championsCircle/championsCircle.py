@@ -52,83 +52,113 @@ class ChampionsCircle(commands.Cog):
     @commands.command(name="ccsetup")
     @commands.guild_only()
     @commands.admin_or_permissions(administrator=True)
-    async def ccsetup(self, ctx, action: str = None, *, value: str = None):
-        """Setup tournament (init/title/description/time/role/duration)
+    async def ccsetup(self, ctx):
+        """Initialize and setup the tournament system"""
         
-        Examples:
-        - [p]ccsetup init
-        - [p]ccsetup title My Tournament
-        - [p]ccsetup time 2024-03-20 18:00
-        - [p]ccsetup role @Champions
-        - [p]ccsetup duration 7
-        """
-        if not action:
-            await ctx.send_help(ctx.command)
-            return
-
-        if action == "init":
-            # Create forum channel
-            forum_channel = await ctx.guild.create_forum(
-                name="tournament-applications",
-                topic="Tournament Applications",
-                reason="Tournament setup"
-            )
+        # Create forum channel
+        forum_channel = await ctx.guild.create_forum(
+            name="tournament-applications",
+            topic="Tournament Applications",
+            reason="Tournament setup"
+        )
+        
+        # Set up forum tags
+        tags = [
+            discord.ForumTag(name="Pending", emoji="🔵"),
+            discord.ForumTag(name="Approved", emoji="✅"),
+            discord.ForumTag(name="Denied", emoji="❌"),
+            discord.ForumTag(name="Cancelled", emoji="⚠️")
+        ]
+        await forum_channel.edit(available_tags=tags)
+        
+        # Create announcement channel
+        announcement_channel = await ctx.guild.create_text_channel(
+            name="tournament-announcements",
+            topic="Tournament Announcements"
+        )
+        
+        # Save channels to config
+        await self.config.guild(ctx.guild).champions_forum.set(forum_channel.id)
+        await self.config.guild(ctx.guild).champions_channel.set(announcement_channel.id)
+        
+        # Create role selection view
+        class RoleSelect(discord.ui.RoleSelect):
+            def __init__(self):
+                super().__init__(placeholder="Select Champions Role", min_values=1, max_values=1)
             
-            # Set up forum tags
-            tags = [
-                discord.ForumTag(name="Pending", emoji="🔵"),
-                discord.ForumTag(name="Approved", emoji="✅"),
-                discord.ForumTag(name="Denied", emoji="❌"),
-                discord.ForumTag(name="Cancelled", emoji="⚠️")
-            ]
-            await forum_channel.edit(available_tags=tags)
+            async def callback(self, interaction: discord.Interaction):
+                role = self.values[0]
+                await self.view.cog.config.guild(interaction.guild).champions_role_id.set(role.id)
+                await interaction.response.send_modal(SetupModal())
+
+        class RoleView(discord.ui.View):
+            def __init__(self, cog):
+                super().__init__()
+                self.cog = cog
+                self.add_item(RoleSelect())
+
+        # Start setup process
+        await ctx.send(
+            "Let's set up your tournament! First, select the Champions role:",
+            view=RoleView(self)
+        )
+
+    async def process_setup(self, interaction: discord.Interaction, modal: SetupModal):
+        """Process the setup modal submission"""
+        try:
+            # Set tournament title and description
+            await self.config.guild(interaction.guild).tourney_title.set(modal.title.value)
+            await self.config.guild(interaction.guild).tourney_description.set(modal.description.value)
             
-            await self.config.guild(ctx.guild).champions_forum.set(forum_channel.id)
-            await ctx.send("Tournament system initialized!")
-            return
-
-        if not value:
-            await ctx.send("Value is required for this action!")
-            return
-
-        if action == "title":
-            await self.config.guild(ctx.guild).tourney_title.set(value)
-            msg = f"Tournament title set to: {value}"
-        
-        elif action == "description":
-            await self.config.guild(ctx.guild).tourney_description.set(value)
-            msg = f"Tournament description set to: {value}"
-        
-        elif action == "time":
+            # Set tournament time
             try:
-                tourney_time = datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+                tourney_time = datetime.fromisoformat(modal.time.value).replace(tzinfo=timezone.utc)
                 timestamp = int(tourney_time.timestamp())
-                await self.config.guild(ctx.guild).tourney_time.set(timestamp)
-                msg = f"Tournament time set to: <t:{timestamp}:F>"
+                await self.config.guild(interaction.guild).tourney_time.set(timestamp)
             except ValueError:
-                await ctx.send("Invalid time format. Please use YYYY-MM-DD HH:MM:SS")
+                await interaction.followup.send("Invalid time format. Please use YYYY-MM-DD HH:MM:SS", ephemeral=True)
                 return
-
-        elif action == "role":
+            
+            # Set application duration
             try:
-                role = await commands.RoleConverter().convert(ctx, value)
-                await self.config.guild(ctx.guild).champions_role_id.set(role.id)
-                msg = f"Champions role set to: {role.mention}"
-            except commands.RoleNotFound:
-                await ctx.send("Role not found!")
-                return
-
-        elif action == "duration":
-            try:
-                days = int(value)
-                await self.config.guild(ctx.guild).application_duration.set(days)
-                msg = f"Application duration set to: {days} days"
+                days = int(modal.duration.value)
+                await self.config.guild(interaction.guild).application_duration.set(days)
             except ValueError:
-                await ctx.send("Please provide a valid number of days")
+                await interaction.followup.send("Invalid duration. Please enter a number", ephemeral=True)
                 return
-
-        await ctx.send(msg)
-        await self.update_embed(ctx.guild)
+            
+            # Send success message
+            embed = discord.Embed(
+                title="Tournament Setup Complete",
+                color=discord.Color.green(),
+                description="Your tournament has been configured with the following settings:"
+            )
+            embed.add_field(name="Title", value=modal.title.value)
+            embed.add_field(name="Description", value=modal.description.value)
+            embed.add_field(name="Time", value=f"<t:{timestamp}:F>")
+            embed.add_field(name="Application Duration", value=f"{days} days")
+            embed.add_field(name="Channels Created", value=f"✅ Forum Channel\n✅ Announcement Channel")
+            
+            role = interaction.guild.get_role(await self.config.guild(interaction.guild).champions_role_id())
+            embed.add_field(name="Champions Role", value=role.mention if role else "Not found")
+            
+            await interaction.response.send_message(embed=embed)
+            
+            # Add start tournament button
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(
+                label="Start Tournament",
+                style=discord.ButtonStyle.green,
+                custom_id="start_tournament"
+            ))
+            await interaction.followup.send("Ready to begin? Click below to start the tournament:", view=view)
+            
+        except Exception as e:
+            self.logger.error(f"Error in setup process: {str(e)}")
+            await interaction.followup.send(
+                "An error occurred during setup. Please try again or contact support.",
+                ephemeral=True
+            )
 
     @commands.command(name="ccstart")
     @commands.admin_or_permissions(administrator=True)
@@ -405,7 +435,7 @@ class ChampionsCircle(commands.Cog):
 
         # Setup and Configuration
         embed.add_field(name="Setup Commands", value="\u200b", inline=False)
-        embed.add_field(name="ccsetup init", value="Initialize tournament system", inline=False)
+        embed.add_field(name="ccsetup", value="Initialize and setup the tournament system", inline=False)
         embed.add_field(name="ccsetup title", value="Set tournament title", inline=False)
         embed.add_field(name="ccsetup description", value="Set tournament description", inline=False)
         embed.add_field(name="ccsetup time", value="Set tournament time (YYYY-MM-DD HH:MM:SS)", inline=False)
@@ -668,6 +698,39 @@ class TournamentScheduleView(discord.ui.View):
         await interaction.response.send_modal(
             TournamentPhaseScheduleModal(self.cog, select.values[0])
         )
+
+class SetupModal(discord.ui.Modal, title="Tournament Setup"):
+    def __init__(self):
+        super().__init__()
+        
+        self.title = discord.ui.TextInput(
+            label="Tournament Title",
+            placeholder="Enter tournament title",
+            required=True
+        )
+        self.add_item(self.title)
+        
+        self.description = discord.ui.TextInput(
+            label="Tournament Description",
+            placeholder="Enter tournament description",
+            style=discord.TextStyle.paragraph,
+            required=True
+        )
+        self.add_item(self.description)
+        
+        self.time = discord.ui.TextInput(
+            label="Tournament Time",
+            placeholder="YYYY-MM-DD HH:MM:SS",
+            required=True
+        )
+        self.add_item(self.time)
+        
+        self.duration = discord.ui.TextInput(
+            label="Application Duration (days)",
+            placeholder="Enter number of days",
+            required=True
+        )
+        self.add_item(self.duration)
 
 async def setup(bot):
     cog = ChampionsCircle(bot)
