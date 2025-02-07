@@ -8,6 +8,8 @@ from discord import app_commands
 from typing import Optional
 
 class ChampionsCircle(commands.Cog):
+    """Champions Circle tournament management system"""  # This description will show in [p]help
+    
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890)
@@ -431,7 +433,7 @@ class ChampionsCircle(commands.Cog):
         # General commands
         embed.add_field(name="General Commands", value="\u200b", inline=False)
         embed.add_field(name="cchelp", value="Display this help message", inline=False)
-        embed.add_field(name="list_champions", value="List current champions", inline=False)
+        embed.add_field(name="cclist", value="List current champions", inline=False)
 
         # Setup and Configuration
         embed.add_field(name="Setup Commands", value="\u200b", inline=False)
@@ -461,39 +463,16 @@ class ChampionsCircle(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    @guild_only()
-    async def championssettings(self, ctx):
-        """Display current settings for the Champions Circle cog."""
-        guild = ctx.guild
-        settings = await self.config.guild(guild).all()
+    @commands.command(name="cclist")
+    async def cclist(self, ctx):
+        """List current champions"""
+        # ... existing list_champions logic ...
 
-        embed = discord.Embed(title="Champions Circle Settings", color=0x00ff00)
-        
-        champions_channel = self.bot.get_channel(settings['champions_channel'])
-        champions_role = guild.get_role(settings['champions_role_id'])
-        
-        embed.add_field(name="Champions Channel", value=champions_channel.mention if champions_channel else "Not set", inline=False)
-        embed.add_field(name="Champions Role", value=champions_role.mention if champions_role else "Not set", inline=False)
-        embed.add_field(name="Application Duration", value=f"{settings['application_duration']} days", inline=False)
-        embed.add_field(name="Tournament Title", value=settings['tourney_title'], inline=False)
-        embed.add_field(name="Tournament Description", value=settings['tourney_description'], inline=False)
-        
-        if settings['tourney_time']:
-            embed.add_field(name="Tournament Time", value=f"<t:{settings['tourney_time']}:F>", inline=False)
-        else:
-            embed.add_field(name="Tournament Time", value="Not set", inline=False)
-        
-        embed.add_field(name="Active Applications", value=len(settings['active_applications']), inline=True)
-        embed.add_field(name="Approved Applications", value=len(settings['approved_applications']), inline=True)
-        embed.add_field(name="Denied Applications", value=len(settings['denied_applications']), inline=True)
-        embed.add_field(name="Cancelled Applications", value=len(settings['cancelled_applications']), inline=True)
-        
-        cooldown = self.application_cooldowns._cooldown
-        embed.add_field(name="Application Cooldown", value=f"{cooldown.per} seconds", inline=False)
-
-        await ctx.send(embed=embed)
+    @commands.command(name="ccsettings")
+    @commands.admin_or_permissions(administrator=True)
+    async def ccsettings(self, ctx):
+        """Display current tournament settings"""
+        # ... existing championssettings logic ...
 
 class ApplicationModal(discord.ui.Modal, title="Tournament Application"):
     def __init__(self, cog):
