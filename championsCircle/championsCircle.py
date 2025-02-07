@@ -49,24 +49,18 @@ class ChampionsCircle(commands.Cog):
         self.logger.info(f"ChampionsCircle is ready!")
         self.bot.loop.create_task(self.close_expired_applications())
 
-    @commands.group(name="cc")
+    @commands.command(name="ccsetup")
     @commands.guild_only()
-    async def cc(self, ctx):
-        """Champions Circle tournament management"""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
-
-    @cc.group(name="setup")
     @commands.admin_or_permissions(administrator=True)
-    async def cc_setup(self, ctx, action: str = None, *, value: str = None):
+    async def ccsetup(self, ctx, action: str = None, *, value: str = None):
         """Setup tournament (init/title/description/time/role/duration)
         
         Examples:
-        - [p]cc setup init
-        - [p]cc setup title My Tournament
-        - [p]cc setup time 2024-03-20 18:00
-        - [p]cc setup role @Champions
-        - [p]cc setup duration 7
+        - [p]ccsetup init
+        - [p]ccsetup title My Tournament
+        - [p]ccsetup time 2024-03-20 18:00
+        - [p]ccsetup role @Champions
+        - [p]ccsetup duration 7
         """
         if not action:
             await ctx.send_help(ctx.command)
@@ -136,9 +130,9 @@ class ChampionsCircle(commands.Cog):
         await ctx.send(msg)
         await self.update_embed(ctx.guild)
 
-    @cc.command(name="start")
+    @commands.command(name="ccstart")
     @commands.admin_or_permissions(administrator=True)
-    async def cc_start(self, ctx):
+    async def ccstart(self, ctx):
         """Start the tournament and open applications"""
         if ctx.channel.id != await self.config.guild(ctx.guild).champions_channel():
             await ctx.send("This command can only be used in the Champions Circle channel.")
@@ -153,9 +147,9 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).champions_message_id.set(message.id)
         await self.update_embed(ctx.guild)
 
-    @cc.command(name="end")
+    @commands.command(name="ccend")
     @commands.admin_or_permissions(administrator=True)
-    async def cc_end(self, ctx):
+    async def ccend(self, ctx):
         """End the tournament and clean up"""
         if ctx.channel.id != await self.config.guild(ctx.guild).champions_channel():
             await ctx.send("This command can only be used in the Champions Circle channel.")
@@ -211,21 +205,21 @@ class ChampionsCircle(commands.Cog):
         # Send a temporary message that will be deleted after 10 seconds
         temp_msg = await channel.send("Tournament ended. Channel cleared, cog state reset, and application cooldowns reset. You can now use the tourney start command for a new tournament.", delete_after=10)
 
-    @cc.group(name="questions")
+    @commands.group(name="ccquestions")
     @commands.admin_or_permissions(administrator=True)
-    async def cc_questions(self, ctx):
+    async def ccquestions(self, ctx):
         """Manage tournament application questions"""
         if ctx.invoked_subcommand is None:
             await ctx.send_help(ctx.command)
 
-    @cc_questions.command(name="add")
+    @ccquestions.command(name="add")
     async def questions_add(self, ctx, *, question: str):
         """Add a tournament application question"""
         async with self.config.guild(ctx.guild).custom_questions() as questions:
             questions.append(question)
         await ctx.send(f"Added question: {question}")
 
-    @cc_questions.command(name="remove")
+    @ccquestions.command(name="remove")
     async def questions_remove(self, ctx, index: int):
         """Remove a tournament application question by its index"""
         async with self.config.guild(ctx.guild).custom_questions() as questions:
@@ -235,7 +229,7 @@ class ChampionsCircle(commands.Cog):
             else:
                 await ctx.send("Invalid question index!")
 
-    @cc_questions.command(name="list")
+    @ccquestions.command(name="list")
     async def questions_list(self, ctx):
         """List all tournament application questions"""
         questions = await self.config.guild(ctx.guild).custom_questions()
@@ -411,29 +405,29 @@ class ChampionsCircle(commands.Cog):
 
         # Setup and Configuration
         embed.add_field(name="Setup Commands", value="\u200b", inline=False)
-        embed.add_field(name="cc setup init", value="Initialize tournament system", inline=False)
-        embed.add_field(name="cc setup title", value="Set tournament title", inline=False)
-        embed.add_field(name="cc setup description", value="Set tournament description", inline=False)
-        embed.add_field(name="cc setup time", value="Set tournament time (YYYY-MM-DD HH:MM:SS)", inline=False)
-        embed.add_field(name="cc setup role", value="Set champions role", inline=False)
-        embed.add_field(name="cc setup duration", value="Set application duration in days", inline=False)
+        embed.add_field(name="ccsetup init", value="Initialize tournament system", inline=False)
+        embed.add_field(name="ccsetup title", value="Set tournament title", inline=False)
+        embed.add_field(name="ccsetup description", value="Set tournament description", inline=False)
+        embed.add_field(name="ccsetup time", value="Set tournament time (YYYY-MM-DD HH:MM:SS)", inline=False)
+        embed.add_field(name="ccsetup role", value="Set champions role", inline=False)
+        embed.add_field(name="ccsetup duration", value="Set application duration in days", inline=False)
 
         # Tournament Management
         embed.add_field(name="Tournament Commands", value="\u200b", inline=False)
-        embed.add_field(name="cc start", value="Start tournament and open applications", inline=False)
-        embed.add_field(name="cc end", value="End tournament and cleanup", inline=False)
-        embed.add_field(name="clearall", value="Clear all messages in tournament channel", inline=False)
+        embed.add_field(name="ccstart", value="Start tournament and open applications", inline=False)
+        embed.add_field(name="ccend", value="End tournament and cleanup", inline=False)
+        embed.add_field(name="ccclear", value="Clear all messages in tournament channel", inline=False)
 
         # Question Management
         embed.add_field(name="Question Commands", value="\u200b", inline=False)
-        embed.add_field(name="cc questions add", value="Add application question", inline=False)
-        embed.add_field(name="cc questions remove", value="Remove question by index", inline=False)
-        embed.add_field(name="cc questions list", value="List all questions", inline=False)
+        embed.add_field(name="ccquestions add", value="Add application question", inline=False)
+        embed.add_field(name="ccquestions remove", value="Remove question by index", inline=False)
+        embed.add_field(name="ccquestions list", value="List all questions", inline=False)
 
         # Utility Commands
         embed.add_field(name="Utility Commands", value="\u200b", inline=False)
-        embed.add_field(name="championssettings", value="Display current settings", inline=False)
-        embed.add_field(name="test_role_assign", value="Test role assignment", inline=False)
+        embed.add_field(name="ccsettings", value="Display current settings", inline=False)
+        embed.add_field(name="cctest", value="Test role assignment", inline=False)
 
         await ctx.send(embed=embed)
 
