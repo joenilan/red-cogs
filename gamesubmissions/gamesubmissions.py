@@ -258,7 +258,8 @@ class GameSubmissions(commands.Cog):
 
             submissions[game_name.lower()] = submission_data
             
-            await ctx.send(f"✅ Game submitted!")
+            # Debug output
+            await ctx.send(f"✅ Game submitted! Current submissions: {len(submissions)}")
             
             # Update the game list thread
             await self.update_game_list_channel(ctx.guild)
@@ -502,13 +503,22 @@ class GameSubmissions(commands.Cog):
                 inline=False
             )
 
-        # Find existing game list thread or create new one
+        # Find existing game list thread
         game_list_thread = None
-        async for thread in forum.archived_threads(limit=None):
+        
+        # Check active threads first
+        async for thread in forum.threads():
             if thread.name == "Game List":
-                await thread.edit(archived=False)
                 game_list_thread = thread
                 break
+                
+        # If not found in active threads, check archived threads
+        if not game_list_thread:
+            async for thread in forum.archived_threads(limit=None):
+                if thread.name == "Game List":
+                    await thread.edit(archived=False)
+                    game_list_thread = thread
+                    break
 
         if not game_list_thread:
             # Create new thread if none exists
@@ -518,7 +528,6 @@ class GameSubmissions(commands.Cog):
                 embed=embed,
                 applied_tags=[]
             )
-            # Pin the first message in the thread
             await thread.message.pin()
             game_list_thread = thread
         else:
