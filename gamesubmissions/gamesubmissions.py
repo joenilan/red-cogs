@@ -43,6 +43,7 @@ class GameSubmissions(commands.Cog):
             return None
 
         channels = await self.config.guild(ctx.guild).channels()
+        messages = await self.config.guild(ctx.guild).messages()
         
         try:
             # Create or get game forum
@@ -67,6 +68,26 @@ class GameSubmissions(commands.Cog):
                     available_tags=forum_tags
                 )
                 channels["game_forum"] = game_forum.id
+
+                # Create initial Game List thread
+                initial_embed = discord.Embed(
+                    title="📋 Submitted Games",
+                    description="All games currently in the submission pool",
+                    color=discord.Color.blue()
+                )
+                
+                thread = await game_forum.create_thread(
+                    name="Game List",
+                    content="Current list of submitted games",
+                    embed=initial_embed,
+                    applied_tags=[]
+                )
+                list_message = await thread.thread.send(embed=initial_embed)
+                await list_message.pin()
+                
+                # Store the thread and message IDs
+                messages["game_list_thread_id"] = thread.thread.id
+                messages["game_list_id"] = list_message.id
 
             # Create or get hall of fame channel
             hall_of_fame = None
@@ -103,6 +124,7 @@ class GameSubmissions(commands.Cog):
             return None
 
         await self.config.guild(ctx.guild).channels.set(channels)
+        await self.config.guild(ctx.guild).messages.set(messages)  # Save message IDs
         return {"game_forum": game_forum, "hall_of_fame": hall_of_fame}
 
     async def update_hall_of_fame(self, guild: discord.Guild):
