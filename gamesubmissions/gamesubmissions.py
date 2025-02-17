@@ -104,9 +104,9 @@ class GameSubmissions(commands.Cog):
                 }
 
                 hall_of_fame = await ctx.guild.create_text_channel(
-                    name="hall-of-fame",
+                    name="game-tracker",
                     category=category,
-                    topic="Winners and runner-ups from our game polls",
+                    topic="Current and completed community-chosen games",
                     overwrites=read_only_permissions
                 )
                 channels["hall_of_fame"] = hall_of_fame.id
@@ -135,11 +135,11 @@ class GameSubmissions(commands.Cog):
 
         winners = await self.config.guild(guild).winners()
         
-        # Create main winners embed
+        # Create main embed
         winners_embed = discord.Embed(
-            title="🏆 Hall of Fame",
-            description="Our community's chosen games",
-            color=discord.Color.gold()
+            title="🎮 Game Tracker",
+            description="Community-chosen games",
+            color=discord.Color.blue()
         )
         
         # Split winners into custom and regular
@@ -159,7 +159,7 @@ class GameSubmissions(commands.Cog):
         if regular_winners:
             latest_winner = regular_winners[-1]
             winners_embed.add_field(
-                name="Latest Winner",
+                name="Next Up",
                 value=f"**{latest_winner['game_name']}**\n"
                       f"Votes: {latest_winner['votes']}\n"
                       f"Date: {latest_winner['date']}",
@@ -169,12 +169,12 @@ class GameSubmissions(commands.Cog):
         # Add past winners section
         if len(regular_winners) > 1:
             past_winners = ""
-            for winner in reversed(regular_winners[:-1][-5:]):  # Last 5 winners excluding current
+            for winner in reversed(regular_winners[:-1][-5:]):
                 past_winners += f"**{winner['game_name']}** ({winner['date']}) - {winner['votes']} votes\n"
             
             winners_embed.add_field(
-                name="Past Champions",
-                value=past_winners or "No past winners yet",
+                name="Previously Played",
+                value=past_winners or "No completed games yet",
                 inline=False
             )
 
