@@ -132,11 +132,14 @@ class GameSubmissions(commands.Cog):
 
                 # Create forum tags
                 try:
-                    await submissions_forum.create_tag("Submitted", emoji="📥")
-                    await submissions_forum.create_tag("In Poll", emoji="🗳️")
-                    await submissions_forum.create_tag("Winner", emoji="🏆")
-                except AttributeError:
-                    # If create_tag is not available, we'll skip tag creation
+                    await submissions_forum.create_tags([
+                        discord.ForumTag(name="Submitted", emoji="📥"),
+                        discord.ForumTag(name="In Poll", emoji="🗳️"),
+                        discord.ForumTag(name="Winner", emoji="🏆")
+                    ])
+                except (AttributeError, discord.HTTPException) as e:
+                    # If create_tags is not available or fails, we'll skip tag creation
+                    await ctx.send(f"⚠️ Could not create forum tags: {str(e)}")
                     pass
             except discord.Forbidden:
                 await ctx.send("⚠️ Could not create forum channel - missing permissions")
