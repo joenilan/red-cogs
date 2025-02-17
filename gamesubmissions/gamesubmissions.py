@@ -253,24 +253,41 @@ class GameSubmissions(commands.Cog):
                 )
                 game_url = msg.content
 
-                # Ask if game is free or paid
-                await ctx.send("Is the game Free or Paid? (Type 'free' or 'paid')")
-                msg = await self.bot.wait_for(
-                    "message",
-                    timeout=30.0,
-                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel
-                )
-                is_paid = msg.content.lower() == 'paid'
-
-                game_price = None
-                if is_paid:
-                    await ctx.send("What's the current price of the game? (e.g., $19.99)")
+                # Ask if game is free or paid with validation
+                while True:
+                    await ctx.send("Is the game Free or Paid? (Type exactly 'Free' or 'Paid')")
                     msg = await self.bot.wait_for(
                         "message",
                         timeout=30.0,
                         check=lambda m: m.author == ctx.author and m.channel == ctx.channel
                     )
-                    game_price = msg.content
+                    if msg.content not in ['Free', 'Paid']:
+                        await ctx.send("❌ Please type exactly 'Free' or 'Paid'")
+                        continue
+                    is_paid = msg.content == 'Paid'
+                    break
+
+                game_price = None
+                if is_paid:
+                    while True:
+                        await ctx.send("What's the current price of the game? (Format: $9.99 or 9.99)")
+                        msg = await self.bot.wait_for(
+                            "message",
+                            timeout=30.0,
+                            check=lambda m: m.author == ctx.author and m.channel == ctx.channel
+                        )
+                        # Clean and validate price format
+                        price = msg.content.strip()
+                        if price.startswith('$'):
+                            price = price[1:]
+                        try:
+                            # Validate price is a valid number
+                            float(price)
+                            game_price = f"${price}"  # Store with $ prefix
+                            break
+                        except ValueError:
+                            await ctx.send("❌ Invalid price format. Please use format: $9.99 or 9.99")
+                            continue
 
                 # Create confirmation embed
                 confirm_embed = discord.Embed(
@@ -659,6 +676,10 @@ class GameSubmissions(commands.Cog):
             embed.add_field(name="🆓 Free Games", value="‾‾‾‾‾‾‾‾‾‾", inline=False)
             for game in free_games:
                 embed.add_field(**game)
+            
+            # Add extra spacing between sections
+            if paid_games:
+                embed.add_field(name="\u200b", value="\u200b", inline=False)  # Empty field for spacing
         
         # Add Paid Games section second
         if paid_games:
