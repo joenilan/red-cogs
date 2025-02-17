@@ -471,18 +471,62 @@ class GameSubmissions(commands.Cog):
         
         # Count reactions
         submissions = await self.config.guild(ctx.guild).submissions()
-        number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "��"]
         
+        # Count votes
         votes = []
         for i, (game_key, game) in enumerate(submissions.items()):
             if i >= len(number_emojis):
                 break
             reaction = discord.utils.get(poll_message.reactions, emoji=number_emojis[i])
-            count = reaction.count - 1 if reaction else 0  # Subtract 1 to exclude bot's reaction
+            count = reaction.count - 1 if reaction else 0
             votes.append((game["name"], count))
         
         # Sort by votes
         votes.sort(key=lambda x: x[1], reverse=True)
+        
+        # Check for ties
+        highest_votes = votes[0][1]
+        tied_winners = [game for game, vote_count in votes if vote_count == highest_votes]
+        
+        if len(tied_winners) > 1:
+            # Create tie-breaker poll
+            tie_embed = discord.Embed(
+                title="🎮 Tie-Breaker Poll",
+                description="We have a tie! Vote again to determine the winner.\nPoll closes in 24 hours.",
+                color=discord.Color.orange(),
+                timestamp=datetime.now()
+            )
+            
+            for game_name in tied_winners:
+                game_data = next(game for game in submissions.values() if game["name"] == game_name)
+                price_info = f" - {game_data['price']}" if game_data.get('price') else ""
+                type_info = "Paid" if game_data.get('is_paid') else "Free"
+                tie_embed.add_field(
+                    name=game_name,
+                    value=f"[Link]({game_data['url']})\n{type_info}{price_info}",
+                    inline=False
+                )
+
+            # Create view with select menu for tied games
+            tied_games = [game for game in submissions.values() if game["name"] in tied_winners]
+            view = PollView(tied_games, timeout=86400)  # 24 hour timeout
+            
+            # Create tie-breaker thread
+            tiebreaker_thread = await forum.create_thread(
+                name="🎯 Tie-Breaker Poll",
+                embed=tie_embed,
+                applied_tags=[discord.utils.get(forum.available_tags, name="Active Poll")]
+            )
+            
+            tiebreaker_msg = await tiebreaker_thread.thread.send(embed=tie_embed, view=view)
+            await self.config.guild(ctx.guild).current_poll_message_id.set(tiebreaker_msg.id)
+            
+            await ctx.send(f"⚖️ We have a tie between: {', '.join(tied_winners)}\n"
+                         f"A tie-breaker poll has been created here: {tiebreaker_thread.thread.jump_url}")
+            return
+
+        # If no tie, proceed with winner announcement as before
         winner = votes[0]
         
         # Add to winners list
@@ -493,8 +537,23 @@ class GameSubmissions(commands.Cog):
                 "date": datetime.now().strftime("%Y-%m-%d")
             })
         
-        # Update hall of fame
+        # Keep non-winning games in submissions
+        async with self.config.guild(ctx.guild).submissions() as submissions:
+            # Remove only the winning game
+            winner_key = next(
+                (key for key, game in submissions.items() if game["name"] == winner[0]),
+                None
+            )
+            if winner_key:
+                del submissions[winner_key]
+            
+            # If this was a tie-breaker, ensure other tied games go back to submissions
+            if len(tied_winners) > 1:
+                await ctx.send("🔄 Non-winning tied games have been returned to the submission pool.")
+        
+        # Update hall of fame and game list
         await self.update_hall_of_fame(ctx.guild)
+        await self.update_game_list_channel(ctx.guild)
         
         # Create winner announcement in forum
         winner_thread = await forum.create_thread(
