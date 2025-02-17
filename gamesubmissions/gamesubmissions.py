@@ -46,6 +46,26 @@ class GameSubmissions(commands.Cog):
         messages = await self.config.guild(ctx.guild).messages()
         
         try:
+            # Set up read-only permissions
+            everyone_role = ctx.guild.default_role
+            read_only_permissions = {
+                everyone_role: discord.PermissionOverwrite(
+                    view_channel=True,
+                    read_messages=True,
+                    read_message_history=True,
+                    send_messages=False,
+                    create_public_threads=False,
+                    create_private_threads=False,
+                    send_messages_in_threads=False,
+                    add_reactions=True,
+                    use_external_emojis=True,
+                    use_external_stickers=True
+                ),
+                ctx.guild.me: discord.PermissionOverwrite(  # Bot needs full permissions
+                    administrator=True
+                )
+            }
+
             # Create or get game forum
             game_forum = None
             if channels["game_forum"]:
@@ -65,7 +85,8 @@ class GameSubmissions(commands.Cog):
                     reason="Game submissions forum setup",
                     default_auto_archive_duration=10080,  # 7 days
                     default_thread_slowmode_delay=0,
-                    available_tags=forum_tags
+                    available_tags=forum_tags,
+                    overwrites=read_only_permissions
                 )
                 channels["game_forum"] = game_forum.id
 
@@ -87,43 +108,38 @@ class GameSubmissions(commands.Cog):
                 messages["game_list_thread_id"] = thread.thread.id
                 messages["game_list_id"] = thread.message.id  # Use the thread's initial message
 
-            # Create or get hall of fame channel
-            hall_of_fame = None
+            # Create or get game tracker channel
+            game_tracker = None
             if channels["hall_of_fame"]:
-                hall_of_fame = ctx.guild.get_channel(channels["hall_of_fame"])
-            if not hall_of_fame:
-                # Set up read-only permissions
-                everyone_role = ctx.guild.default_role
-                read_only_permissions = {
-                    everyone_role: discord.PermissionOverwrite(
-                        read_messages=True,
-                        read_message_history=True,
-                        send_messages=False,
-                        add_reactions=True
-                    )
-                }
-
-                hall_of_fame = await ctx.guild.create_text_channel(
+                game_tracker = ctx.guild.get_channel(channels["hall_of_fame"])
+            if not game_tracker:
+                game_tracker = await ctx.guild.create_text_channel(
                     name="game-tracker",
                     category=category,
                     topic="Current and completed community-chosen games",
                     overwrites=read_only_permissions
                 )
-                channels["hall_of_fame"] = hall_of_fame.id
+                channels["hall_of_fame"] = game_tracker.id
 
-                # Create initial hall of fame message
+                # Create initial game tracker message
                 await self.update_hall_of_fame(ctx.guild)
 
+            # If channels exist but permissions need updating
+            if game_forum:
+                await game_forum.edit(overwrites=read_only_permissions)
+            if game_tracker:
+                await game_tracker.edit(overwrites=read_only_permissions)
+
         except discord.Forbidden:
-            await ctx.send("⚠️ Could not create channels - missing permissions")
+            await ctx.send("⚠️ Could not create/update channels - missing permissions")
             return None
         except Exception as e:
-            await ctx.send(f"⚠️ Could not create channels: {str(e)}")
+            await ctx.send(f"⚠️ Could not create/update channels: {str(e)}")
             return None
 
         await self.config.guild(ctx.guild).channels.set(channels)
-        await self.config.guild(ctx.guild).messages.set(messages)  # Save message IDs
-        return {"game_forum": game_forum, "hall_of_fame": hall_of_fame}
+        await self.config.guild(ctx.guild).messages.set(messages)
+        return {"game_forum": game_forum, "hall_of_fame": game_tracker}
 
     async def update_hall_of_fame(self, guild: discord.Guild):
         """Update the hall of fame message"""
