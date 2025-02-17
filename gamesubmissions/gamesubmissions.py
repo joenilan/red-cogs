@@ -242,6 +242,9 @@ class GameSubmissions(commands.Cog):
 
         # Store submission
         async with self.config.guild(ctx.guild).submissions() as submissions:
+            # Debug print to see what's in submissions before adding
+            await ctx.send(f"Current submissions before adding: {len(submissions)}")
+            
             # Store submission data
             submission_data = {
                 "name": game_name,
@@ -256,13 +259,21 @@ class GameSubmissions(commands.Cog):
                 if game_price:
                     submission_data["price"] = game_price
 
+            # Store using lowercase key for case-insensitive lookup
             submissions[game_name.lower()] = submission_data
             
-            # Debug output
-            await ctx.send(f"✅ Game submitted! Current submissions: {len(submissions)}")
+            # Debug print to verify submission was added
+            await ctx.send(f"✅ Game submitted! Current submissions: {len(submissions)}\nGame data: {submission_data}")
+            
+            # Force save the config
+            await self.config.guild(ctx.guild).submissions.set(submissions)
             
             # Update the game list thread
             await self.update_game_list_channel(ctx.guild)
+
+            # Debug: List all current submissions
+            games_list = "\n".join([f"- {game['name']}" for game in submissions.values()])
+            await ctx.send(f"Current games in list:\n{games_list}")
 
     @gamesubmit.command(name="remove")
     async def remove_game(self, ctx: commands.Context, *, game_name: str):
