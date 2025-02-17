@@ -21,14 +21,15 @@ class GameSubmissions(commands.Cog):
             "current_poll_message_id": None,
             "winners": [],
             "channels": {
-                "game_forum": None,  # Single forum channel for everything
+                "game_forum": None,  # Forum for submissions and active polls
+                "hall_of_fame": None  # Channel for winners and runner-ups
             }
         }
         
         self.config.register_guild(**default_guild)
 
     async def initialize_channels(self, ctx: commands.Context, category_id: int):
-        """Initialize the forum channel"""
+        """Initialize the forum and hall of fame channels"""
         category = ctx.guild.get_channel(category_id)
         if not category or not isinstance(category, discord.CategoryChannel):
             await ctx.send("❌ Invalid category ID or category not found!")
@@ -36,25 +37,23 @@ class GameSubmissions(commands.Cog):
 
         channels = await self.config.guild(ctx.guild).channels()
         
-        # Create or get game forum
-        game_forum = None
-        if channels["game_forum"]:
-            game_forum = ctx.guild.get_channel(channels["game_forum"])
-        if not game_forum:
-            try:
+        try:
+            # Create or get game forum
+            game_forum = None
+            if channels["game_forum"]:
+                game_forum = ctx.guild.get_channel(channels["game_forum"])
+            if not game_forum:
                 # Create forum tags
                 forum_tags = [
                     discord.ForumTag(name="Submitted", emoji="📥"),
                     discord.ForumTag(name="In Poll", emoji="🗳️"),
-                    discord.ForumTag(name="Winner", emoji="🏆"),
-                    discord.ForumTag(name="Active Poll", emoji="🎮"),
-                    discord.ForumTag(name="Past Winners", emoji="📜")
+                    discord.ForumTag(name="Active Poll", emoji="🎮")
                 ]
 
                 game_forum = await ctx.guild.create_forum(
                     name="game-submissions",
                     category=category,
-                    topic="Game submissions, polls, and winners",
+                    topic="Submit games and vote in active polls",
                     reason="Game submissions forum setup",
                     default_auto_archive_duration=10080,  # 7 days
                     default_thread_slowmode_delay=0,
@@ -62,66 +61,84 @@ class GameSubmissions(commands.Cog):
                 )
                 channels["game_forum"] = game_forum.id
 
-                # Create pinned posts for winners and active poll
-                winners_embed = discord.Embed(
-                    title="🏆 Past Winners",
-                    description="Games chosen by the community",
-                    color=discord.Color.gold()
-                )
-                winners_thread = await game_forum.create_thread(
-                    name="Past Winners",
-                    embed=winners_embed,
-                    applied_tags=[discord.utils.get(game_forum.available_tags, name="Past Winners")]
-                )
-                await winners_thread.thread.pin()
+            # Create or get hall of fame channel
+            hall_of_fame = None
+            if channels["hall_of_fame"]:
+                hall_of_fame = ctx.guild.get_channel(channels["hall_of_fame"])
+            if not hall_of_fame:
+                # Set up read-only permissions
+                everyone_role = ctx.guild.default_role
+                read_only_permissions = {
+                    everyone_role: discord.PermissionOverwrite(
+                        read_messages=True,
+                        read_message_history=True,
+                        send_messages=False,
+                        add_reactions=True
+                    )
+                }
 
-            except discord.Forbidden:
-                await ctx.send("⚠️ Could not create forum channel - missing permissions")
-                return None
-            except Exception as e:
-                await ctx.send(f"⚠️ Could not create forum channel: {str(e)}")
-                return None
+                hall_of_fame = await ctx.guild.create_text_channel(
+                    name="hall-of-fame",
+                    category=category,
+                    topic="Winners and runner-ups from our game polls",
+                    overwrites=read_only_permissions
+                )
+                channels["hall_of_fame"] = hall_of_fame.id
+
+                # Create initial hall of fame message
+                await self.update_hall_of_fame(ctx.guild)
+
+        except discord.Forbidden:
+            await ctx.send("⚠️ Could not create channels - missing permissions")
+            return None
+        except Exception as e:
+            await ctx.send(f"⚠️ Could not create channels: {str(e)}")
+            return None
 
         await self.config.guild(ctx.guild).channels.set(channels)
-        return {"game_forum": game_forum}
+        return {"game_forum": game_forum, "hall_of_fame": hall_of_fame}
 
-    async def update_winners(self, guild: discord.Guild):
-        """Update the winners thread in the forum"""
+    async def update_hall_of_fame(self, guild: discord.Guild):
+        """Update the hall of fame channel with winners and runner-ups"""
         channels = await self.config.guild(guild).channels()
-        forum = guild.get_channel(channels["game_forum"])
-        if not forum:
+        hall_of_fame = guild.get_channel(channels["hall_of_fame"])
+        if not hall_of_fame:
             return
 
         winners = await self.config.guild(guild).winners()
         
-        embed = discord.Embed(
-            title="🏆 Past Winners",
-            description="Games chosen by the community",
+        # Create main winners embed
+        winners_embed = discord.Embed(
+            title="🏆 Hall of Fame",
+            description="Our community's chosen games",
             color=discord.Color.gold()
         )
         
-        for winner in reversed(winners[-10:]):
-            embed.add_field(
-                name=f"{winner['game_name']} ({winner['date']})",
-                value=f"Votes: {winner['votes']}",
+        if winners:
+            latest_winner = winners[-1]
+            winners_embed.add_field(
+                name="Current Champion",
+                value=f"**{latest_winner['game_name']}**\n"
+                      f"Votes: {latest_winner['votes']}\n"
+                      f"Date: {latest_winner['date']}",
+                inline=False
+            )
+        
+        # Add past winners section
+        if len(winners) > 1:
+            past_winners = ""
+            for winner in reversed(winners[:-1][-5:]):  # Last 5 winners excluding current
+                past_winners += f"**{winner['game_name']}** ({winner['date']}) - {winner['votes']} votes\n"
+            
+            winners_embed.add_field(
+                name="Past Champions",
+                value=past_winners or "No past winners yet",
                 inline=False
             )
 
-        # Find and update the winners thread
-        async for thread in forum.archived_threads(limit=None):
-            if thread.name == "Past Winners":
-                await thread.edit(archived=False)
-                async for message in thread.history(limit=1):
-                    await message.edit(embed=embed)
-                return
-
-        # Create new winners thread if not found
-        winners_thread = await forum.create_thread(
-            name="Past Winners",
-            embed=embed,
-            applied_tags=[discord.utils.get(forum.available_tags, name="Past Winners")]
-        )
-        await winners_thread.thread.pin()
+        # Clear channel and send new embeds
+        await hall_of_fame.purge()
+        await hall_of_fame.send(embed=winners_embed)
 
     @commands.group(name="gamesubmit", aliases=["gs"])
     @commands.guild_only()
@@ -260,7 +277,7 @@ class GameSubmissions(commands.Cog):
         
         if channels:
             await ctx.send("✅ Channels have been set up successfully!")
-            await self.update_winners(ctx.guild)
+            await self.update_hall_of_fame(ctx.guild)
             await self.update_game_list_channel(ctx.guild)
         else:
             await ctx.send("❌ Failed to set up channels!")
@@ -366,25 +383,33 @@ class GameSubmissions(commands.Cog):
                 "date": datetime.now().strftime("%Y-%m-%d")
             })
         
-        # Update winners thread
-        await self.update_winners(ctx.guild)
+        # Update hall of fame
+        await self.update_hall_of_fame(ctx.guild)
         
-        # Create winner announcement
-        embed = discord.Embed(
-            title="🏆 Poll Results",
-            description=f"**Winner: {winner[0]}**\nVotes: {winner[1]}",
-            color=discord.Color.gold(),
-            timestamp=datetime.now()
+        # Create winner announcement in forum
+        winner_thread = await forum.create_thread(
+            name=f"🏆 Winner: {winner[0]}",
+            embed=discord.Embed(
+                title="🏆 Poll Results",
+                description=f"**Winner: {winner[0]}**\nVotes: {winner[1]}",
+                color=discord.Color.gold(),
+                timestamp=datetime.now()
+            )
         )
         
+        # Add runner-ups to the winner thread
+        runners_embed = discord.Embed(
+            title="Runner-ups",
+            color=discord.Color.silver()
+        )
         for game, vote_count in votes[1:]:
-            embed.add_field(
+            runners_embed.add_field(
                 name=game,
                 value=f"Votes: {vote_count}",
                 inline=False
             )
         
-        await forum.send(embed=embed)
+        await winner_thread.thread.send(embed=runners_embed)
         await ctx.send("✅ Poll ended and winner announced!")
 
     async def update_game_list_channel(self, guild: discord.Guild):
