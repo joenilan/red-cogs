@@ -148,17 +148,109 @@ class GameSubmissions(commands.Cog):
             await ctx.send_help(ctx.command)
 
     @gamesubmit.command(name="add")
-    async def add_game(self, ctx: commands.Context, game_name: str, game_url: str):
-        """Submit a game to the list"""
+    async def add_game(self, ctx: commands.Context, *, game_name: str = None):
+        """Submit a game to the list
+        
+        Run the command without parameters to start an interactive submission process.
+        """
         channels = await self.config.guild(ctx.guild).channels()
         forum = ctx.guild.get_channel(channels["game_forum"])
-        
-        # Check if game already exists
-        async with self.config.guild(ctx.guild).submissions() as submissions:
-            if game_name.lower() in submissions:
-                await ctx.send(f"❌ {game_name} is already in the submissions list!")
+
+        # Interactive submission process if no game_name provided
+        if game_name is None:
+            try:
+                # Ask for game name
+                await ctx.send("What's the name of the game you want to submit?")
+                msg = await self.bot.wait_for(
+                    "message",
+                    timeout=30.0,
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel
+                )
+                game_name = msg.content
+
+                # Check if game already exists
+                async with self.config.guild(ctx.guild).submissions() as submissions:
+                    if game_name.lower() in submissions:
+                        await ctx.send(f"❌ {game_name} is already in the submissions list!")
+                        return
+
+                # Ask for game URL
+                await ctx.send("Please provide the URL to the game (Steam, Epic, etc.):")
+                msg = await self.bot.wait_for(
+                    "message",
+                    timeout=30.0,
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel
+                )
+                game_url = msg.content
+
+                # Ask if game is free or paid
+                await ctx.send("Is the game Free or Paid? (Type 'free' or 'paid')")
+                msg = await self.bot.wait_for(
+                    "message",
+                    timeout=30.0,
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel
+                )
+                is_paid = msg.content.lower() == 'paid'
+
+                game_price = None
+                if is_paid:
+                    await ctx.send("What's the current price of the game? (e.g., $19.99)")
+                    msg = await self.bot.wait_for(
+                        "message",
+                        timeout=30.0,
+                        check=lambda m: m.author == ctx.author and m.channel == ctx.channel
+                    )
+                    game_price = msg.content
+
+                # Create confirmation embed
+                confirm_embed = discord.Embed(
+                    title="Confirm Game Submission",
+                    description="Please review the details below. React with ✅ to submit or ❌ to cancel.",
+                    color=discord.Color.blue()
+                )
+                confirm_embed.add_field(name="Game Name", value=game_name, inline=False)
+                confirm_embed.add_field(name="Game URL", value=game_url, inline=False)
+                confirm_embed.add_field(name="Type", value="Paid" if is_paid else "Free", inline=True)
+                if game_price:
+                    confirm_embed.add_field(name="Price", value=game_price, inline=True)
+
+                confirm_msg = await ctx.send(embed=confirm_embed)
+                await confirm_msg.add_reaction("✅")
+                await confirm_msg.add_reaction("❌")
+
+                # Wait for confirmation
+                try:
+                    reaction, user = await self.bot.wait_for(
+                        "reaction_add",
+                        timeout=30.0,
+                        check=lambda r, u: u == ctx.author and str(r.emoji) in ["✅", "❌"] and r.message.id == confirm_msg.id
+                    )
+                    
+                    if str(reaction.emoji) == "❌":
+                        await ctx.send("Game submission cancelled.")
+                        return
+
+                except asyncio.TimeoutError:
+                    await ctx.send("Submission timed out. Please try again.")
+                    return
+
+            except asyncio.TimeoutError:
+                await ctx.send("Submission timed out. Please try again.")
                 return
 
+        else:
+            # If game_name was provided, ask for URL (maintaining backward compatibility)
+            if "game_url" not in locals():
+                await ctx.send("Please provide the URL to the game (Steam, Epic, etc.):")
+                msg = await self.bot.wait_for(
+                    "message",
+                    timeout=30.0,
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel
+                )
+                game_url = msg.content
+
+        # Process submission
+        async with self.config.guild(ctx.guild).submissions() as submissions:
             try:
                 # Create forum post for the game
                 embed = discord.Embed(
@@ -168,9 +260,22 @@ class GameSubmissions(commands.Cog):
                     color=discord.Color.green(),
                     timestamp=datetime.now()
                 )
+                
+                # Add price information if available
+                if 'is_paid' in locals():
+                    embed.add_field(
+                        name="Type",
+                        value="Paid" if is_paid else "Free",
+                        inline=True
+                    )
+                    if game_price:
+                        embed.add_field(
+                            name="Price",
+                            value=game_price,
+                            inline=True
+                        )
 
                 if forum and hasattr(forum, 'create_thread'):
-                    # Try to create forum thread if supported
                     submitted_tag = discord.utils.get(forum.available_tags, name="Submitted")
                     thread = await forum.create_thread(
                         name=game_name,
@@ -184,25 +289,31 @@ class GameSubmissions(commands.Cog):
                     thread_url = None
 
                 # Store submission data
-                submissions[game_name.lower()] = {
+                submission_data = {
                     "name": game_name,
                     "url": game_url,
                     "submitted_by": ctx.author.id,
                     "timestamp": datetime.now().isoformat(),
                     "thread_id": thread_id
                 }
+                
+                # Add price information if available
+                if 'is_paid' in locals():
+                    submission_data["is_paid"] = is_paid
+                    if game_price:
+                        submission_data["price"] = game_price
+
+                submissions[game_name.lower()] = submission_data
 
                 if thread_url:
                     await ctx.send(f"✅ Game submitted! Discuss it here: {thread_url}")
                 else:
                     await ctx.send(f"✅ Game submitted!")
-                    
-                # Update the game list channel
+                
                 await self.update_game_list_channel(ctx.guild)
 
             except Exception as e:
                 await ctx.send(f"✅ Game submitted, but couldn't create forum thread: {str(e)}")
-                # Still store the submission without thread info
                 submissions[game_name.lower()] = {
                     "name": game_name,
                     "url": game_url,
@@ -254,9 +365,16 @@ class GameSubmissions(commands.Cog):
             submitter = ctx.guild.get_member(game["submitted_by"])
             submitter_name = submitter.display_name if submitter else "Unknown User"
             
+            # Create value string with price info
+            value = f"[Link]({game['url']})\nSubmitted by: {submitter_name}"
+            if game.get("is_paid") is not None:
+                value += f"\nType: {'Paid' if game['is_paid'] else 'Free'}"
+                if game.get("price"):
+                    value += f"\nPrice: {game['price']}"
+            
             embed.add_field(
                 name=game["name"],
-                value=f"[Link]({game['url']})\nSubmitted by: {submitter_name}",
+                value=value,
                 inline=False
             )
         
@@ -434,9 +552,16 @@ class GameSubmissions(commands.Cog):
             submitter = guild.get_member(game["submitted_by"])
             submitter_name = submitter.display_name if submitter else "Unknown User"
             
+            # Create value string with price info
+            value = f"[Link]({game['url']})\nSubmitted by: {submitter_name}"
+            if game.get("is_paid") is not None:
+                value += f"\nType: {'Paid' if game['is_paid'] else 'Free'}"
+                if game.get("price"):
+                    value += f"\nPrice: {game['price']}"
+            
             embed.add_field(
                 name=game["name"],
-                value=f"[Link]({game['url']})\nSubmitted by: {submitter_name}",
+                value=value,
                 inline=False
             )
 
