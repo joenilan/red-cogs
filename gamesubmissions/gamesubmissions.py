@@ -25,6 +25,11 @@ class GameSubmissions(commands.Cog):
             "channels": {
                 "game_forum": None,  # Forum for submissions and active polls
                 "hall_of_fame": None  # Channel for winners and runner-ups
+            },
+            "messages": {
+                "game_list_id": None,  # ID of the game list message
+                "game_list_thread_id": None,  # ID of the game list thread
+                "hall_of_fame_id": None  # ID of the hall of fame message
             }
         }
         
@@ -101,8 +106,9 @@ class GameSubmissions(commands.Cog):
         return {"game_forum": game_forum, "hall_of_fame": hall_of_fame}
 
     async def update_hall_of_fame(self, guild: discord.Guild):
-        """Update the hall of fame channel with winners and runner-ups"""
+        """Update the hall of fame message"""
         channels = await self.config.guild(guild).channels()
+        messages = await self.config.guild(guild).messages()
         hall_of_fame = guild.get_channel(channels["hall_of_fame"])
         if not hall_of_fame:
             return
@@ -138,9 +144,24 @@ class GameSubmissions(commands.Cog):
                 inline=False
             )
 
-        # Clear channel and send new embeds
-        await hall_of_fame.purge()
-        await hall_of_fame.send(embed=winners_embed)
+        try:
+            if messages["hall_of_fame_id"]:
+                try:
+                    message = await hall_of_fame.fetch_message(messages["hall_of_fame_id"])
+                    await message.edit(embed=winners_embed)
+                    return
+                except discord.NotFound:
+                    pass
+            
+            # Create new message if needed
+            message = await hall_of_fame.send(embed=winners_embed)
+            
+            # Store the new message ID
+            async with self.config.guild(guild).messages() as messages:
+                messages["hall_of_fame_id"] = message.id
+            
+        except Exception as e:
+            print(f"Error updating hall of fame: {e}")
 
     @commands.group(name="gamesubmit", aliases=["gs"])
     @commands.guild_only()
@@ -482,8 +503,9 @@ class GameSubmissions(commands.Cog):
         await ctx.send("✅ Poll ended and winner announced!")
 
     async def update_game_list_channel(self, guild: discord.Guild):
-        """Update the game list thread in the forum"""
+        """Update the game list message in the forum"""
         channels = await self.config.guild(guild).channels()
+        messages = await self.config.guild(guild).messages()
         forum = guild.get_channel(channels["game_forum"])
         if not forum:
             return
@@ -514,50 +536,36 @@ class GameSubmissions(commands.Cog):
                 inline=False
             )
 
-        # Find existing game list thread
-        game_list_thread = None
-        
-        # Check active threads first
-        for thread in forum.threads:
-            if thread.name == "Game List":
-                game_list_thread = thread
-                break
-                
-        # If not found in active threads, check archived threads
-        if not game_list_thread:
-            async for thread in forum.archived_threads(limit=None):
-                if thread.name == "Game List":
-                    await thread.edit(archived=False)
-                    game_list_thread = thread
-                    break
-
-        if not game_list_thread:
-            # Create new thread if none exists
+        try:
+            if messages["game_list_thread_id"]:
+                # Get existing thread
+                thread = forum.get_thread(messages["game_list_thread_id"])
+                if thread and messages["game_list_id"]:
+                    # Get and edit existing message
+                    try:
+                        message = await thread.fetch_message(messages["game_list_id"])
+                        await message.edit(embed=embed)
+                        return
+                    except discord.NotFound:
+                        pass  # Message not found, will create new one
+            
+            # Create new thread if needed
             thread = await forum.create_thread(
                 name="Game List",
                 content="Current list of submitted games",
                 embed=embed,
                 applied_tags=[]
             )
-            # Send the embed as a new message and pin it
             list_message = await thread.thread.send(embed=embed)
             await list_message.pin()
-            game_list_thread = thread
-        else:
-            # Find the pinned message or send a new one
-            pinned_messages = [msg async for msg in game_list_thread.history(limit=None) if msg.pinned]
-            if pinned_messages:
-                try:
-                    await pinned_messages[0].edit(embed=embed)
-                except discord.Forbidden:
-                    # If we can't edit the message, unpin it and send a new one
-                    await pinned_messages[0].unpin()
-                    list_message = await game_list_thread.send(embed=embed)
-                    await list_message.pin()
-            else:
-                # No pinned message found, send a new one
-                list_message = await game_list_thread.send(embed=embed)
-                await list_message.pin()
+            
+            # Store the new IDs
+            async with self.config.guild(guild).messages() as messages:
+                messages["game_list_thread_id"] = thread.thread.id
+                messages["game_list_id"] = list_message.id
+            
+        except Exception as e:
+            print(f"Error updating game list: {e}")
 
     @commands.admin_or_permissions(administrator=True)
     @gamesubmit.command(name="clear")
