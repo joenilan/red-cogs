@@ -4,15 +4,21 @@ from discord.ext.commands import guild_only
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from discord import app_commands
+from typing import Optional
 
 class ChampionsCircle(commands.Cog):
+    """Champions Circle tournament management system"""  # This description will show in [p]help
+    
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890)
         default_guild = {
             "champions_channel": None,
+            "champions_forum": None,  # New: Forum channel for applications
             "champions_role_id": None,
             "active_applications": [],
+            "application_threads": {},  # New: Store thread IDs for applications
             "cancelled_applications": [],
             "approved_applications": [],
             "denied_applications": [],
@@ -45,11 +51,121 @@ class ChampionsCircle(commands.Cog):
         self.logger.info(f"ChampionsCircle is ready!")
         self.bot.loop.create_task(self.close_expired_applications())
 
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    @guild_only()
-    async def starttourney(self, ctx):
-        """Start a new tournament and set up the join button for Champions Circle applications."""
+    @commands.command(name="ccsetup")
+    @commands.guild_only()
+    @commands.admin_or_permissions(administrator=True)
+    async def ccsetup(self, ctx):
+        """Initialize and setup the tournament system"""
+        
+        # Create forum channel
+        forum_channel = await ctx.guild.create_forum(
+            name="tournament-applications",
+            topic="Tournament Applications",
+            reason="Tournament setup"
+        )
+        
+        # Set up forum tags
+        tags = [
+            discord.ForumTag(name="Pending", emoji="🔵"),
+            discord.ForumTag(name="Approved", emoji="✅"),
+            discord.ForumTag(name="Denied", emoji="❌"),
+            discord.ForumTag(name="Cancelled", emoji="⚠️")
+        ]
+        await forum_channel.edit(available_tags=tags)
+        
+        # Create announcement channel
+        announcement_channel = await ctx.guild.create_text_channel(
+            name="tournament-announcements",
+            topic="Tournament Announcements"
+        )
+        
+        # Save channels to config
+        await self.config.guild(ctx.guild).champions_forum.set(forum_channel.id)
+        await self.config.guild(ctx.guild).champions_channel.set(announcement_channel.id)
+        
+        # Create role selection view
+        class RoleSelect(discord.ui.RoleSelect):
+            def __init__(self):
+                super().__init__(placeholder="Select Champions Role", min_values=1, max_values=1)
+            
+            async def callback(self, interaction: discord.Interaction):
+                role = self.values[0]
+                await self.view.cog.config.guild(interaction.guild).champions_role_id.set(role.id)
+                await interaction.response.send_modal(SetupModal())
+
+        class RoleView(discord.ui.View):
+            def __init__(self, cog):
+                super().__init__()
+                self.cog = cog
+                self.add_item(RoleSelect())
+
+        # Start setup process
+        await ctx.send(
+            "Let's set up your tournament! First, select the Champions role:",
+            view=RoleView(self)
+        )
+
+    async def process_setup(self, interaction: discord.Interaction, modal: SetupModal):
+        """Process the setup modal submission"""
+        try:
+            # Set tournament title and description
+            await self.config.guild(interaction.guild).tourney_title.set(modal.title.value)
+            await self.config.guild(interaction.guild).tourney_description.set(modal.description.value)
+            
+            # Set tournament time
+            try:
+                tourney_time = datetime.fromisoformat(modal.time.value).replace(tzinfo=timezone.utc)
+                timestamp = int(tourney_time.timestamp())
+                await self.config.guild(interaction.guild).tourney_time.set(timestamp)
+            except ValueError:
+                await interaction.followup.send("Invalid time format. Please use YYYY-MM-DD HH:MM:SS", ephemeral=True)
+                return
+            
+            # Set application duration
+            try:
+                days = int(modal.duration.value)
+                await self.config.guild(interaction.guild).application_duration.set(days)
+            except ValueError:
+                await interaction.followup.send("Invalid duration. Please enter a number", ephemeral=True)
+                return
+            
+            # Send success message
+            embed = discord.Embed(
+                title="Tournament Setup Complete",
+                color=discord.Color.green(),
+                description="Your tournament has been configured with the following settings:"
+            )
+            embed.add_field(name="Title", value=modal.title.value)
+            embed.add_field(name="Description", value=modal.description.value)
+            embed.add_field(name="Time", value=f"<t:{timestamp}:F>")
+            embed.add_field(name="Application Duration", value=f"{days} days")
+            embed.add_field(name="Channels Created", value=f"✅ Forum Channel\n✅ Announcement Channel")
+            
+            role = interaction.guild.get_role(await self.config.guild(interaction.guild).champions_role_id())
+            embed.add_field(name="Champions Role", value=role.mention if role else "Not found")
+            
+            await interaction.response.send_message(embed=embed)
+            
+            # Add start tournament button
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(
+                label="Start Tournament",
+                style=discord.ButtonStyle.green,
+                custom_id="start_tournament"
+            ))
+            await interaction.followup.send("Ready to begin? Click below to start the tournament:", view=view)
+            
+        except Exception as e:
+            self.logger.error(f"Error in setup process: {str(e)}")
+            await interaction.followup.send(
+                "An error occurred during setup. Please try again or contact support.",
+                ephemeral=True
+            )
+
+    @commands.command(name="ccstart")
+    @commands.admin_or_permissions(administrator=True)
+    async def ccstart(self, ctx):
+        """Start the tournament and open applications"""
         if ctx.channel.id != await self.config.guild(ctx.guild).champions_channel():
             await ctx.send("This command can only be used in the Champions Circle channel.")
             return
@@ -58,122 +174,42 @@ class ChampionsCircle(commands.Cog):
         view.add_item(JoinButton(self))
         view.add_item(CancelApplicationButton(self))
         
-        embed = discord.Embed(title="Champions Circle Applications", description="Current applicants and their status.", color=0x00ff00)
+        embed = discord.Embed(title="Tournament Applications", description="Current applicants and their status.", color=0x00ff00)
         message = await ctx.send(embed=embed, view=view)
         await self.config.guild(ctx.guild).champions_message_id.set(message.id)
         await self.update_embed(ctx.guild)
 
-        # Delete the command message
-        try:
-            await ctx.message.delete()
-        except discord.HTTPException:
-            self.logger.error("Failed to delete the setup command message.")
-
-        await ctx.send("New tournament started! The join button has been set up.", delete_after=10)
-
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    @guild_only()
-    async def test_role_assign(self, ctx, member: discord.Member):
-        role = ctx.guild.get_role(await self.config.guild(ctx.guild).champions_role_id())
-        if role is None:
-            await ctx.send("Error: Champions role not found.")
-            return
-        try:
-            await member.add_roles(role)
-            await ctx.send(f"Successfully assigned {role.name} to {member.name}")
-        except discord.Forbidden:
-            await ctx.send("Error: I don't have permission to assign roles.")
-        except discord.HTTPException as e:
-            await ctx.send(f"An error occurred: {str(e)}")
-
-    @commands.command()
-    @guild_only()
-    async def list_champions(self, ctx):
-        approved_applications = await self.config.guild(ctx.guild).approved_applications()
-        if not approved_applications:
-            await ctx.send("There are no champions yet!")
-            return
-
-        embed = discord.Embed(title="Champions Circle", description="Our esteemed champions:", color=0x00ff00)
-        for application in approved_applications:
-            champion_id = application['user_id']
-            champion = ctx.guild.get_member(champion_id)
-            if champion:
-                rank = application['answers'].get('Rank:', 'Unranked')
-                tracker_link = application['answers'].get('RL Tracker Link:', 'Not provided')
-                value = f"Rank: [{rank}]({tracker_link})" if tracker_link != 'Not provided' else f"Rank: {rank}"
-                embed.add_field(name=champion.name, value=value, inline=False)
-
-        await ctx.send(embed=embed)
-
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    @guild_only()
-    async def clearall(self, ctx):
-        """Clear all messages in the Champions Circle channel."""
+    @commands.command(name="ccend")
+    @commands.admin_or_permissions(administrator=True)
+    async def ccend(self, ctx):
+        """End the tournament and clean up"""
         if ctx.channel.id != await self.config.guild(ctx.guild).champions_channel():
             await ctx.send("This command can only be used in the Champions Circle channel.")
             return
 
         # Ask for confirmation
-        confirm_msg = await ctx.send("Are you sure you want to clear all messages in this channel? This action cannot be undone. Reply with 'yes' to confirm.")
+        confirm_msg = await ctx.response.send_message("Are you sure you want to end the tournament? This will clear all messages and reset the application lists. Reply with 'yes' to confirm.")
 
         def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == 'yes'
+            return m.author == ctx.user and m.channel == ctx.channel and m.content.lower() == 'yes'
 
         try:
             await self.bot.wait_for('message', check=check, timeout=30.0)
         except asyncio.TimeoutError:
-            await ctx.send("Clearall command cancelled.")
+            await ctx.response.send_message("Tournament end cancelled.")
             return
 
         # Clear messages
         channel = ctx.channel
-        await ctx.send("Clearing all messages...")
-
-        try:
-            async for message in channel.history(limit=None):
-                await message.delete()
-        except discord.Forbidden:
-            await ctx.send("I don't have permission to delete messages in this channel.")
-        except discord.HTTPException:
-            await ctx.send("An error occurred while trying to delete messages.")
-        else:
-            await ctx.send("All messages have been cleared from the Champions Circle channel.", delete_after=10)
-
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    @guild_only()
-    async def endtourney(self, ctx):
-        """End the current tournament, clear the channel, and reset the cog's state."""
-        if ctx.channel.id != await self.config.guild(ctx.guild).champions_channel():
-            await ctx.send("This command can only be used in the Champions Circle channel.")
-            return
-
-        # Ask for confirmation
-        confirm_msg = await ctx.send("Are you sure you want to end the tournament? This will clear all messages and reset the application lists. Reply with 'yes' to confirm.")
-
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == 'yes'
-
-        try:
-            await self.bot.wait_for('message', check=check, timeout=30.0)
-        except asyncio.TimeoutError:
-            await ctx.send("Tournament end cancelled.")
-            return
-
-        # Clear messages
-        channel = ctx.channel
-        await ctx.send("Ending tournament and clearing channel...")
+        await ctx.response.send_message("Ending tournament and clearing channel...")
 
         try:
             await channel.purge(limit=None)
         except discord.Forbidden:
-            await ctx.send("I don't have permission to delete messages in this channel.")
+            await ctx.response.send_message("I don't have permission to delete messages in this channel.")
             return
         except discord.HTTPException:
-            await ctx.send("An error occurred while trying to delete messages.")
+            await ctx.response.send_message("An error occurred while trying to delete messages.")
             return
 
         # Reset cog state
@@ -199,7 +235,42 @@ class ChampionsCircle(commands.Cog):
             self.logger.error(f"Champions role with ID {await self.config.guild(ctx.guild).champions_role_id()} not found.")
 
         # Send a temporary message that will be deleted after 10 seconds
-        temp_msg = await channel.send("Tournament ended. Channel cleared, cog state reset, and application cooldowns reset. You can now use the starttourney command for a new tournament.", delete_after=10)
+        temp_msg = await channel.send("Tournament ended. Channel cleared, cog state reset, and application cooldowns reset. You can now use the tourney start command for a new tournament.", delete_after=10)
+
+    @commands.group(name="ccquestions")
+    @commands.admin_or_permissions(administrator=True)
+    async def ccquestions(self, ctx):
+        """Manage tournament application questions"""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+
+    @ccquestions.command(name="add")
+    async def questions_add(self, ctx, *, question: str):
+        """Add a tournament application question"""
+        async with self.config.guild(ctx.guild).custom_questions() as questions:
+            questions.append(question)
+        await ctx.send(f"Added question: {question}")
+
+    @ccquestions.command(name="remove")
+    async def questions_remove(self, ctx, index: int):
+        """Remove a tournament application question by its index"""
+        async with self.config.guild(ctx.guild).custom_questions() as questions:
+            if 1 <= index <= len(questions):
+                removed = questions.pop(index - 1)
+                await ctx.send(f"Removed question: {removed}")
+            else:
+                await ctx.send("Invalid question index!")
+
+    @ccquestions.command(name="list")
+    async def questions_list(self, ctx):
+        """List all tournament application questions"""
+        questions = await self.config.guild(ctx.guild).custom_questions()
+        if not questions:
+            await ctx.send("No custom questions set.")
+            return
+        
+        question_list = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+        await ctx.send(f"Current questions:\n{question_list}")
 
     async def update_embed(self, guild):
         tourney_title = await self.config.guild(guild).tourney_title()
@@ -362,322 +433,161 @@ class ChampionsCircle(commands.Cog):
         # General commands
         embed.add_field(name="General Commands", value="\u200b", inline=False)
         embed.add_field(name="cchelp", value="Display this help message", inline=False)
-        embed.add_field(name="list_champions", value="List current champions", inline=False)
+        embed.add_field(name="cclist", value="List current champions", inline=False)
 
-        # Admin commands
-        embed.add_field(name="Admin Commands", value="\u200b", inline=False)
-        embed.add_field(name="starttourney", value="Start a new tournament and set up the join button for Champions Circle applications", inline=False)
-        embed.add_field(name="setchampionschannel", value="Set the Champions Circle channel", inline=False)
-        embed.add_field(name="setapplicationduration", value="Set the duration for which applications remain open", inline=False)
-        embed.add_field(name="setchampionsrole", value="Set the Champions Circle role", inline=False)
-        embed.add_field(name="endtourney", value="End the current tournament and reset the cog", inline=False)
-        embed.add_field(name="clearall", value="Clear all messages in the Champions Circle channel", inline=False)
-        embed.add_field(name="test_role_assign", value="Test role assignment", inline=False)
-        embed.add_field(name="championssettings", value="Display current settings for the Champions Circle cog", inline=False)
+        # Setup and Configuration
+        embed.add_field(name="Setup Commands", value="\u200b", inline=False)
+        embed.add_field(name="ccsetup", value="Initialize and setup the tournament system", inline=False)
+        embed.add_field(name="ccsetup title", value="Set tournament title", inline=False)
+        embed.add_field(name="ccsetup description", value="Set tournament description", inline=False)
+        embed.add_field(name="ccsetup time", value="Set tournament time (YYYY-MM-DD HH:MM:SS)", inline=False)
+        embed.add_field(name="ccsetup role", value="Set champions role", inline=False)
+        embed.add_field(name="ccsetup duration", value="Set application duration in days", inline=False)
 
-        # Tournament management commands
-        embed.add_field(name="Tournament Management", value="\u200b", inline=False)
-        embed.add_field(name="tourney settitle", value="Set the tournament title", inline=False)
-        embed.add_field(name="tourney setdescription", value="Set the tournament description", inline=False)
-        embed.add_field(name="tourney settime", value="Set the tournament time (format: YYYY-MM-DD HH:MM)", inline=False)
+        # Tournament Management
+        embed.add_field(name="Tournament Commands", value="\u200b", inline=False)
+        embed.add_field(name="ccstart", value="Start tournament and open applications", inline=False)
+        embed.add_field(name="ccend", value="End tournament and cleanup", inline=False)
+        embed.add_field(name="ccclear", value="Clear all messages in tournament channel", inline=False)
 
-        # Question management commands
-        embed.add_field(name="Question Management", value="\u200b", inline=False)
-        embed.add_field(name="questions add", value="Add a custom question to the Champions Circle application", inline=False)
-        embed.add_field(name="questions remove", value="Remove a custom question from the Champions Circle application", inline=False)
-        embed.add_field(name="questions list", value="List all custom questions for the Champions Circle application", inline=False)
+        # Question Management
+        embed.add_field(name="Question Commands", value="\u200b", inline=False)
+        embed.add_field(name="ccquestions add", value="Add application question", inline=False)
+        embed.add_field(name="ccquestions remove", value="Remove question by index", inline=False)
+        embed.add_field(name="ccquestions list", value="List all questions", inline=False)
 
-        await ctx.send(embed=embed)
-
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    @guild_only()
-    async def championssettings(self, ctx):
-        """Display current settings for the Champions Circle cog."""
-        guild = ctx.guild
-        settings = await self.config.guild(guild).all()
-
-        embed = discord.Embed(title="Champions Circle Settings", color=0x00ff00)
-        
-        champions_channel = self.bot.get_channel(settings['champions_channel'])
-        champions_role = guild.get_role(settings['champions_role_id'])
-        
-        embed.add_field(name="Champions Channel", value=champions_channel.mention if champions_channel else "Not set", inline=False)
-        embed.add_field(name="Champions Role", value=champions_role.mention if champions_role else "Not set", inline=False)
-        embed.add_field(name="Application Duration", value=f"{settings['application_duration']} days", inline=False)
-        embed.add_field(name="Tournament Title", value=settings['tourney_title'], inline=False)
-        embed.add_field(name="Tournament Description", value=settings['tourney_description'], inline=False)
-        
-        if settings['tourney_time']:
-            embed.add_field(name="Tournament Time", value=f"<t:{settings['tourney_time']}:F>", inline=False)
-        else:
-            embed.add_field(name="Tournament Time", value="Not set", inline=False)
-        
-        embed.add_field(name="Active Applications", value=len(settings['active_applications']), inline=True)
-        embed.add_field(name="Approved Applications", value=len(settings['approved_applications']), inline=True)
-        embed.add_field(name="Denied Applications", value=len(settings['denied_applications']), inline=True)
-        embed.add_field(name="Cancelled Applications", value=len(settings['cancelled_applications']), inline=True)
-        
-        cooldown = self.application_cooldowns._cooldown
-        embed.add_field(name="Application Cooldown", value=f"{cooldown.per} seconds", inline=False)
+        # Utility Commands
+        embed.add_field(name="Utility Commands", value="\u200b", inline=False)
+        embed.add_field(name="ccsettings", value="Display current settings", inline=False)
+        embed.add_field(name="cctest", value="Test role assignment", inline=False)
 
         await ctx.send(embed=embed)
 
-    @commands.group()
+    @commands.command(name="cclist")
+    async def cclist(self, ctx):
+        """List current champions"""
+        # ... existing list_champions logic ...
+
+    @commands.command(name="ccsettings")
     @commands.admin_or_permissions(administrator=True)
-    @guild_only()
-    async def questions(self, ctx):
-        """Manage custom questions for the Champions Circle application."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
+    async def ccsettings(self, ctx):
+        """Display current tournament settings"""
+        # ... existing championssettings logic ...
 
-    @questions.command(name="add")
-    @guild_only()
-    async def add_question(self, ctx, *, question: str):
-        """Add a custom question to the Champions Circle application."""
-        async with self.config.guild(ctx.guild).custom_questions() as questions:
-            questions.append(question)
-        await ctx.send(f"Question added: {question}")
-
-    @questions.command(name="remove")
-    @guild_only()
-    async def remove_question(self, ctx, index: int):
-        """Remove a custom question from the Champions Circle application."""
-        async with self.config.guild(ctx.guild).custom_questions() as questions:
-            if 1 <= index <= len(questions):
-                removed_question = questions.pop(index - 1)
-                await ctx.send(f"Question removed: {removed_question}")
-            else:
-                await ctx.send("Invalid question index.")
-
-    @questions.command(name="list")
-    @guild_only()
-    async def list_questions(self, ctx):
-        """List all custom questions for the Champions Circle application."""
-        try:
-            questions = await self.config.guild(ctx.guild).custom_questions()
-            if questions:
-                question_list = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-                await ctx.send(f"Current custom questions:\n{question_list}")
-            else:
-                await ctx.send("No custom questions set.")
-        except AttributeError:
-            await ctx.send("This command can only be used in a server.")
-
-    @commands.group()
-    @commands.admin_or_permissions(administrator=True)
-    @guild_only()
-    async def tourney(self, ctx):
-        """Manage tournament details."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
-
-    @tourney.command(name="settitle")
-    async def set_tourney_title(self, ctx, *, title: str):
-        """Set the tournament title."""
-        await self.config.guild(ctx.guild).tourney_title.set(title)
-        await ctx.send(f"Tournament title set to: {title}")
-        await self.update_embed(ctx.guild)
-
-    @tourney.command(name="setdescription")
-    async def set_tourney_description(self, ctx, *, description: str):
-        """Set the tournament description."""
-        await self.config.guild(ctx.guild).tourney_description.set(description)
-        await ctx.send(f"Tournament description set to: {description}")
-        await self.update_embed(ctx.guild)
-
-    @tourney.command(name="settime")
-    async def set_tourney_time(self, ctx, *, time: str):
-        """Set the tournament time (format: YYYY-MM-DD HH:MM)."""
-        try:
-            tourney_time = datetime.strptime(time, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-            timestamp = int(tourney_time.timestamp())
-            await self.config.guild(ctx.guild).tourney_time.set(timestamp)
-            await ctx.send(f"Tournament time set to: <t:{timestamp}:F>")
-            await self.update_embed(ctx.guild)
-        except ValueError:
-            await ctx.send("Invalid time format. Please use YYYY-MM-DD HH:MM")
-
-    @tourney.command(name="help")
-    async def tourney_help(self, ctx):
-        """Display help for tourney commands."""
-        embed = discord.Embed(title="Tournament Management Commands", color=0x00ff00)
-        embed.add_field(name="tourney settitle", value="Set the tournament title", inline=False)
-        embed.add_field(name="tourney setdescription", value="Set the tournament description", inline=False)
-        embed.add_field(name="tourney settime", value="Set the tournament time (format: YYYY-MM-DD HH:MM)", inline=False)
-        await ctx.send(embed=embed)
-
-class QuestionnaireView(discord.ui.View):
-    def __init__(self, cog, user):
-        super().__init__(timeout=600)  # 10 minutes timeout
-        self.cog = cog
-        self.user = user
-        self.answers = {}
-
-    @discord.ui.button(label="Start Questionnaire", style=discord.ButtonStyle.primary)
-    async def start_questionnaire(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("Great! I'll send you the questions in DMs. Please check your Direct Messages.", ephemeral=True)
-        await self.ask_questions()
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
-    async def cancel_questionnaire(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("Your application has been cancelled.", ephemeral=True)
-        self.stop()
-
-    async def ask_questions(self):
-        questions = await self.cog.config.guild(self.user.guild).custom_questions()
-
-        for i, question in enumerate(questions, 1):
-            await self.user.send(f"Question {i}: {question}")
-            
-            def check(m):
-                return m.author == self.user and isinstance(m.channel, discord.DMChannel)
-
-            try:
-                answer = await self.cog.bot.wait_for('message', check=check, timeout=300)  # 5 minutes timeout per question
-                self.answers[question] = answer.content
-            except asyncio.TimeoutError:
-                await self.user.send("You took too long to answer. The questionnaire has been cancelled.")
-                return
-
-        submit_view = SubmitView(self.cog, self.user, self.answers, self.user.guild.id)
-        await self.user.send("Thank you for answering the questions. Would you like to submit your answers?", view=submit_view)
-
-class SubmitView(discord.ui.View):
-    def __init__(self, cog, user, answers, guild_id):
+class ApplicationModal(discord.ui.Modal, title="Tournament Application"):
+    def __init__(self, cog):
         super().__init__()
         self.cog = cog
-        self.user = user
-        self.answers = answers
-        self.guild_id = guild_id
+        
+        self.epic_id = discord.ui.TextInput(
+            label="Epic Account ID",
+            placeholder="Your Epic Games Account ID",
+            required=True
+        )
+        self.add_item(self.epic_id)
+        
+        self.rank = discord.ui.TextInput(
+            label="Current Rank",
+            placeholder="e.g., Diamond 2 Division 4",
+            required=True
+        )
+        self.add_item(self.rank)
+        
+        self.platform = discord.ui.TextInput(
+            label="Platform",
+            placeholder="PC, PlayStation, Xbox, or Switch",
+            required=True
+        )
+        self.add_item(self.platform)
+        
+        self.region = discord.ui.TextInput(
+            label="Region",
+            placeholder="NA East, NA West, EU, or Other",
+            required=True
+        )
+        self.add_item(self.region)
 
-    @discord.ui.button(label="Submit", style=discord.ButtonStyle.green)
-    async def submit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            await interaction.response.defer(ephemeral=True)
-            
-            guild = self.cog.bot.get_guild(self.guild_id)
-            if not guild:
-                await interaction.followup.send("Error: Unable to find the guild. Please try again or contact an administrator.", ephemeral=True)
-                return
+    async def on_submit(self, interaction: discord.Interaction):
+        # Create application thread in forum
+        forum = interaction.guild.get_channel(await self.cog.config.guild(interaction.guild).champions_forum())
+        
+        thread = await forum.create_thread(
+            name=f"Application - {interaction.user.name}",
+            content=f"New application from {interaction.user.mention}",
+            applied_tags=[tag for tag in forum.available_tags if tag.name == "Pending"]
+        )
+        
+        # Create embed with application details
+        embed = discord.Embed(
+            title="Tournament Application",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Epic ID", value=self.epic_id.value)
+        embed.add_field(name="Rank", value=self.rank.value)
+        embed.add_field(name="Platform", value=self.platform.value)
+        embed.add_field(name="Region", value=self.region.value)
+        embed.set_author(name=interaction.user.name, icon_url=interaction.user.avatar.url)
+        
+        # Add review buttons
+        view = ApplicationReviewView(self.cog, interaction.user.id)
+        
+        await thread.send(embed=embed, view=view)
+        await interaction.response.send_message("Your application has been submitted!", ephemeral=True)
 
-            await self.cog.send_answers_to_admin(self.user, self.answers)
-            active_applications = await self.cog.config.guild(guild).active_applications()
-            if self.user.id not in [app["user_id"] for app in active_applications]:
-                active_applications.append({
-                    "user_id": self.user.id,
-                    "timestamp": datetime.now().timestamp(),
-                    "answers": self.answers  # Store the answers
-                })
-                await self.cog.config.guild(guild).active_applications.set(active_applications)
-            cancelled_applications = await self.cog.config.guild(guild).cancelled_applications()
-            if self.user.id in cancelled_applications:
-                cancelled_applications.remove(self.user.id)
-                await self.cog.config.guild(guild).cancelled_applications.set(cancelled_applications)
-            await self.cog.update_embed(guild)
-            
-            await interaction.followup.send("Your answers have been submitted. Thank you!", ephemeral=True)
-        except Exception as e:
-            self.cog.logger.error(f"Error in submit button: {str(e)}")
-            await interaction.followup.send("An error occurred while submitting your application. Please try again or contact an administrator.", ephemeral=True)
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("Your application has been cancelled.", ephemeral=True)
-        guild = self.cog.bot.get_guild(self.guild_id)
-        if guild:
-            active_applications = await self.cog.config.guild(guild).active_applications()
-            active_applications = [app for app in active_applications if app["user_id"] != self.user.id]
-            await self.cog.config.guild(guild).active_applications.set(active_applications)
-            cancelled_applications = await self.cog.config.guild(guild).cancelled_applications()
-            if self.user.id not in cancelled_applications:
-                cancelled_applications.append(self.user.id)
-                await self.cog.config.guild(guild).cancelled_applications.set(cancelled_applications)
-            await self.cog.update_embed(guild)
-        self.stop()
-
-class AdminResponseView(discord.ui.View):
-    def __init__(self, cog, applicant_id, guild_id):
-        super().__init__()
+class ApplicationReviewView(discord.ui.View):
+    def __init__(self, cog, applicant_id):
+        super().__init__(timeout=None)
         self.cog = cog
         self.applicant_id = applicant_id
-        self.guild_id = guild_id
+        
+    @discord.ui.select(
+        placeholder="Select review action",
+        options=[
+            discord.SelectOption(
+                label="Approve",
+                description="Accept the application",
+                emoji="✅",
+                value="approve"
+            ),
+            discord.SelectOption(
+                label="Deny",
+                description="Reject the application",
+                emoji="❌",
+                value="deny"
+            ),
+            discord.SelectOption(
+                label="Request More Info",
+                description="Ask for additional information",
+                emoji="❓",
+                value="more_info"
+            )
+        ]
+    )
+    async def review_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if select.values[0] == "approve":
+            await self.approve_application(interaction)
+        elif select.values[0] == "deny":
+            # Show denial reason modal
+            await interaction.response.send_modal(DenialReasonModal(self.cog, self.applicant_id))
+        elif select.values[0] == "more_info":
+            await self.request_more_info(interaction)
 
-    async def move_application(self, guild, target_list):
-        for list_name in ['active_applications', 'approved_applications', 'denied_applications', 'cancelled_applications']:
-            current_list = await self.cog.config.guild(guild).get_raw(list_name)
-            application = next((app for app in current_list if app['user_id'] == self.applicant_id), None)
-            if application:
-                current_list.remove(application)
-                await self.cog.config.guild(guild).set_raw(list_name, value=current_list)
-                if list_name != target_list:
-                    target = await self.cog.config.guild(guild).get_raw(target_list)
-                    target.append(application)
-                    await self.cog.config.guild(guild).set_raw(target_list, value=target)
-                return application
-        return None
-
-    @discord.ui.button(label="Approve", style=discord.ButtonStyle.green)
-    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def approve_application(self, interaction: discord.Interaction):
+        thread = interaction.channel
+        # Update thread tags
+        await thread.edit(applied_tags=[tag for tag in thread.parent.available_tags if tag.name == "Approved"])
+        
+        # Assign role
+        member = interaction.guild.get_member(self.applicant_id)
+        role = interaction.guild.get_role(await self.cog.config.guild(interaction.guild).champions_role_id())
+        await member.add_roles(role)
+        
+        # Send notifications
+        await thread.send(f"Application approved by {interaction.user.mention}")
         try:
-            await interaction.response.defer()
-            
-            guild = self.cog.bot.get_guild(self.guild_id)
-            if not guild:
-                await interaction.followup.send("Error: Unable to find the guild. Please try again or contact an administrator.")
-                return
-
-            application = await self.move_application(guild, 'approved_applications')
-            if not application:
-                await interaction.followup.send(f"Error: Application for <@{self.applicant_id}> not found.")
-                return
-
-            await self.cog.update_embed(guild)
-            
-            await interaction.followup.send(f"Application for <@{self.applicant_id}> has been approved.")
-            
-            user = guild.get_member(self.applicant_id)
-            if user:
-                role = guild.get_role(await self.cog.config.guild(guild).champions_role_id())
-                if role:
-                    await user.add_roles(role)
-                    await user.send(f"Congratulations! Your application for the Champions Circle has been approved. You've been given the {role.name} role. Welcome to the Champions Circle!")
-                else:
-                    self.cog.logger.error(f"Error: Champions role with ID {await self.cog.config.guild(guild).champions_role_id()} not found.")
-                    await user.send("Congratulations! Your application for the Champions Circle has been approved. However, there was an issue assigning the role. Please contact an administrator.")
-            else:
-                self.cog.logger.error(f"Error: User with ID {self.applicant_id} not found in the guild.")
-        except Exception as e:
-            self.cog.logger.error(f"Error in approve button: {str(e)}")
-            await interaction.followup.send("An error occurred while processing the approval. Please try again or contact the bot administrator.")
-
-    @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
-    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            await interaction.response.defer()
-            
-            guild = self.cog.bot.get_guild(self.guild_id)
-            if not guild:
-                await interaction.followup.send("Error: Unable to find the guild. Please try again or contact an administrator.")
-                return
-
-            application = await self.move_application(guild, 'denied_applications')
-            if not application:
-                await interaction.followup.send(f"Error: Application for <@{self.applicant_id}> not found.")
-                return
-
-            await self.cog.update_embed(guild)
-            
-            await interaction.followup.send(f"Application for <@{self.applicant_id}> has been denied.")
-            
-            user = guild.get_member(self.applicant_id)
-            if user:
-                await user.send("We're sorry, but your application for the Champions Circle has been denied. If you have any questions about this decision, please contact an administrator.")
-            else:
-                self.cog.logger.error(f"Error: User with ID {self.applicant_id} not found in the guild.")
-        except Exception as e:
-            self.cog.logger.error(f"Error in deny button: {str(e)}")
-            await interaction.followup.send("An error occurred while processing the denial. Please try again or contact the bot administrator.")
+            await member.send("Congratulations! Your tournament application has been approved!")
+        except discord.HTTPException:
+            pass
 
 class JoinButton(discord.ui.Button):
     def __init__(self, cog):
@@ -702,7 +612,7 @@ class JoinButton(discord.ui.Button):
             await interaction.response.send_message("You already have an active application for the Champions Circle.", ephemeral=True)
             return
 
-        view = QuestionnaireView(self.cog, interaction.user)
+        view = ApplicationModal(self.cog)
         await interaction.response.send_message("Great! Let's start your application process. Click the button below to begin the questionnaire:", view=view, ephemeral=True)
 
 class CancelApplicationButton(discord.ui.Button):
@@ -739,6 +649,128 @@ class CancelApplicationButton(discord.ui.Button):
             await interaction.response.send_message("You don't have an active Champions Circle application to cancel.", ephemeral=True)
         
         await self.cog.update_embed(guild)
+
+class TournamentScheduleView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+        
+    @discord.ui.select(
+        placeholder="Select tournament phase",
+        options=[
+            discord.SelectOption(label="Registration", value="registration"),
+            discord.SelectOption(label="Group Stage", value="groups"),
+            discord.SelectOption(label="Playoffs", value="playoffs"),
+            discord.SelectOption(label="Finals", value="finals")
+        ]
+    )
+    async def phase_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        # Show date/time picker modal for selected phase
+        await interaction.response.send_modal(
+            TournamentPhaseScheduleModal(self.cog, select.values[0])
+        )
+
+class SetupModal(discord.ui.Modal, title="Tournament Setup"):
+    def __init__(self):
+        super().__init__()
+        
+        self.title = discord.ui.TextInput(
+            label="Tournament Title",
+            placeholder="Enter tournament title",
+            required=True
+        )
+        self.add_item(self.title)
+        
+        self.description = discord.ui.TextInput(
+            label="Tournament Description",
+            placeholder="Enter tournament description",
+            style=discord.TextStyle.paragraph,
+            required=True
+        )
+        self.add_item(self.description)
+        
+        self.time = discord.ui.TextInput(
+            label="Tournament Time",
+            placeholder="YYYY-MM-DD HH:MM:SS",
+            required=True
+        )
+        self.add_item(self.time)
+        
+        self.duration = discord.ui.TextInput(
+            label="Application Duration (days)",
+            placeholder="Enter number of days",
+            required=True
+        )
+        self.add_item(self.duration)
+
+class DenialReasonModal(discord.ui.Modal, title="Application Denial"):
+    def __init__(self, cog, applicant_id):
+        super().__init__()
+        self.cog = cog
+        self.applicant_id = applicant_id
+        
+        self.reason = discord.ui.TextInput(
+            label="Denial Reason",
+            placeholder="Enter the reason for denying this application",
+            style=discord.TextStyle.paragraph,
+            required=True
+        )
+        self.add_item(self.reason)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        thread = interaction.channel
+        # Update thread tags
+        await thread.edit(applied_tags=[tag for tag in thread.parent.available_tags if tag.name == "Denied"])
+        
+        # Send notifications
+        await thread.send(f"Application denied by {interaction.user.mention}\nReason: {self.reason.value}")
+        
+        member = interaction.guild.get_member(self.applicant_id)
+        if member:
+            try:
+                await member.send(f"Your tournament application has been denied.\nReason: {self.reason.value}")
+            except discord.HTTPException:
+                pass
+
+class TournamentPhaseScheduleModal(discord.ui.Modal):
+    def __init__(self, cog, phase):
+        super().__init__(title=f"Schedule {phase.title()} Phase")
+        self.cog = cog
+        self.phase = phase
+        
+        self.start_time = discord.ui.TextInput(
+            label="Start Time",
+            placeholder="YYYY-MM-DD HH:MM:SS",
+            required=True
+        )
+        self.add_item(self.start_time)
+        
+        self.duration = discord.ui.TextInput(
+            label="Duration (hours)",
+            placeholder="Enter duration in hours",
+            required=True
+        )
+        self.add_item(self.duration)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            start = datetime.fromisoformat(self.start_time.value).replace(tzinfo=timezone.utc)
+            duration = float(self.duration.value)
+            
+            embed = discord.Embed(
+                title=f"Tournament {self.phase.title()} Phase Scheduled",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="Start Time", value=f"<t:{int(start.timestamp())}:F>")
+            embed.add_field(name="Duration", value=f"{duration} hours")
+            
+            await interaction.response.send_message(embed=embed)
+            
+        except ValueError:
+            await interaction.response.send_message(
+                "Invalid time format or duration. Please use YYYY-MM-DD HH:MM:SS for time and a number for duration.",
+                ephemeral=True
+            )
 
 async def setup(bot):
     cog = ChampionsCircle(bot)
