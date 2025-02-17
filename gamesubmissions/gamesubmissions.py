@@ -326,20 +326,22 @@ class GameSubmissions(commands.Cog):
                 inline=False
             )
         
-        # Clear the poll channel and send new poll
-        await forum.purge()
-        poll_message = await forum.send(embed=embed)
+        # Create a new thread for the poll
+        poll_thread = await forum.create_thread(
+            name="🎮 Current Game Poll",
+            embed=embed,
+            applied_tags=[poll_tag] if poll_tag else []
+        )
         
         # Add reaction options
         for i in range(min(len(submissions), len(number_emojis))):
-            await poll_message.add_reaction(number_emojis[i])
+            await poll_thread.thread.message.add_reaction(number_emojis[i])
         
         # Update last poll time and message ID
         await self.config.guild(ctx.guild).last_poll_time.set(datetime.now().isoformat())
-        await self.config.guild(ctx.guild).current_poll_message_id.set(poll_message.id)
+        await self.config.guild(ctx.guild).current_poll_message_id.set(poll_thread.thread.message.id)
         
-        if forum != ctx.channel:
-            await ctx.send(f"✅ Poll created in {forum.mention}!")
+        await ctx.send(f"✅ Poll created! Vote here: {poll_thread.thread.jump_url}")
 
     @commands.admin_or_permissions(administrator=True)
     @gamesubmit.command(name="endpoll")
@@ -413,7 +415,7 @@ class GameSubmissions(commands.Cog):
         await ctx.send("✅ Poll ended and winner announced!")
 
     async def update_game_list_channel(self, guild: discord.Guild):
-        """Update the game list channel"""
+        """Update the game list thread in the forum"""
         channels = await self.config.guild(guild).channels()
         forum = guild.get_channel(channels["game_forum"])
         if not forum:
@@ -438,9 +440,28 @@ class GameSubmissions(commands.Cog):
                 inline=False
             )
 
-        # Clear channel and send new embed
-        await forum.purge()
-        await forum.send(embed=embed)
+        # Find existing game list thread or create new one
+        game_list_thread = None
+        async for thread in forum.archived_threads(limit=None):
+            if thread.name == "Game List":
+                await thread.edit(archived=False)
+                game_list_thread = thread
+                break
+
+        if not game_list_thread:
+            # Create new thread if none exists
+            game_list_thread = await forum.create_thread(
+                name="Game List",
+                content="Current list of submitted games",
+                embed=embed,
+                applied_tags=[]
+            )
+            await game_list_thread.thread.pin()
+        else:
+            # Update existing thread
+            async for message in game_list_thread.history(limit=1):
+                await message.edit(embed=embed)
+                break
 
 def setup(bot: Red):
     bot.add_cog(GameSubmissions(bot)) 
