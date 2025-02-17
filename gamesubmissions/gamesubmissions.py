@@ -5,6 +5,8 @@ from redbot.core.utils.chat_formatting import pagify
 from datetime import datetime, timedelta
 from typing import Dict, List
 import asyncio
+from discord.ui import Button, View, Select
+import uuid
 
 class GameSubmissions(commands.Cog):
     """A cog for managing game submissions and creating weekly polls."""
@@ -153,9 +155,6 @@ class GameSubmissions(commands.Cog):
         
         Run the command without parameters to start an interactive submission process.
         """
-        channels = await self.config.guild(ctx.guild).channels()
-        forum = ctx.guild.get_channel(channels["game_forum"])
-
         # Interactive submission process if no game_name provided
         if game_name is None:
             try:
@@ -214,24 +213,16 @@ class GameSubmissions(commands.Cog):
                 if game_price:
                     confirm_embed.add_field(name="Price", value=game_price, inline=True)
 
-                confirm_msg = await ctx.send(embed=confirm_embed)
-                await confirm_msg.add_reaction("✅")
-                await confirm_msg.add_reaction("❌")
-
-                # Wait for confirmation
-                try:
-                    reaction, user = await self.bot.wait_for(
-                        "reaction_add",
-                        timeout=30.0,
-                        check=lambda r, u: u == ctx.author and str(r.emoji) in ["✅", "❌"] and r.message.id == confirm_msg.id
-                    )
-                    
-                    if str(reaction.emoji) == "❌":
-                        await ctx.send("Game submission cancelled.")
-                        return
-
-                except asyncio.TimeoutError:
+                view = ConfirmSubmissionView()
+                confirm_msg = await ctx.send(embed=confirm_embed, view=view)
+                
+                # Wait for button interaction
+                await view.wait()
+                if view.value is None:
                     await ctx.send("Submission timed out. Please try again.")
+                    return
+                if not view.value:
+                    await ctx.send("Game submission cancelled.")
                     return
 
             except asyncio.TimeoutError:
@@ -249,77 +240,28 @@ class GameSubmissions(commands.Cog):
                 )
                 game_url = msg.content
 
-        # Process submission
+        # Store submission
         async with self.config.guild(ctx.guild).submissions() as submissions:
-            try:
-                # Create forum post for the game
-                embed = discord.Embed(
-                    title=game_name,
-                    url=game_url,
-                    description=f"Submitted by: {ctx.author.mention}\n\nDiscuss this game submission in this thread!",
-                    color=discord.Color.green(),
-                    timestamp=datetime.now()
-                )
-                
-                # Add price information if available
-                if 'is_paid' in locals():
-                    embed.add_field(
-                        name="Type",
-                        value="Paid" if is_paid else "Free",
-                        inline=True
-                    )
-                    if game_price:
-                        embed.add_field(
-                            name="Price",
-                            value=game_price,
-                            inline=True
-                        )
+            # Store submission data
+            submission_data = {
+                "name": game_name,
+                "url": game_url,
+                "submitted_by": ctx.author.id,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # Add price information if available
+            if 'is_paid' in locals():
+                submission_data["is_paid"] = is_paid
+                if game_price:
+                    submission_data["price"] = game_price
 
-                if forum and hasattr(forum, 'create_thread'):
-                    submitted_tag = discord.utils.get(forum.available_tags, name="Submitted")
-                    thread = await forum.create_thread(
-                        name=game_name,
-                        embed=embed,
-                        applied_tags=[submitted_tag] if submitted_tag else []
-                    )
-                    thread_id = thread.thread.id
-                    thread_url = thread.thread.jump_url
-                else:
-                    thread_id = None
-                    thread_url = None
-
-                # Store submission data
-                submission_data = {
-                    "name": game_name,
-                    "url": game_url,
-                    "submitted_by": ctx.author.id,
-                    "timestamp": datetime.now().isoformat(),
-                    "thread_id": thread_id
-                }
-                
-                # Add price information if available
-                if 'is_paid' in locals():
-                    submission_data["is_paid"] = is_paid
-                    if game_price:
-                        submission_data["price"] = game_price
-
-                submissions[game_name.lower()] = submission_data
-
-                if thread_url:
-                    await ctx.send(f"✅ Game submitted! Discuss it here: {thread_url}")
-                else:
-                    await ctx.send(f"✅ Game submitted!")
-                
-                await self.update_game_list_channel(ctx.guild)
-
-            except Exception as e:
-                await ctx.send(f"✅ Game submitted, but couldn't create forum thread: {str(e)}")
-                submissions[game_name.lower()] = {
-                    "name": game_name,
-                    "url": game_url,
-                    "submitted_by": ctx.author.id,
-                    "timestamp": datetime.now().isoformat()
-                }
+            submissions[game_name.lower()] = submission_data
+            
+            await ctx.send(f"✅ Game submitted!")
+            
+            # Update the game list thread
+            await self.update_game_list_channel(ctx.guild)
 
     @gamesubmit.command(name="remove")
     async def remove_game(self, ctx: commands.Context, *, game_name: str):
@@ -413,51 +355,46 @@ class GameSubmissions(commands.Cog):
             await ctx.send("❌ Channels not set up! Please run `[p]gamesubmit setup` first.")
             return
 
-        # Update forum tags for games in poll
-        submitted_tag = discord.utils.get(forum.available_tags, name="Submitted")
-        poll_tag = discord.utils.get(forum.available_tags, name="In Poll")
-        
-        for game_key, game in submissions.items():
-            if thread_id := game.get("thread_id"):
-                thread = await forum.fetch_thread(thread_id)
-                if thread:
-                    # Update tags to show game is in poll
-                    await thread.edit(applied_tags=[poll_tag] if poll_tag else [])
+        if not submissions:
+            await ctx.send("❌ No games to create a poll with!")
+            return
 
         # Create the poll embed
         embed = discord.Embed(
             title="🎮 Game Poll",
-            description="Vote for which game you'd like to see played next!\nPoll closes in 7 days.",
+            description="Select which game you'd like to see played next!\nPoll closes in 7 days.",
             color=discord.Color.blue(),
             timestamp=datetime.now()
         )
         
-        # Add games to the poll with number emojis
-        number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
-        
-        for i, (game_key, game) in enumerate(submissions.items()):
-            if i >= len(number_emojis):  # Limit to 10 games per poll
-                break
+        # Add games to the poll
+        games_list = []
+        for game_key, game in submissions.items():
+            games_list.append(game)
+            price_info = f" - {game['price']}" if game.get('price') else ""
+            type_info = "Paid" if game.get('is_paid') else "Free"
             embed.add_field(
-                name=f"{number_emojis[i]} {game['name']}",
-                value=f"[Link]({game['url']})",
+                name=game['name'],
+                value=f"[Link]({game['url']})\n{type_info}{price_info}",
                 inline=False
             )
+
+        # Create view with select menu
+        view = PollView(games_list)
         
         # Create a new thread for the poll
         poll_thread = await forum.create_thread(
             name="🎮 Current Game Poll",
             embed=embed,
-            applied_tags=[poll_tag] if poll_tag else []
+            applied_tags=[discord.utils.get(forum.available_tags, name="Active Poll")]
         )
         
-        # Add reaction options
-        for i in range(min(len(submissions), len(number_emojis))):
-            await poll_thread.thread.message.add_reaction(number_emojis[i])
+        # Send poll message with view
+        poll_message = await poll_thread.thread.send(embed=embed, view=view)
         
-        # Update last poll time and message ID
+        # Store poll data
         await self.config.guild(ctx.guild).last_poll_time.set(datetime.now().isoformat())
-        await self.config.guild(ctx.guild).current_poll_message_id.set(poll_thread.thread.message.id)
+        await self.config.guild(ctx.guild).current_poll_message_id.set(poll_message.id)
         
         await ctx.send(f"✅ Poll created! Vote here: {poll_thread.thread.jump_url}")
 
@@ -591,6 +528,98 @@ class GameSubmissions(commands.Cog):
                 if not message.pinned:
                     await message.pin()
                 break
+
+    @commands.admin_or_permissions(administrator=True)
+    @gamesubmit.command(name="clear")
+    async def clear_setup(self, ctx: commands.Context, confirm: bool = False):
+        """Clear all channels and reset the configuration
+        
+        Use `[p]gamesubmit clear true` to confirm the action.
+        This will delete all created channels and reset the configuration.
+        """
+        if not confirm:
+            await ctx.send("⚠️ This will delete all game submission channels and reset the configuration.\n"
+                         "Run `[p]gamesubmit clear true` to confirm.")
+            return
+
+        channels = await self.config.guild(ctx.guild).channels()
+        
+        # Delete forum channel if it exists
+        if channels["game_forum"]:
+            forum = ctx.guild.get_channel(channels["game_forum"])
+            if forum:
+                try:
+                    await forum.delete(reason="Game submissions clear command")
+                except discord.Forbidden:
+                    await ctx.send("⚠️ Could not delete forum channel - missing permissions")
+                except Exception as e:
+                    await ctx.send(f"⚠️ Error deleting forum channel: {str(e)}")
+
+        # Delete hall of fame channel if it exists
+        if channels["hall_of_fame"]:
+            hall_of_fame = ctx.guild.get_channel(channels["hall_of_fame"])
+            if hall_of_fame:
+                try:
+                    await hall_of_fame.delete(reason="Game submissions clear command")
+                except discord.Forbidden:
+                    await ctx.send("⚠️ Could not delete hall of fame channel - missing permissions")
+                except Exception as e:
+                    await ctx.send(f"⚠️ Error deleting hall of fame channel: {str(e)}")
+
+        # Reset all configuration
+        await self.config.guild(ctx.guild).clear()
+        
+        await ctx.send("✅ All channels deleted and configuration reset. "
+                      "You can now run `[p]gamesubmit setup` to start fresh.")
+
+class PollView(View):
+    def __init__(self, games: list, timeout: int = 604800):  # 7 days default
+        super().__init__(timeout=timeout)
+        self.votes = {}
+        
+        # Create select menu for voting
+        options = [
+            discord.SelectOption(
+                label=game["name"][:100],  # Discord has 100 char limit for labels
+                description=f"{'Paid' if game.get('is_paid') else 'Free'}"[:100],
+                value=str(i)
+            ) for i, game in enumerate(games)
+        ]
+        
+        select = Select(
+            placeholder="Select a game to vote for...",
+            options=options,
+            custom_id=f"poll_select_{uuid.uuid4()}"
+        )
+        
+        async def select_callback(interaction: discord.Interaction):
+            user_id = interaction.user.id
+            choice = int(select.values[0])
+            self.votes[user_id] = choice
+            await interaction.response.send_message(
+                f"You voted for {games[choice]['name']}!",
+                ephemeral=True
+            )
+            
+        select.callback = select_callback
+        self.add_item(select)
+
+class ConfirmSubmissionView(View):
+    def __init__(self, timeout: int = 30):
+        super().__init__(timeout=timeout)
+        self.value = None
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green, emoji="✅")
+    async def confirm(self, interaction: discord.Interaction, button: Button):
+        self.value = True
+        await interaction.response.defer()
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red, emoji="❌")
+    async def cancel(self, interaction: discord.Interaction, button: Button):
+        self.value = False
+        await interaction.response.defer()
+        self.stop()
 
 def setup(bot: Red):
     bot.add_cog(GameSubmissions(bot)) 
