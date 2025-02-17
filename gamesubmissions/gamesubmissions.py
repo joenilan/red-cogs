@@ -631,23 +631,42 @@ class GameSubmissions(commands.Cog):
             color=discord.Color.blue()
         )
         
+        # Split games into free and paid
+        free_games = []
+        paid_games = []
+        
         for game_key in sorted(submissions.keys()):
             game = submissions[game_key]
             submitter = guild.get_member(game["submitted_by"])
             submitter_name = submitter.display_name if submitter else "Unknown User"
             
             value = f"[Link]({game['url']})\nSubmitted by: {submitter_name}"
-            if game.get("is_paid") is not None:
-                value += f"\nType: {'Paid' if game['is_paid'] else 'Free'}"
-                if game.get("price"):
-                    value += f"\nPrice: {game['price']}"
+            if game.get("price"):
+                value += f"\nPrice: {game['price']}"
             
-            embed.add_field(
-                name=game["name"],
-                value=value,
-                inline=False
-            )
-
+            game_entry = {
+                "name": game["name"],
+                "value": value,
+                "inline": False
+            }
+            
+            if game.get("is_paid"):
+                paid_games.append(game_entry)
+            else:
+                free_games.append(game_entry)
+        
+        # Add Free Games section
+        if free_games:
+            embed.add_field(name="🆓 Free Games", value="‾‾‾‾‾‾‾‾‾‾", inline=False)
+            for game in free_games:
+                embed.add_field(**game)
+        
+        # Add Paid Games section
+        if paid_games:
+            embed.add_field(name="💰 Paid Games", value="‾‾‾‾‾‾‾‾‾‾", inline=False)
+            for game in paid_games:
+                embed.add_field(**game)
+        
         try:
             # Get the thread and message using stored IDs
             thread = None
