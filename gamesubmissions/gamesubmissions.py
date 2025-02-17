@@ -142,10 +142,24 @@ class GameSubmissions(commands.Cog):
             color=discord.Color.gold()
         )
         
-        if winners:
-            latest_winner = winners[-1]
+        # Split winners into custom and regular
+        custom_winners = [w for w in winners if w.get("custom_added")]
+        regular_winners = [w for w in winners if not w.get("custom_added")]
+        
+        # Add custom winners section if any exist
+        if custom_winners:
+            custom_list = "\n".join([f"**{winner['game_name']}**" for winner in custom_winners])
             winners_embed.add_field(
-                name="Current Champion",
+                name="Currently Playing",
+                value=custom_list,
+                inline=False
+            )
+        
+        # Add latest regular winner if exists
+        if regular_winners:
+            latest_winner = regular_winners[-1]
+            winners_embed.add_field(
+                name="Latest Winner",
                 value=f"**{latest_winner['game_name']}**\n"
                       f"Votes: {latest_winner['votes']}\n"
                       f"Date: {latest_winner['date']}",
@@ -153,9 +167,9 @@ class GameSubmissions(commands.Cog):
             )
         
         # Add past winners section
-        if len(winners) > 1:
+        if len(regular_winners) > 1:
             past_winners = ""
-            for winner in reversed(winners[:-1][-5:]):  # Last 5 winners excluding current
+            for winner in reversed(regular_winners[:-1][-5:]):  # Last 5 winners excluding current
                 past_winners += f"**{winner['game_name']}** ({winner['date']}) - {winner['votes']} votes\n"
             
             winners_embed.add_field(
@@ -537,7 +551,8 @@ class GameSubmissions(commands.Cog):
             winners.append({
                 "game_name": winner[0],
                 "votes": winner[1],
-                "date": datetime.now().strftime("%Y-%m-%d")
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "custom_added": False  # Default to regular winner
             })
         
         # Keep non-winning games in submissions
@@ -755,8 +770,9 @@ class GameSubmissions(commands.Cog):
         async with self.config.guild(ctx.guild).winners() as winners:
             winners.append({
                 "game_name": game_name,
-                "votes": 0,  # Default to 0 votes for historical entries
-                "date": "2024-02-01"  # Default date for historical entries
+                "votes": 0,
+                "date": "2024-02-01",
+                "custom_added": True  # Flag to identify manually added winners
             })
         
         await self.update_hall_of_fame(ctx.guild)
@@ -782,6 +798,28 @@ class GameSubmissions(commands.Cog):
                     return
             
             await ctx.send(f"❌ {game_name} not found in the Hall of Fame!")
+
+    @commands.admin_or_permissions(administrator=True)
+    @gamesubmit.command(name="completewinner")
+    async def complete_winner(self, ctx: commands.Context, *, game_name: str):
+        """Mark a custom winner as completed and move it to past winners
+        
+        Example:
+        [p]gamesubmit completewinner "Game Name"
+        """
+        async with self.config.guild(ctx.guild).winners() as winners:
+            # Find the custom winner
+            for i, winner in enumerate(winners):
+                if winner.get("custom_added") and winner["game_name"].lower() == game_name.lower():
+                    # Update the winner entry
+                    winner["custom_added"] = False  # No longer in "Currently Playing"
+                    winner["date"] = datetime.now().strftime("%Y-%m-%d")  # Set completion date
+                    winners[i] = winner
+                    await self.update_hall_of_fame(ctx.guild)
+                    await ctx.send(f"✅ Marked {game_name} as completed and moved to past winners!")
+                    return
+            
+            await ctx.send(f"❌ {game_name} not found in currently playing games!")
 
 class PollView(View):
     def __init__(self, games: list, timeout: int = 604800):  # 7 days default
