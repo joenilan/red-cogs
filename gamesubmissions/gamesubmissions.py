@@ -507,7 +507,7 @@ class GameSubmissions(commands.Cog):
         game_list_thread = None
         
         # Check active threads first
-        async for thread in forum.threads():
+        for thread in forum.threads:
             if thread.name == "Game List":
                 game_list_thread = thread
                 break
