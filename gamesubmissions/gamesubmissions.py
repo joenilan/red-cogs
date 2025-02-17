@@ -450,17 +450,21 @@ class GameSubmissions(commands.Cog):
 
         if not game_list_thread:
             # Create new thread if none exists
-            game_list_thread = await forum.create_thread(
+            thread = await forum.create_thread(
                 name="Game List",
                 content="Current list of submitted games",
                 embed=embed,
                 applied_tags=[]
             )
-            await game_list_thread.thread.pin()
+            # Pin the first message in the thread
+            await thread.message.pin()
+            game_list_thread = thread
         else:
             # Update existing thread
             async for message in game_list_thread.history(limit=1):
                 await message.edit(embed=embed)
+                if not message.pinned:
+                    await message.pin()
                 break
 
 def setup(bot: Red):
