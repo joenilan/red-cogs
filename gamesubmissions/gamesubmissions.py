@@ -487,47 +487,50 @@ class GameSubmissions(commands.Cog):
         
         # Check for ties
         highest_votes = votes[0][1]
-        tied_winners = [game for game, vote_count in votes if vote_count == highest_votes]
+        tied_winners = [(game, submissions[game.lower()]["is_paid"]) for game, vote_count in votes if vote_count == highest_votes]
         
         if len(tied_winners) > 1:
-            # Create tie-breaker poll
-            tie_embed = discord.Embed(
-                title="🎮 Tie-Breaker Poll",
-                description="We have a tie! Vote again to determine the winner.\nPoll closes in 24 hours.",
-                color=discord.Color.orange(),
-                timestamp=datetime.now()
-            )
-            
-            for game_name in tied_winners:
-                game_data = next(game for game in submissions.values() if game["name"] == game_name)
-                price_info = f" - {game_data['price']}" if game_data.get('price') else ""
-                type_info = "Paid" if game_data.get('is_paid') else "Free"
-                tie_embed.add_field(
-                    name=game_name,
-                    value=f"[Link]({game_data['url']})\n{type_info}{price_info}",
-                    inline=False
+            # Check if we have a mix of free and paid games
+            free_games = [game for game, is_paid in tied_winners if not is_paid]
+            if free_games:
+                # Free game wins automatically
+                winner = (free_games[0], highest_votes)
+            else:
+                # All paid games, create tie-breaker
+                tie_embed = discord.Embed(
+                    title="🎮 Tie-Breaker Poll",
+                    description="We have a tie! Vote again to determine the winner.\nPoll closes in 24 hours.",
+                    color=discord.Color.orange(),
+                    timestamp=datetime.now()
                 )
+                
+                for game_name, _ in tied_winners:
+                    game_data = next(game for game in submissions.values() if game["name"] == game_name)
+                    price_info = f" - {game_data['price']}" if game_data.get('price') else ""
+                    tie_embed.add_field(
+                        name=game_name,
+                        value=f"[Link]({game_data['url']})\nPaid{price_info}",
+                        inline=False
+                    )
 
-            # Create view with select menu for tied games
-            tied_games = [game for game in submissions.values() if game["name"] in tied_winners]
-            view = PollView(tied_games, timeout=86400)  # 24 hour timeout
-            
-            # Create tie-breaker thread
-            tiebreaker_thread = await forum.create_thread(
-                name="🎯 Tie-Breaker Poll",
-                embed=tie_embed,
-                applied_tags=[discord.utils.get(forum.available_tags, name="Active Poll")]
-            )
-            
-            tiebreaker_msg = await tiebreaker_thread.thread.send(embed=tie_embed, view=view)
-            await self.config.guild(ctx.guild).current_poll_message_id.set(tiebreaker_msg.id)
-            
-            await ctx.send(f"⚖️ We have a tie between: {', '.join(tied_winners)}\n"
-                         f"A tie-breaker poll has been created here: {tiebreaker_thread.thread.jump_url}")
-            return
-
-        # If no tie, proceed with winner announcement as before
-        winner = votes[0]
+                # Create tie-breaker only for paid games
+                tied_games = [game for game in submissions.values() if game["name"] in [g[0] for g in tied_winners]]
+                view = PollView(tied_games, timeout=86400)  # 24 hour timeout
+                
+                tiebreaker_thread = await forum.create_thread(
+                    name="🎯 Tie-Breaker Poll",
+                    embed=tie_embed,
+                    applied_tags=[discord.utils.get(forum.available_tags, name="Active Poll")]
+                )
+                
+                tiebreaker_msg = await tiebreaker_thread.thread.send(embed=tie_embed, view=view)
+                await self.config.guild(ctx.guild).current_poll_message_id.set(tiebreaker_msg.id)
+                
+                await ctx.send(f"⚖️ We have a tie between paid games: {', '.join(g[0] for g in tied_winners)}\n"
+                             f"A tie-breaker poll has been created here: {tiebreaker_thread.thread.jump_url}")
+                return
+        else:
+            winner = votes[0]
         
         # Add to winners list
         async with self.config.guild(ctx.guild).winners() as winners:
@@ -744,6 +747,41 @@ class GameSubmissions(commands.Cog):
         
         await self.update_hall_of_fame(ctx.guild)
         await ctx.send("✅ Hall of Fame cleared!")
+
+    @commands.admin_or_permissions(administrator=True)
+    @gamesubmit.command(name="addwinner")
+    async def add_winner(self, ctx: commands.Context, *, game_name: str):
+        """Add a past winner to the hall of fame"""
+        async with self.config.guild(ctx.guild).winners() as winners:
+            winners.append({
+                "game_name": game_name,
+                "votes": 0,  # Default to 0 votes for historical entries
+                "date": "2024-02-01"  # Default date for historical entries
+            })
+        
+        await self.update_hall_of_fame(ctx.guild)
+        await ctx.send(f"✅ Added {game_name} to the Hall of Fame!")
+
+    @commands.admin_or_permissions(administrator=True)
+    @gamesubmit.command(name="removewinner")
+    async def remove_winner(self, ctx: commands.Context, *, game_name: str):
+        """Remove a game from the hall of fame
+        
+        Parameters:
+        -----------
+        game_name: str
+            Name of the game to remove
+        """
+        async with self.config.guild(ctx.guild).winners() as winners:
+            # Find and remove the game
+            for i, winner in enumerate(winners):
+                if winner["game_name"].lower() == game_name.lower():
+                    del winners[i]
+                    await self.update_hall_of_fame(ctx.guild)
+                    await ctx.send(f"✅ Removed {game_name} from the Hall of Fame!")
+                    return
+            
+            await ctx.send(f"❌ {game_name} not found in the Hall of Fame!")
 
 class PollView(View):
     def __init__(self, games: list, timeout: int = 604800):  # 7 days default
