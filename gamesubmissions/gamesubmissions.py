@@ -119,24 +119,29 @@ class GameSubmissions(commands.Cog):
         if channels["submissions_forum"]:
             submissions_forum = ctx.guild.get_channel(channels["submissions_forum"])
         if not submissions_forum:
-            submissions_forum = await ctx.guild.create_channel(
-                "game-submissions",
-                discord.ChannelType.forum,
-                category=category,
-                topic="Submit and discuss games to be played",
-                default_auto_archive_duration=10080,  # 7 days
-                default_thread_slowmode_delay=0
-            )
-            channels["submissions_forum"] = submissions_forum.id
-
-            # Create forum tags
             try:
-                await submissions_forum.create_tag("Submitted", emoji="📥")
-                await submissions_forum.create_tag("In Poll", emoji="🗳️")
-                await submissions_forum.create_tag("Winner", emoji="🏆")
-            except AttributeError:
-                # If create_tag is not available, we'll skip tag creation
-                pass
+                submissions_forum = await ctx.guild.create_forum(
+                    name="game-submissions",
+                    category=category,
+                    topic="Submit and discuss games to be played",
+                    reason="Game submissions forum setup",
+                    default_auto_archive_duration=10080,  # 7 days
+                    default_thread_slowmode_delay=0
+                )
+                channels["submissions_forum"] = submissions_forum.id
+
+                # Create forum tags
+                try:
+                    await submissions_forum.create_tag("Submitted", emoji="📥")
+                    await submissions_forum.create_tag("In Poll", emoji="🗳️")
+                    await submissions_forum.create_tag("Winner", emoji="🏆")
+                except AttributeError:
+                    # If create_tag is not available, we'll skip tag creation
+                    pass
+            except discord.Forbidden:
+                await ctx.send("⚠️ Could not create forum channel - missing permissions")
+            except Exception as e:
+                await ctx.send(f"⚠️ Could not create forum channel: {str(e)}")
 
         await self.config.guild(ctx.guild).channels.set(channels)
         await self.config.guild(ctx.guild).poll_category_id.set(category.id)
