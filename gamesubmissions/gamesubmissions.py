@@ -528,15 +528,25 @@ class GameSubmissions(commands.Cog):
                 embed=embed,
                 applied_tags=[]
             )
-            await thread.message.pin()
+            # Send the embed as a new message and pin it
+            list_message = await thread.thread.send(embed=embed)
+            await list_message.pin()
             game_list_thread = thread
         else:
-            # Update existing thread
-            async for message in game_list_thread.history(limit=1):
-                await message.edit(embed=embed)
-                if not message.pinned:
-                    await message.pin()
-                break
+            # Find the pinned message or send a new one
+            pinned_messages = [msg async for msg in game_list_thread.history(limit=None) if msg.pinned]
+            if pinned_messages:
+                try:
+                    await pinned_messages[0].edit(embed=embed)
+                except discord.Forbidden:
+                    # If we can't edit the message, unpin it and send a new one
+                    await pinned_messages[0].unpin()
+                    list_message = await game_list_thread.send(embed=embed)
+                    await list_message.pin()
+            else:
+                # No pinned message found, send a new one
+                list_message = await game_list_thread.send(embed=embed)
+                await list_message.pin()
 
     @commands.admin_or_permissions(administrator=True)
     @gamesubmit.command(name="clear")
