@@ -394,8 +394,8 @@ class GameSubmissions(commands.Cog):
             value = f"[Link]({game['url']})\nSubmitted by: {submitter_name}"
             if game.get("is_paid") is not None:
                 value += f"\nType: {'Paid' if game['is_paid'] else 'Free'}"
-                if game.get("price"):
-                    value += f"\nPrice: {game['price']}"
+            if game.get("price"):
+                value += f"\nPrice: {game['price']}"
             
             embed.add_field(
                 name=game["name"],
@@ -631,37 +631,36 @@ class GameSubmissions(commands.Cog):
             color=discord.Color.blue()
         )
         
-        # Split games into free and paid
+        # Split and sort games into free and paid
         free_games = []
         paid_games = []
         
-        for game_key in sorted(submissions.keys()):
-            game = submissions[game_key]
+        # First, sort all submissions by name
+        sorted_submissions = dict(sorted(submissions.items(), key=lambda x: x[1]["name"].lower()))
+        
+        for game_key, game in sorted_submissions.items():
             submitter = guild.get_member(game["submitted_by"])
             submitter_name = submitter.display_name if submitter else "Unknown User"
             
             value = f"[Link]({game['url']})\nSubmitted by: {submitter_name}"
+            if game.get("is_paid") is not None:
+                value += f"\nType: {'Paid' if game['is_paid'] else 'Free'}"
             if game.get("price"):
                 value += f"\nPrice: {game['price']}"
             
-            game_entry = {
-                "name": game["name"],
-                "value": value,
-                "inline": False
-            }
-            
+            # Add to appropriate category
             if game.get("is_paid"):
-                paid_games.append(game_entry)
+                paid_games.append({"name": game["name"], "value": value, "inline": False})
             else:
-                free_games.append(game_entry)
+                free_games.append({"name": game["name"], "value": value, "inline": False})
         
-        # Add Free Games section
+        # Add Free Games section first
         if free_games:
             embed.add_field(name="🆓 Free Games", value="‾‾‾‾‾‾‾‾‾‾", inline=False)
             for game in free_games:
                 embed.add_field(**game)
         
-        # Add Paid Games section
+        # Add Paid Games section second
         if paid_games:
             embed.add_field(name="💰 Paid Games", value="‾‾‾‾‾‾‾‾‾‾", inline=False)
             for game in paid_games:
