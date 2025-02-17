@@ -5,7 +5,6 @@ from redbot.core.utils.chat_formatting import pagify
 from datetime import datetime, timedelta
 from typing import Dict, List
 import asyncio
-from discord import ForumChannel, Thread
 
 class GameSubmissions(commands.Cog):
     """A cog for managing game submissions and creating weekly polls."""
@@ -23,6 +22,7 @@ class GameSubmissions(commands.Cog):
             "winners": [],  # List of past winners {game_name: str, votes: int, date: str}
             "current_poll_message_id": None,  # ID of the current poll message
             "channels": {
+                "submissions_forum": None,  # New forum channel for game submissions
                 "winners": None,  # Channel for displaying past winners
                 "current_poll": None,  # Channel for the current poll
                 "game_list": None  # Channel for the full game list
@@ -40,33 +40,106 @@ class GameSubmissions(commands.Cog):
 
         channels = await self.config.guild(ctx.guild).channels()
         
-        # Create forum channel for submissions
-        if not channels.get("submissions_forum"):
+        # Set up base permissions for read-only access
+        everyone_role = ctx.guild.default_role
+        read_only_permissions = {
+            everyone_role: discord.PermissionOverwrite(
+                read_messages=True,
+                read_message_history=True,
+                send_messages=False,
+                add_reactions=False,
+                embed_links=False,
+                attach_files=False,
+                external_emojis=True,
+                use_external_emojis=True
+            )
+        }
+
+        # Special permissions for poll channel to allow reactions
+        poll_permissions = {
+            everyone_role: discord.PermissionOverwrite(
+                read_messages=True,
+                read_message_history=True,
+                send_messages=False,
+                add_reactions=True,
+                embed_links=False,
+                attach_files=False,
+                external_emojis=True,
+                use_external_emojis=True
+            )
+        }
+        
+        # Create or get winners channel
+        winners_channel = None
+        if channels["winners"]:
+            winners_channel = ctx.guild.get_channel(channels["winners"])
+        if not winners_channel:
+            winners_channel = await ctx.guild.create_text_channel(
+                "game-winners",
+                category=category,
+                topic="Past winners of game polls",
+                overwrites=read_only_permissions
+            )
+            channels["winners"] = winners_channel.id
+        else:
+            await winners_channel.edit(overwrites=read_only_permissions)
+
+        # Create or get current poll channel
+        poll_channel = None
+        if channels["current_poll"]:
+            poll_channel = ctx.guild.get_channel(channels["current_poll"])
+        if not poll_channel:
+            poll_channel = await ctx.guild.create_text_channel(
+                "play-next",
+                category=category,
+                topic="Current game poll",
+                overwrites=poll_permissions
+            )
+            channels["current_poll"] = poll_channel.id
+        else:
+            await poll_channel.edit(overwrites=poll_permissions)
+
+        # Create or get game list channel
+        list_channel = None
+        if channels["game_list"]:
+            list_channel = ctx.guild.get_channel(channels["game_list"])
+        if not list_channel:
+            list_channel = await ctx.guild.create_text_channel(
+                "game-submissions",
+                category=category,
+                topic="List of all submitted games",
+                overwrites=read_only_permissions
+            )
+            channels["game_list"] = list_channel.id
+        else:
+            await list_channel.edit(overwrites=read_only_permissions)
+
+        # Create or get submissions forum
+        submissions_forum = None
+        if channels["submissions_forum"]:
+            submissions_forum = ctx.guild.get_channel(channels["submissions_forum"])
+        if not submissions_forum:
             submissions_forum = await ctx.guild.create_forum_channel(
                 "game-submissions",
                 category=category,
-                topic="Submit and discuss games here"
+                topic="Submit and discuss games to be played",
+                default_auto_archive_duration=10080,  # 7 days
+                default_thread_slowmode_delay=0
             )
             channels["submissions_forum"] = submissions_forum.id
-        else:
-            submissions_forum = ctx.guild.get_channel(channels["submissions_forum"])
 
-        # Create forum channel for polls
-        if not channels.get("polls_forum"):
-            polls_forum = await ctx.guild.create_forum_channel(
-                "game-polls",
-                category=category,
-                topic="Vote on upcoming games"
-            )
-            channels["polls_forum"] = polls_forum.id
-        else:
-            polls_forum = ctx.guild.get_channel(channels["polls_forum"])
+        # Add forum tags
+        await submissions_forum.create_tag("Submitted", emoji="📥")
+        await submissions_forum.create_tag("In Poll", emoji="🗳️")
+        await submissions_forum.create_tag("Winner", emoji="🏆")
 
-        # Update config
         await self.config.guild(ctx.guild).channels.set(channels)
+        await self.config.guild(ctx.guild).poll_category_id.set(category.id)
+        
         return {
-            "submissions_forum": submissions_forum,
-            "polls_forum": polls_forum
+            "winners": winners_channel,
+            "current_poll": poll_channel,
+            "game_list": list_channel
         }
 
     async def update_winners_channel(self, guild: discord.Guild):
@@ -135,26 +208,37 @@ class GameSubmissions(commands.Cog):
     @gamesubmit.command(name="add")
     async def add_game(self, ctx: commands.Context, game_name: str, game_url: str):
         """Submit a game to the list"""
+        channels = await self.config.guild(ctx.guild).channels()
+        forum = ctx.guild.get_channel(channels["submissions_forum"])
+        
+        if not forum:
+            await ctx.send("❌ Submissions forum not set up! Please run `[p]gamesubmit setup` first.")
+            return
+
+        # Check if game already exists
         async with self.config.guild(ctx.guild).submissions() as submissions:
             if game_name.lower() in submissions:
                 await ctx.send(f"❌ {game_name} is already in the submissions list!")
                 return
-            
-            # Get forum channel
-            channels = await self.config.guild(ctx.guild).channels()
-            forum_channel = ctx.guild.get_channel(channels["submissions_forum"])
-            
-            if not forum_channel or not isinstance(forum_channel, ForumChannel):
-                await ctx.send("❌ Submissions forum not set up!")
-                return
-            
-            # Create thread for the game
-            thread = await forum_channel.create_thread(
-                name=game_name,
-                content=f"Game: {game_name}\nURL: {game_url}\nSubmitted by: {ctx.author.mention}",
-                auto_archive_duration=1440  # 1 day archive duration
+
+            # Create forum post for the game
+            embed = discord.Embed(
+                title=game_name,
+                url=game_url,
+                description=f"Submitted by: {ctx.author.mention}\n\nDiscuss this game submission in this thread!",
+                color=discord.Color.green(),
+                timestamp=datetime.now()
             )
-            
+
+            # Create forum post with the Submitted tag
+            submitted_tag = discord.utils.get(forum.available_tags, name="Submitted")
+            thread = await forum.create_thread(
+                name=game_name,
+                embed=embed,
+                applied_tags=[submitted_tag] if submitted_tag else []
+            )
+
+            # Store submission data
             submissions[game_name.lower()] = {
                 "name": game_name,
                 "url": game_url,
@@ -162,8 +246,8 @@ class GameSubmissions(commands.Cog):
                 "timestamp": datetime.now().isoformat(),
                 "thread_id": thread.thread.id
             }
-        
-        await ctx.send(f"✅ Game {game_name} submitted successfully!")
+
+        await ctx.send(f"✅ Game submitted! Discuss it here: {thread.thread.jump_url}")
 
     @gamesubmit.command(name="remove")
     async def remove_game(self, ctx: commands.Context, *, game_name: str):
@@ -242,20 +326,27 @@ class GameSubmissions(commands.Cog):
     async def create_poll(self, ctx: commands.Context):
         """Create a poll with the current game submissions"""
         submissions = await self.config.guild(ctx.guild).submissions()
-        
-        if not submissions:
-            await ctx.send("❌ There are no games to create a poll with!")
-            return
-        
-        # Get forum channel
         channels = await self.config.guild(ctx.guild).channels()
-        poll_forum = ctx.guild.get_channel(channels["polls_forum"])
         
-        if not poll_forum or not isinstance(poll_forum, ForumChannel):
-            await ctx.send("❌ Poll forum not set up! Please run `[p]gamesubmit setup` first.")
+        forum = ctx.guild.get_channel(channels["submissions_forum"])
+        poll_channel = ctx.guild.get_channel(channels["current_poll"])
+        
+        if not forum or not poll_channel:
+            await ctx.send("❌ Channels not set up! Please run `[p]gamesubmit setup` first.")
             return
+
+        # Update forum tags for games in poll
+        submitted_tag = discord.utils.get(forum.available_tags, name="Submitted")
+        poll_tag = discord.utils.get(forum.available_tags, name="In Poll")
         
-        # Create poll post
+        for game_key, game in submissions.items():
+            if thread_id := game.get("thread_id"):
+                thread = await forum.fetch_thread(thread_id)
+                if thread:
+                    # Update tags to show game is in poll
+                    await thread.edit(applied_tags=[poll_tag] if poll_tag else [])
+
+        # Create the poll embed
         embed = discord.Embed(
             title="🎮 Game Poll",
             description="Vote for which game you'd like to see played next!\nPoll closes in 7 days.",
@@ -263,10 +354,11 @@ class GameSubmissions(commands.Cog):
             timestamp=datetime.now()
         )
         
+        # Add games to the poll with number emojis
         number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
         
         for i, (game_key, game) in enumerate(submissions.items()):
-            if i >= len(number_emojis):
+            if i >= len(number_emojis):  # Limit to 10 games per poll
                 break
             embed.add_field(
                 name=f"{number_emojis[i]} {game['name']}",
@@ -274,22 +366,20 @@ class GameSubmissions(commands.Cog):
                 inline=False
             )
         
-        # Create forum post
-        poll_post = await poll_forum.create_thread(
-            name="Game Poll - Vote Now!",
-            embed=embed,
-            auto_archive_duration=10080  # 1 week archive duration
-        )
+        # Clear the poll channel and send new poll
+        await poll_channel.purge()
+        poll_message = await poll_channel.send(embed=embed)
         
-        # Add reactions
+        # Add reaction options
         for i in range(min(len(submissions), len(number_emojis))):
-            await poll_post.message.add_reaction(number_emojis[i])
+            await poll_message.add_reaction(number_emojis[i])
         
-        # Update config
+        # Update last poll time and message ID
         await self.config.guild(ctx.guild).last_poll_time.set(datetime.now().isoformat())
-        await self.config.guild(ctx.guild).current_poll_message_id.set(poll_post.message.id)
+        await self.config.guild(ctx.guild).current_poll_message_id.set(poll_message.id)
         
-        await ctx.send(f"✅ Poll created in {poll_forum.mention}!")
+        if poll_channel != ctx.channel:
+            await ctx.send(f"✅ Poll created in {poll_channel.mention}!")
 
     @commands.admin_or_permissions(administrator=True)
     @gamesubmit.command(name="endpoll")
@@ -297,14 +387,14 @@ class GameSubmissions(commands.Cog):
         """End the current poll and announce the winner"""
         poll_message_id = await self.config.guild(ctx.guild).current_poll_message_id()
         channels = await self.config.guild(ctx.guild).channels()
-        poll_forum = ctx.guild.get_channel(channels["polls_forum"])
+        poll_channel = ctx.guild.get_channel(channels["current_poll"])
         
-        if not poll_forum or not poll_message_id:
+        if not poll_channel or not poll_message_id:
             await ctx.send("❌ No active poll found!")
             return
         
         try:
-            poll_post = await poll_forum.fetch_thread(poll_message_id)
+            poll_message = await poll_channel.fetch_message(poll_message_id)
         except discord.NotFound:
             await ctx.send("❌ Poll message not found!")
             return
@@ -317,7 +407,7 @@ class GameSubmissions(commands.Cog):
         for i, (game_key, game) in enumerate(submissions.items()):
             if i >= len(number_emojis):
                 break
-            reaction = discord.utils.get(poll_post.message.reactions, emoji=number_emojis[i])
+            reaction = discord.utils.get(poll_message.reactions, emoji=number_emojis[i])
             count = reaction.count - 1 if reaction else 0  # Subtract 1 to exclude bot's reaction
             votes.append((game["name"], count))
         
@@ -351,7 +441,7 @@ class GameSubmissions(commands.Cog):
                 inline=False
             )
         
-        await poll_post.message.reply(embed=embed)
+        await poll_channel.send(embed=embed)
         await ctx.send("✅ Poll ended and winner announced!")
 
 def setup(bot: Red):
