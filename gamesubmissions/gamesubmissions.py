@@ -16,23 +16,19 @@ class GameSubmissions(commands.Cog):
         )
         
         default_guild = {
-            "submissions": {},  # Dict of game submissions {game_name: {url: str, submitted_by: int, timestamp: str}}
-            "last_poll_time": None,  # Timestamp of the last poll created
-            "poll_category_id": None,  # Category where all poll-related channels will be
-            "winners": [],  # List of past winners {game_name: str, votes: int, date: str}
-            "current_poll_message_id": None,  # ID of the current poll message
+            "submissions": {},  # Dict of game submissions
+            "last_poll_time": None,
+            "current_poll_message_id": None,
+            "winners": [],
             "channels": {
-                "submissions_forum": None,  # New forum channel for game submissions
-                "winners": None,  # Channel for displaying past winners
-                "current_poll": None,  # Channel for the current poll
-                "game_list": None  # Channel for the full game list
+                "game_forum": None,  # Single forum channel for everything
             }
         }
         
         self.config.register_guild(**default_guild)
 
     async def initialize_channels(self, ctx: commands.Context, category_id: int):
-        """Initialize or get the required channels in the Polls category"""
+        """Initialize the forum channel"""
         category = ctx.guild.get_channel(category_id)
         if not category or not isinstance(category, discord.CategoryChannel):
             await ctx.send("❌ Invalid category ID or category not found!")
@@ -40,126 +36,60 @@ class GameSubmissions(commands.Cog):
 
         channels = await self.config.guild(ctx.guild).channels()
         
-        # Set up base permissions for read-only access
-        everyone_role = ctx.guild.default_role
-        read_only_permissions = {
-            everyone_role: discord.PermissionOverwrite(
-                read_messages=True,
-                read_message_history=True,
-                send_messages=False,
-                add_reactions=False,
-                embed_links=False,
-                attach_files=False,
-                external_emojis=True,
-                use_external_emojis=True
-            )
-        }
-
-        # Special permissions for poll channel to allow reactions
-        poll_permissions = {
-            everyone_role: discord.PermissionOverwrite(
-                read_messages=True,
-                read_message_history=True,
-                send_messages=False,
-                add_reactions=True,
-                embed_links=False,
-                attach_files=False,
-                external_emojis=True,
-                use_external_emojis=True
-            )
-        }
-        
-        # Create or get winners channel
-        winners_channel = None
-        if channels["winners"]:
-            winners_channel = ctx.guild.get_channel(channels["winners"])
-        if not winners_channel:
-            winners_channel = await ctx.guild.create_text_channel(
-                "game-winners",
-                category=category,
-                topic="Past winners of game polls",
-                overwrites=read_only_permissions
-            )
-            channels["winners"] = winners_channel.id
-        else:
-            await winners_channel.edit(overwrites=read_only_permissions)
-
-        # Create or get current poll channel
-        poll_channel = None
-        if channels["current_poll"]:
-            poll_channel = ctx.guild.get_channel(channels["current_poll"])
-        if not poll_channel:
-            poll_channel = await ctx.guild.create_text_channel(
-                "play-next",
-                category=category,
-                topic="Current game poll",
-                overwrites=poll_permissions
-            )
-            channels["current_poll"] = poll_channel.id
-        else:
-            await poll_channel.edit(overwrites=poll_permissions)
-
-        # Create or get game list channel
-        list_channel = None
-        if channels["game_list"]:
-            list_channel = ctx.guild.get_channel(channels["game_list"])
-        if not list_channel:
-            list_channel = await ctx.guild.create_text_channel(
-                "game-submissions",
-                category=category,
-                topic="List of all submitted games",
-                overwrites=read_only_permissions
-            )
-            channels["game_list"] = list_channel.id
-        else:
-            await list_channel.edit(overwrites=read_only_permissions)
-
-        # Create or get submissions forum
-        submissions_forum = None
-        if channels["submissions_forum"]:
-            submissions_forum = ctx.guild.get_channel(channels["submissions_forum"])
-        if not submissions_forum:
+        # Create or get game forum
+        game_forum = None
+        if channels["game_forum"]:
+            game_forum = ctx.guild.get_channel(channels["game_forum"])
+        if not game_forum:
             try:
-                submissions_forum = await ctx.guild.create_forum(
+                # Create forum tags
+                forum_tags = [
+                    discord.ForumTag(name="Submitted", emoji="📥"),
+                    discord.ForumTag(name="In Poll", emoji="🗳️"),
+                    discord.ForumTag(name="Winner", emoji="🏆"),
+                    discord.ForumTag(name="Active Poll", emoji="🎮"),
+                    discord.ForumTag(name="Past Winners", emoji="📜")
+                ]
+
+                game_forum = await ctx.guild.create_forum(
                     name="game-submissions",
                     category=category,
-                    topic="Submit and discuss games to be played",
+                    topic="Game submissions, polls, and winners",
                     reason="Game submissions forum setup",
                     default_auto_archive_duration=10080,  # 7 days
-                    default_thread_slowmode_delay=0
+                    default_thread_slowmode_delay=0,
+                    available_tags=forum_tags
                 )
-                channels["submissions_forum"] = submissions_forum.id
+                channels["game_forum"] = game_forum.id
 
-                # Create forum tags
-                try:
-                    await submissions_forum.create_tags([
-                        discord.ForumTag(name="Submitted", emoji="📥"),
-                        discord.ForumTag(name="In Poll", emoji="🗳️"),
-                        discord.ForumTag(name="Winner", emoji="🏆")
-                    ])
-                except (AttributeError, discord.HTTPException) as e:
-                    # If create_tags is not available or fails, we'll skip tag creation
-                    await ctx.send(f"⚠️ Could not create forum tags: {str(e)}")
-                    pass
+                # Create pinned posts for winners and active poll
+                winners_embed = discord.Embed(
+                    title="🏆 Past Winners",
+                    description="Games chosen by the community",
+                    color=discord.Color.gold()
+                )
+                winners_thread = await game_forum.create_thread(
+                    name="Past Winners",
+                    embed=winners_embed,
+                    applied_tags=[discord.utils.get(game_forum.available_tags, name="Past Winners")]
+                )
+                await winners_thread.thread.pin()
+
             except discord.Forbidden:
                 await ctx.send("⚠️ Could not create forum channel - missing permissions")
+                return None
             except Exception as e:
                 await ctx.send(f"⚠️ Could not create forum channel: {str(e)}")
+                return None
 
         await self.config.guild(ctx.guild).channels.set(channels)
-        await self.config.guild(ctx.guild).poll_category_id.set(category.id)
-        
-        return {
-            "winners": winners_channel,
-            "current_poll": poll_channel,
-            "game_list": list_channel
-        }
+        return {"game_forum": game_forum}
 
-    async def update_winners_channel(self, guild: discord.Guild):
-        """Update the winners channel with past winners"""
+    async def update_winners(self, guild: discord.Guild):
+        """Update the winners thread in the forum"""
         channels = await self.config.guild(guild).channels()
-        winners_channel = guild.get_channel(channels["winners"])
-        if not winners_channel:
+        forum = guild.get_channel(channels["game_forum"])
+        if not forum:
             return
 
         winners = await self.config.guild(guild).winners()
@@ -170,46 +100,28 @@ class GameSubmissions(commands.Cog):
             color=discord.Color.gold()
         )
         
-        for winner in reversed(winners[-10:]):  # Show last 10 winners, most recent first
+        for winner in reversed(winners[-10:]):
             embed.add_field(
                 name=f"{winner['game_name']} ({winner['date']})",
                 value=f"Votes: {winner['votes']}",
                 inline=False
             )
 
-        # Clear channel and send new embed
-        await winners_channel.purge()
-        await winners_channel.send(embed=embed)
+        # Find and update the winners thread
+        async for thread in forum.archived_threads(limit=None):
+            if thread.name == "Past Winners":
+                await thread.edit(archived=False)
+                async for message in thread.history(limit=1):
+                    await message.edit(embed=embed)
+                return
 
-    async def update_game_list_channel(self, guild: discord.Guild):
-        """Update the game list channel"""
-        channels = await self.config.guild(guild).channels()
-        list_channel = guild.get_channel(channels["game_list"])
-        if not list_channel:
-            return
-
-        submissions = await self.config.guild(guild).submissions()
-        
-        embed = discord.Embed(
-            title="📋 Submitted Games",
-            description="All games currently in the submission pool",
-            color=discord.Color.blue()
+        # Create new winners thread if not found
+        winners_thread = await forum.create_thread(
+            name="Past Winners",
+            embed=embed,
+            applied_tags=[discord.utils.get(forum.available_tags, name="Past Winners")]
         )
-        
-        for game_key in sorted(submissions.keys()):
-            game = submissions[game_key]
-            submitter = guild.get_member(game["submitted_by"])
-            submitter_name = submitter.display_name if submitter else "Unknown User"
-            
-            embed.add_field(
-                name=game["name"],
-                value=f"[Link]({game['url']})\nSubmitted by: {submitter_name}",
-                inline=False
-            )
-
-        # Clear channel and send new embed
-        await list_channel.purge()
-        await list_channel.send(embed=embed)
+        await winners_thread.thread.pin()
 
     @commands.group(name="gamesubmit", aliases=["gs"])
     @commands.guild_only()
@@ -222,7 +134,7 @@ class GameSubmissions(commands.Cog):
     async def add_game(self, ctx: commands.Context, game_name: str, game_url: str):
         """Submit a game to the list"""
         channels = await self.config.guild(ctx.guild).channels()
-        forum = ctx.guild.get_channel(channels["submissions_forum"])
+        forum = ctx.guild.get_channel(channels["game_forum"])
         
         # Check if game already exists
         async with self.config.guild(ctx.guild).submissions() as submissions:
@@ -348,7 +260,7 @@ class GameSubmissions(commands.Cog):
         
         if channels:
             await ctx.send("✅ Channels have been set up successfully!")
-            await self.update_winners_channel(ctx.guild)
+            await self.update_winners(ctx.guild)
             await self.update_game_list_channel(ctx.guild)
         else:
             await ctx.send("❌ Failed to set up channels!")
@@ -360,10 +272,9 @@ class GameSubmissions(commands.Cog):
         submissions = await self.config.guild(ctx.guild).submissions()
         channels = await self.config.guild(ctx.guild).channels()
         
-        forum = ctx.guild.get_channel(channels["submissions_forum"])
-        poll_channel = ctx.guild.get_channel(channels["current_poll"])
+        forum = ctx.guild.get_channel(channels["game_forum"])
         
-        if not forum or not poll_channel:
+        if not forum:
             await ctx.send("❌ Channels not set up! Please run `[p]gamesubmit setup` first.")
             return
 
@@ -399,8 +310,8 @@ class GameSubmissions(commands.Cog):
             )
         
         # Clear the poll channel and send new poll
-        await poll_channel.purge()
-        poll_message = await poll_channel.send(embed=embed)
+        await forum.purge()
+        poll_message = await forum.send(embed=embed)
         
         # Add reaction options
         for i in range(min(len(submissions), len(number_emojis))):
@@ -410,8 +321,8 @@ class GameSubmissions(commands.Cog):
         await self.config.guild(ctx.guild).last_poll_time.set(datetime.now().isoformat())
         await self.config.guild(ctx.guild).current_poll_message_id.set(poll_message.id)
         
-        if poll_channel != ctx.channel:
-            await ctx.send(f"✅ Poll created in {poll_channel.mention}!")
+        if forum != ctx.channel:
+            await ctx.send(f"✅ Poll created in {forum.mention}!")
 
     @commands.admin_or_permissions(administrator=True)
     @gamesubmit.command(name="endpoll")
@@ -419,14 +330,14 @@ class GameSubmissions(commands.Cog):
         """End the current poll and announce the winner"""
         poll_message_id = await self.config.guild(ctx.guild).current_poll_message_id()
         channels = await self.config.guild(ctx.guild).channels()
-        poll_channel = ctx.guild.get_channel(channels["current_poll"])
+        forum = ctx.guild.get_channel(channels["game_forum"])
         
-        if not poll_channel or not poll_message_id:
+        if not forum or not poll_message_id:
             await ctx.send("❌ No active poll found!")
             return
         
         try:
-            poll_message = await poll_channel.fetch_message(poll_message_id)
+            poll_message = await forum.fetch_message(poll_message_id)
         except discord.NotFound:
             await ctx.send("❌ Poll message not found!")
             return
@@ -455,8 +366,8 @@ class GameSubmissions(commands.Cog):
                 "date": datetime.now().strftime("%Y-%m-%d")
             })
         
-        # Update winners channel
-        await self.update_winners_channel(ctx.guild)
+        # Update winners thread
+        await self.update_winners(ctx.guild)
         
         # Create winner announcement
         embed = discord.Embed(
@@ -473,8 +384,38 @@ class GameSubmissions(commands.Cog):
                 inline=False
             )
         
-        await poll_channel.send(embed=embed)
+        await forum.send(embed=embed)
         await ctx.send("✅ Poll ended and winner announced!")
+
+    async def update_game_list_channel(self, guild: discord.Guild):
+        """Update the game list channel"""
+        channels = await self.config.guild(guild).channels()
+        forum = guild.get_channel(channels["game_forum"])
+        if not forum:
+            return
+
+        submissions = await self.config.guild(guild).submissions()
+        
+        embed = discord.Embed(
+            title="📋 Submitted Games",
+            description="All games currently in the submission pool",
+            color=discord.Color.blue()
+        )
+        
+        for game_key in sorted(submissions.keys()):
+            game = submissions[game_key]
+            submitter = guild.get_member(game["submitted_by"])
+            submitter_name = submitter.display_name if submitter else "Unknown User"
+            
+            embed.add_field(
+                name=game["name"],
+                value=f"[Link]({game['url']})\nSubmitted by: {submitter_name}",
+                inline=False
+            )
+
+        # Clear channel and send new embed
+        await forum.purge()
+        await forum.send(embed=embed)
 
 def setup(bot: Red):
     bot.add_cog(GameSubmissions(bot)) 
