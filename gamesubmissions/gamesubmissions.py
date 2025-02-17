@@ -119,8 +119,9 @@ class GameSubmissions(commands.Cog):
         if channels["submissions_forum"]:
             submissions_forum = ctx.guild.get_channel(channels["submissions_forum"])
         if not submissions_forum:
-            submissions_forum = await ctx.guild.create_forum_channel(
+            submissions_forum = await ctx.guild.create_channel(
                 "game-submissions",
+                discord.ChannelType.forum,
                 category=category,
                 topic="Submit and discuss games to be played",
                 default_auto_archive_duration=10080,  # 7 days
@@ -128,10 +129,14 @@ class GameSubmissions(commands.Cog):
             )
             channels["submissions_forum"] = submissions_forum.id
 
-        # Add forum tags
-        await submissions_forum.create_tag("Submitted", emoji="📥")
-        await submissions_forum.create_tag("In Poll", emoji="🗳️")
-        await submissions_forum.create_tag("Winner", emoji="🏆")
+            # Create forum tags
+            try:
+                await submissions_forum.create_tag("Submitted", emoji="📥")
+                await submissions_forum.create_tag("In Poll", emoji="🗳️")
+                await submissions_forum.create_tag("Winner", emoji="🏆")
+            except AttributeError:
+                # If create_tag is not available, we'll skip tag creation
+                pass
 
         await self.config.guild(ctx.guild).channels.set(channels)
         await self.config.guild(ctx.guild).poll_category_id.set(category.id)
@@ -211,43 +216,62 @@ class GameSubmissions(commands.Cog):
         channels = await self.config.guild(ctx.guild).channels()
         forum = ctx.guild.get_channel(channels["submissions_forum"])
         
-        if not forum:
-            await ctx.send("❌ Submissions forum not set up! Please run `[p]gamesubmit setup` first.")
-            return
-
         # Check if game already exists
         async with self.config.guild(ctx.guild).submissions() as submissions:
             if game_name.lower() in submissions:
                 await ctx.send(f"❌ {game_name} is already in the submissions list!")
                 return
 
-            # Create forum post for the game
-            embed = discord.Embed(
-                title=game_name,
-                url=game_url,
-                description=f"Submitted by: {ctx.author.mention}\n\nDiscuss this game submission in this thread!",
-                color=discord.Color.green(),
-                timestamp=datetime.now()
-            )
+            try:
+                # Create forum post for the game
+                embed = discord.Embed(
+                    title=game_name,
+                    url=game_url,
+                    description=f"Submitted by: {ctx.author.mention}\n\nDiscuss this game submission in this thread!",
+                    color=discord.Color.green(),
+                    timestamp=datetime.now()
+                )
 
-            # Create forum post with the Submitted tag
-            submitted_tag = discord.utils.get(forum.available_tags, name="Submitted")
-            thread = await forum.create_thread(
-                name=game_name,
-                embed=embed,
-                applied_tags=[submitted_tag] if submitted_tag else []
-            )
+                if forum and hasattr(forum, 'create_thread'):
+                    # Try to create forum thread if supported
+                    submitted_tag = discord.utils.get(forum.available_tags, name="Submitted")
+                    thread = await forum.create_thread(
+                        name=game_name,
+                        embed=embed,
+                        applied_tags=[submitted_tag] if submitted_tag else []
+                    )
+                    thread_id = thread.thread.id
+                    thread_url = thread.thread.jump_url
+                else:
+                    thread_id = None
+                    thread_url = None
 
-            # Store submission data
-            submissions[game_name.lower()] = {
-                "name": game_name,
-                "url": game_url,
-                "submitted_by": ctx.author.id,
-                "timestamp": datetime.now().isoformat(),
-                "thread_id": thread.thread.id
-            }
+                # Store submission data
+                submissions[game_name.lower()] = {
+                    "name": game_name,
+                    "url": game_url,
+                    "submitted_by": ctx.author.id,
+                    "timestamp": datetime.now().isoformat(),
+                    "thread_id": thread_id
+                }
 
-        await ctx.send(f"✅ Game submitted! Discuss it here: {thread.thread.jump_url}")
+                if thread_url:
+                    await ctx.send(f"✅ Game submitted! Discuss it here: {thread_url}")
+                else:
+                    await ctx.send(f"✅ Game submitted!")
+                    
+                # Update the game list channel
+                await self.update_game_list_channel(ctx.guild)
+
+            except Exception as e:
+                await ctx.send(f"✅ Game submitted, but couldn't create forum thread: {str(e)}")
+                # Still store the submission without thread info
+                submissions[game_name.lower()] = {
+                    "name": game_name,
+                    "url": game_url,
+                    "submitted_by": ctx.author.id,
+                    "timestamp": datetime.now().isoformat()
+                }
 
     @gamesubmit.command(name="remove")
     async def remove_game(self, ctx: commands.Context, *, game_name: str):
