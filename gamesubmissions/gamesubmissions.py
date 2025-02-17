@@ -79,15 +79,13 @@ class GameSubmissions(commands.Cog):
                 thread = await game_forum.create_thread(
                     name="Game List",
                     content="Current list of submitted games",
-                    embed=initial_embed,
+                    embed=initial_embed,  # This creates the first message
                     applied_tags=[]
                 )
-                list_message = await thread.thread.send(embed=initial_embed)
-                await list_message.pin()
                 
                 # Store the thread and message IDs
                 messages["game_list_thread_id"] = thread.thread.id
-                messages["game_list_id"] = list_message.id
+                messages["game_list_id"] = thread.message.id  # Use the thread's initial message
 
             # Create or get hall of fame channel
             hall_of_fame = None
