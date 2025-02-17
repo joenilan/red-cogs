@@ -545,7 +545,6 @@ class GameSubmissions(commands.Cog):
             submitter = guild.get_member(game["submitted_by"])
             submitter_name = submitter.display_name if submitter else "Unknown User"
             
-            # Create value string with price info
             value = f"[Link]({game['url']})\nSubmitted by: {submitter_name}"
             if game.get("is_paid") is not None:
                 value += f"\nType: {'Paid' if game['is_paid'] else 'Free'}"
@@ -559,32 +558,36 @@ class GameSubmissions(commands.Cog):
             )
 
         try:
+            # Get the thread and message using stored IDs
+            thread = None
+            message = None
+            
             if messages["game_list_thread_id"]:
-                # Get existing thread
                 thread = forum.get_thread(messages["game_list_thread_id"])
                 if thread and messages["game_list_id"]:
-                    # Get and edit existing message
                     try:
                         message = await thread.fetch_message(messages["game_list_id"])
-                        await message.edit(embed=embed)
-                        return
                     except discord.NotFound:
-                        pass  # Message not found, will create new one
-            
-            # Create new thread if needed
-            thread = await forum.create_thread(
-                name="Game List",
-                content="Current list of submitted games",
-                embed=embed,
-                applied_tags=[]
-            )
-            list_message = await thread.thread.send(embed=embed)
-            await list_message.pin()
-            
-            # Store the new IDs
-            async with self.config.guild(guild).messages() as messages:
-                messages["game_list_thread_id"] = thread.thread.id
-                messages["game_list_id"] = list_message.id
+                        pass
+
+            if message:
+                # Update existing message
+                await message.edit(embed=embed)
+            else:
+                # Create new thread and message if not found
+                thread = await forum.create_thread(
+                    name="Game List",
+                    content="Current list of submitted games",
+                    embed=embed,
+                    applied_tags=[]
+                )
+                message = await thread.thread.send(embed=embed)
+                await message.pin()
+                
+                # Store the new IDs
+                async with self.config.guild(guild).messages() as messages:
+                    messages["game_list_thread_id"] = thread.thread.id
+                    messages["game_list_id"] = message.id
             
         except Exception as e:
             print(f"Error updating game list: {e}")
