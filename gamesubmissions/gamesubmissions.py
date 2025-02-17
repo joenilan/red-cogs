@@ -633,6 +633,59 @@ class GameSubmissions(commands.Cog):
         await ctx.send("✅ All channels deleted and configuration reset. "
                       "You can now run `[p]gamesubmit setup` to start fresh.")
 
+    @commands.admin_or_permissions(administrator=True)
+    @gamesubmit.command(name="testhof")
+    async def test_hall_of_fame(self, ctx: commands.Context):
+        """Populate the hall of fame with test data to preview the layout"""
+        
+        # Sample winners data
+        test_winners = [
+            {
+                "game_name": "Stardew Valley",
+                "votes": 15,
+                "date": "2024-01-15"
+            },
+            {
+                "game_name": "Hollow Knight",
+                "votes": 12,
+                "date": "2024-01-22"
+            },
+            {
+                "game_name": "Baldur's Gate 3",
+                "votes": 20,
+                "date": "2024-01-29"
+            },
+            {
+                "game_name": "Hades",
+                "votes": 18,
+                "date": "2024-02-05"
+            },
+            {
+                "game_name": "Lethal Company",
+                "votes": 25,
+                "date": "2024-02-12"
+            }
+        ]
+        
+        # Store test data
+        async with self.config.guild(ctx.guild).winners() as winners:
+            winners.clear()  # Clear existing winners
+            winners.extend(test_winners)
+        
+        # Update hall of fame display
+        await self.update_hall_of_fame(ctx.guild)
+        await ctx.send("✅ Hall of Fame populated with test data!")
+
+    @commands.admin_or_permissions(administrator=True)
+    @gamesubmit.command(name="clearhof")
+    async def clear_hall_of_fame(self, ctx: commands.Context):
+        """Clear all entries from the hall of fame"""
+        async with self.config.guild(ctx.guild).winners() as winners:
+            winners.clear()
+        
+        await self.update_hall_of_fame(ctx.guild)
+        await ctx.send("✅ Hall of Fame cleared!")
+
 class PollView(View):
     def __init__(self, games: list, timeout: int = 604800):  # 7 days default
         super().__init__(timeout=timeout)
