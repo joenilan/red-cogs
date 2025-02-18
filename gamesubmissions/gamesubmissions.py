@@ -255,16 +255,16 @@ class GameSubmissions(commands.Cog):
 
                 # Ask if game is free or paid with validation
                 while True:
-                    await ctx.send("Is the game Free or Paid? (Type exactly 'Free' or 'Paid')")
+                    await ctx.send("Is the game Free or Paid? (Type 'Free' or 'Paid')")
                     msg = await self.bot.wait_for(
                         "message",
                         timeout=30.0,
                         check=lambda m: m.author == ctx.author and m.channel == ctx.channel
                     )
-                    if msg.content not in ['Free', 'Paid']:
-                        await ctx.send("❌ Please type exactly 'Free' or 'Paid'")
+                    if msg.content.lower() not in ['free', 'paid']:
+                        await ctx.send("❌ Please type 'Free' or 'Paid'")
                         continue
-                    is_paid = msg.content == 'Paid'
+                    is_paid = msg.content.lower() == 'paid'
                     break
 
                 game_price = None
@@ -277,7 +277,7 @@ class GameSubmissions(commands.Cog):
                             check=lambda m: m.author == ctx.author and m.channel == ctx.channel
                         )
                         # Clean and validate price format
-                        price = msg.content.strip()
+                        price = msg.content.strip().lower()
                         if price.startswith('$'):
                             price = price[1:]
                         try:
