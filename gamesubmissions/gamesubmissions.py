@@ -24,19 +24,19 @@ class GameSubmissions(commands.Cog):
             "winners": [],
             "channels": {
                 "game_forum": None,  # Forum for submissions and active polls
-                "hall_of_fame": None  # Channel for winners and runner-ups
+                "game_tracker": None  # Channel for winners and runner-ups
             },
             "messages": {
                 "game_list_id": None,  # ID of the game list message
                 "game_list_thread_id": None,  # ID of the game list thread
-                "hall_of_fame_id": None  # ID of the hall of fame message
+                "game_tracker_id": None  # ID of the game tracker message
             }
         }
         
         self.config.register_guild(**default_guild)
 
     async def initialize_channels(self, ctx: commands.Context, category_id: int):
-        """Initialize the forum and hall of fame channels"""
+        """Initialize the forum and game tracker channels"""
         category = ctx.guild.get_channel(category_id)
         if not category or not isinstance(category, discord.CategoryChannel):
             await ctx.send("❌ Invalid category ID or category not found!")
@@ -110,8 +110,8 @@ class GameSubmissions(commands.Cog):
 
             # Create or get game tracker channel
             game_tracker = None
-            if channels["hall_of_fame"]:
-                game_tracker = ctx.guild.get_channel(channels["hall_of_fame"])
+            if channels["game_tracker"]:
+                game_tracker = ctx.guild.get_channel(channels["game_tracker"])
             if not game_tracker:
                 game_tracker = await ctx.guild.create_text_channel(
                     name="game-tracker",
@@ -119,10 +119,10 @@ class GameSubmissions(commands.Cog):
                     topic="Current and completed community-chosen games",
                     overwrites=read_only_permissions
                 )
-                channels["hall_of_fame"] = game_tracker.id
+                channels["game_tracker"] = game_tracker.id
 
                 # Create initial game tracker message
-                await self.update_hall_of_fame(ctx.guild)
+                await self.update_game_tracker(ctx.guild)
 
             # If channels exist but permissions need updating
             if game_forum:
@@ -139,14 +139,14 @@ class GameSubmissions(commands.Cog):
 
         await self.config.guild(ctx.guild).channels.set(channels)
         await self.config.guild(ctx.guild).messages.set(messages)
-        return {"game_forum": game_forum, "hall_of_fame": game_tracker}
+        return {"game_forum": game_forum, "game_tracker": game_tracker}
 
-    async def update_hall_of_fame(self, guild: discord.Guild):
-        """Update the hall of fame message"""
+    async def update_game_tracker(self, guild: discord.Guild):
+        """Update the game tracker message"""
         channels = await self.config.guild(guild).channels()
         messages = await self.config.guild(guild).messages()
-        hall_of_fame = guild.get_channel(channels["hall_of_fame"])
-        if not hall_of_fame:
+        game_tracker = guild.get_channel(channels["game_tracker"])
+        if not game_tracker:
             return
 
         winners = await self.config.guild(guild).winners()
@@ -185,7 +185,7 @@ class GameSubmissions(commands.Cog):
         # Add past winners section
         if len(regular_winners) > 1:
             past_winners = ""
-            for winner in reversed(regular_winners[:-1][-5:]):
+            for winner in reversed(regular_winners[:-1][-5:]):  # Last 5 winners excluding current
                 past_winners += f"**{winner['game_name']}** ({winner['date']}) - {winner['votes']} votes\n"
             
             winners_embed.add_field(
@@ -195,23 +195,23 @@ class GameSubmissions(commands.Cog):
             )
 
         try:
-            if messages["hall_of_fame_id"]:
+            if messages["game_tracker_id"]:
                 try:
-                    message = await hall_of_fame.fetch_message(messages["hall_of_fame_id"])
+                    message = await game_tracker.fetch_message(messages["game_tracker_id"])
                     await message.edit(embed=winners_embed)
                     return
                 except discord.NotFound:
                     pass
             
             # Create new message if needed
-            message = await hall_of_fame.send(embed=winners_embed)
+            message = await game_tracker.send(embed=winners_embed)
             
             # Store the new message ID
             async with self.config.guild(guild).messages() as messages:
-                messages["hall_of_fame_id"] = message.id
+                messages["game_tracker_id"] = message.id
             
         except Exception as e:
-            print(f"Error updating hall of fame: {e}")
+            print(f"Error updating game tracker: {e}")
 
     @commands.group(name="gamesubmit", aliases=["gs"])
     @commands.guild_only()
@@ -437,7 +437,7 @@ class GameSubmissions(commands.Cog):
         
         if channels:
             await ctx.send("✅ Channels have been set up successfully!")
-            await self.update_hall_of_fame(ctx.guild)
+            await self.update_game_tracker(ctx.guild)
             await self.update_game_list_channel(ctx.guild)
         else:
             await ctx.send("❌ Failed to set up channels!")
@@ -602,8 +602,8 @@ class GameSubmissions(commands.Cog):
             if len(tied_winners) > 1:
                 await ctx.send("🔄 Non-winning tied games have been returned to the submission pool.")
         
-        # Update hall of fame and game list
-        await self.update_hall_of_fame(ctx.guild)
+        # Update game tracker and game list
+        await self.update_game_tracker(ctx.guild)
         await self.update_game_list_channel(ctx.guild)
         
         # Create winner announcement in forum
@@ -748,16 +748,16 @@ class GameSubmissions(commands.Cog):
                 except Exception as e:
                     await ctx.send(f"⚠️ Error deleting forum channel: {str(e)}")
 
-        # Delete hall of fame channel if it exists
-        if channels["hall_of_fame"]:
-            hall_of_fame = ctx.guild.get_channel(channels["hall_of_fame"])
-            if hall_of_fame:
+        # Delete game tracker channel if it exists
+        if channels["game_tracker"]:
+            game_tracker = ctx.guild.get_channel(channels["game_tracker"])
+            if game_tracker:
                 try:
-                    await hall_of_fame.delete(reason="Game submissions clear command")
+                    await game_tracker.delete(reason="Game submissions clear command")
                 except discord.Forbidden:
-                    await ctx.send("⚠️ Could not delete hall of fame channel - missing permissions")
+                    await ctx.send("⚠️ Could not delete game tracker channel - missing permissions")
                 except Exception as e:
-                    await ctx.send(f"⚠️ Error deleting hall of fame channel: {str(e)}")
+                    await ctx.send(f"⚠️ Error deleting game tracker channel: {str(e)}")
 
         # Reset all configuration
         await self.config.guild(ctx.guild).clear()
@@ -767,8 +767,8 @@ class GameSubmissions(commands.Cog):
 
     @commands.admin_or_permissions(administrator=True)
     @gamesubmit.command(name="testhof")
-    async def test_hall_of_fame(self, ctx: commands.Context):
-        """Populate the hall of fame with test data to preview the layout"""
+    async def test_game_tracker(self, ctx: commands.Context):
+        """Populate the game tracker with test data to preview the layout"""
         
         # Sample winners data
         test_winners = [
@@ -804,39 +804,39 @@ class GameSubmissions(commands.Cog):
             winners.clear()  # Clear existing winners
             winners.extend(test_winners)
         
-        # Update hall of fame display
-        await self.update_hall_of_fame(ctx.guild)
-        await ctx.send("✅ Hall of Fame populated with test data!")
+        # Update game tracker display
+        await self.update_game_tracker(ctx.guild)
+        await ctx.send("✅ Game Tracker populated with test data!")
 
     @commands.admin_or_permissions(administrator=True)
     @gamesubmit.command(name="clearhof")
-    async def clear_hall_of_fame(self, ctx: commands.Context):
-        """Clear all entries from the hall of fame"""
+    async def clear_game_tracker(self, ctx: commands.Context):
+        """Clear all entries from the game tracker"""
         async with self.config.guild(ctx.guild).winners() as winners:
             winners.clear()
         
-        await self.update_hall_of_fame(ctx.guild)
-        await ctx.send("✅ Hall of Fame cleared!")
+        await self.update_game_tracker(ctx.guild)
+        await ctx.send("✅ Game Tracker cleared!")
 
     @commands.admin_or_permissions(administrator=True)
     @gamesubmit.command(name="addwinner")
     async def add_winner(self, ctx: commands.Context, *, game_name: str):
-        """Add a past winner to the hall of fame"""
+        """Add a game to the currently playing list"""
         async with self.config.guild(ctx.guild).winners() as winners:
             winners.append({
                 "game_name": game_name,
                 "votes": 0,
                 "date": "2024-02-01",
-                "custom_added": True  # Flag to identify manually added winners
+                "custom_added": True
             })
         
-        await self.update_hall_of_fame(ctx.guild)
-        await ctx.send(f"✅ Added {game_name} to the Hall of Fame!")
+        await self.update_game_tracker(ctx.guild)
+        await ctx.send(f"✅ Added {game_name} to the Game Tracker!")
 
     @commands.admin_or_permissions(administrator=True)
     @gamesubmit.command(name="removewinner")
     async def remove_winner(self, ctx: commands.Context, *, game_name: str):
-        """Remove a game from the hall of fame
+        """Remove a game from the game tracker
         
         Parameters:
         -----------
@@ -848,11 +848,11 @@ class GameSubmissions(commands.Cog):
             for i, winner in enumerate(winners):
                 if winner["game_name"].lower() == game_name.lower():
                     del winners[i]
-                    await self.update_hall_of_fame(ctx.guild)
-                    await ctx.send(f"✅ Removed {game_name} from the Hall of Fame!")
+                    await self.update_game_tracker(ctx.guild)
+                    await ctx.send(f"✅ Removed {game_name} from the Game Tracker!")
                     return
             
-            await ctx.send(f"❌ {game_name} not found in the Hall of Fame!")
+            await ctx.send(f"❌ {game_name} not found in the Game Tracker!")
 
     @commands.admin_or_permissions(administrator=True)
     @gamesubmit.command(name="completewinner")
@@ -870,7 +870,7 @@ class GameSubmissions(commands.Cog):
                     winner["custom_added"] = False  # No longer in "Currently Playing"
                     winner["date"] = datetime.now().strftime("%Y-%m-%d")  # Set completion date
                     winners[i] = winner
-                    await self.update_hall_of_fame(ctx.guild)
+                    await self.update_game_tracker(ctx.guild)
                     await ctx.send(f"✅ Marked {game_name} as completed and moved to past winners!")
                     return
             
