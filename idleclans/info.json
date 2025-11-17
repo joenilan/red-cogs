@@ -1,0 +1,14 @@
+{
+    "name": "IdleClans",
+    "short": "Post IdleClans clan log events",
+    "description": "Polls IdleClans clan logs and relays new events to a Discord channel via slash or prefix commands.",
+    "end_user_data_statement": "This cog stores the Discord channel ID where events are posted plus cached IdleClans log entry identifiers. No personal data is stored beyond channel IDs and the last entries needed to avoid duplicates.",
+    "author": ["DreadedZombie"],
+    "required_cogs": {},
+    "requirements": ["aiohttp"],
+    "tags": ["idleclans", "logging", "games", "webhook", "api"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
