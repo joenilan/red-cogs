@@ -206,7 +206,6 @@ class IdleClans(commands.Cog):
             embed.set_footer(text=f"{clan_name} via IdleClans")
             try:
                 await channel.send(
-                    content=f"IdleClans update from **{member}**",
                     embed=embed,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
