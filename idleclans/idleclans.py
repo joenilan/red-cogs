@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -53,6 +54,14 @@ def _format_timestamp(value: Optional[str]) -> str:
     if parsed:
         return parsed.isoformat(sep=" ", timespec="seconds")
     return value or "Unknown time"
+
+
+def _member_color(member: str) -> discord.Color:
+    if not member:
+        return discord.Color.blurple()
+    digest = hashlib.sha1(member.lower().encode("utf-8")).digest()
+    value = int.from_bytes(digest[:3], "big")
+    return discord.Color(value=value)
 
 
 class IdleClans(commands.Cog):
@@ -188,16 +197,16 @@ class IdleClans(commands.Cog):
             member = entry.get("memberUsername") or "Unknown member"
             message = entry.get("message") or "No additional details."
             embed = discord.Embed(
-                title=clan_name,
                 description=message,
-                color=discord.Color.blurple(),
+                color=_member_color(member),
                 timestamp=timestamp_dt,
             )
             embed.set_author(name=member)
             embed.add_field(name="When", value=timestamp, inline=False)
+            embed.set_footer(text=f"{clan_name} via IdleClans")
             try:
                 await channel.send(
-                    content=f"IdleClans update for **{clan_name}**",
+                    content=f"IdleClans update from **{member}**",
                     embed=embed,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
