@@ -179,15 +179,26 @@ class IdleClans(commands.Cog):
             fresh.append(entry)
         return fresh, cache[-RECENT_CACHE_LIMIT:]
 
-    async def _send_entries(self, channel: discord.TextChannel, clan_name: str, entries: List[Dict[str, Any]]) -> None:
+    async def _send_entries(
+        self, channel: discord.TextChannel, clan_name: str, entries: List[Dict[str, Any]]
+    ) -> None:
         for entry in entries:
             timestamp = _format_timestamp(entry.get("timestamp"))
+            timestamp_dt = _parse_timestamp(entry.get("timestamp"))
             member = entry.get("memberUsername") or "Unknown member"
             message = entry.get("message") or "No additional details."
-            content = f"[{timestamp}] **{member}** — {message}"
+            embed = discord.Embed(
+                title=clan_name,
+                description=message,
+                color=discord.Color.blurple(),
+                timestamp=timestamp_dt,
+            )
+            embed.set_author(name=member)
+            embed.add_field(name="When", value=timestamp, inline=False)
             try:
                 await channel.send(
-                    content,
+                    content=f"IdleClans update for **{clan_name}**",
+                    embed=embed,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
             except discord.HTTPException as exc:
