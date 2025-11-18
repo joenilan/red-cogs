@@ -20,26 +20,26 @@ DEFAULT_INTERVAL = 120
 RECENT_CACHE_LIMIT = 200
 POLL_LOOP_SLEEP = 20
 SKILL_ICON_MAP = {
-    "attack": "attack.png",
-    "strength": "strength.png",
-    "defence": "defence.png",
-    "archery": "archery.png",
-    "magic": "magic.png",
-    "health": "health.png",
-    "crafting": "crafting.png",
-    "woodcutting": "woodcutting.png",
-    "carpentry": "carpentry.png",
-    "fishing": "fishing.png",
-    "cooking": "cooking.png",
-    "mining": "mining.png",
-    "smithing": "smithing.png",
-    "foraging": "foraging.png",
-    "farming": "farming.png",
-    "agility": "agility.png",
-    "plundering": "plundering.png",
-    "enchanting": "enchanting.png",
-    "brewing": "brewing.png",
-    "exterminating": "exterminating.png",
+    "attack": "⚔️",
+    "strength": "💪",
+    "defence": "🛡️",
+    "archery": "🏹",
+    "magic": "✨",
+    "health": "❤️",
+    "crafting": "✂️",
+    "woodcutting": "🪓",
+    "carpentry": "🪚",
+    "fishing": "🎣",
+    "cooking": "🍳",
+    "mining": "⛏️",
+    "smithing": "⚒️",
+    "foraging": "🌿",
+    "farming": "🌾",
+    "agility": "🤸",
+    "plundering": "💰",
+    "enchanting": "🔮",
+    "brewing": "🧪",
+    "exterminating": "☠️",
 }
 
 
@@ -380,11 +380,7 @@ class IdleClans(commands.Cog):
                 value = float(raw_value)
             except (TypeError, ValueError):
                 continue
-            icon_path = SKILL_ICON_MAP.get(name.lower())
-            if icon_path:
-                icon = f"[‎]({ICON_BASE_URL}/{icon_path})"
-            else:
-                icon = "•"
+            icon = SKILL_ICON_MAP.get(name.lower(), "•")
             pretty = name.replace("_", " ").title()
             level = self._xp_to_level(value)
             entries.append(f"{icon} **{pretty}**\nLvl {level} · {_format_number(value)} xp")
