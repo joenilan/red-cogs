@@ -324,10 +324,13 @@ class IdleClans(commands.Cog):
             title=f"{username}",
             color=_member_color(username),
         )
+        clan_name = profile.get("guildName")
+        if clan_name:
+            embed.description = f"Member of **{clan_name}**"
         game_mode = profile.get("gameMode") or "Unknown"
-        clan_name = profile.get("guildName") or "No clan"
-        embed.add_field(name="Game mode", value=game_mode, inline=True)
-        embed.add_field(name="Clan", value=clan_name, inline=True)
+        total_level = self._infer_total_level(profile.get("skillExperiences"))
+        embed.add_field(name="Game mode", value=game_mode.title(), inline=True)
+        embed.add_field(name="Total level", value=_format_number(total_level), inline=True)
         hours_offline = profile.get("hoursOffline")
         offline_value = (
             f"{float(hours_offline):.1f}h" if isinstance(hours_offline, (int, float)) else "Unknown"
@@ -346,7 +349,7 @@ class IdleClans(commands.Cog):
         pvm_stats = profile.get("pvmStats")
         pvm_lines = _top_stat_lines(pvm_stats, suffix=" kills", limit=3)
         if pvm_lines and pvm_lines != "No data":
-            embed.add_field(name="PvM stats", value=pvm_lines, inline=False)
+            embed.add_field(name="Boss clears", value=pvm_lines, inline=False)
 
         progression_bits: List[str] = []
         equipment = profile.get("equipment") or {}
@@ -363,6 +366,17 @@ class IdleClans(commands.Cog):
 
         embed.set_footer(text="Data from IdleClans API")
         return embed
+
+    def _infer_total_level(self, skills: Optional[Dict[str, Any]]) -> int:
+        if not skills:
+            return 0
+        total = 0
+        for xp in skills.values():
+            try:
+                total += self._xp_to_level(float(xp))
+            except (TypeError, ValueError):
+                continue
+        return total
 
     def _build_skills_embed(self, profile: Dict[str, Any], skills: Dict[str, Any]) -> discord.Embed:
         username = profile.get("username") or "Unknown player"
