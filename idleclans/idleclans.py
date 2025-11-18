@@ -342,9 +342,6 @@ class IdleClans(commands.Cog):
         embed.add_field(name="Last task", value=f"📋 {task_value}", inline=False)
 
         skills = profile.get("skillExperiences") or {}
-        top_skills = _top_stat_lines(skills, suffix=" xp", xp_to_level=self._xp_to_level)
-        if top_skills and top_skills != "No data":
-            embed.add_field(name="Top skills", value=top_skills, inline=False)
         skill_entries: List[str] = []
         for name, raw_xp in sorted(skills.items(), key=lambda item: float(item[1]), reverse=True):
             try:
