@@ -1,8 +1,10 @@
 import asyncio
 import hashlib
 import logging
+from bisect import bisect_right
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 import aiohttp
@@ -11,32 +13,33 @@ from redbot.core import Config, commands
 from redbot.core.bot import Red
 
 API_BASE = "https://query.idleclans.com/api"
+ICON_BASE_URL = "https://raw.githubusercontent.com/joenilan/red-cogs/main/idleclans/assets/skills"
 DEFAULT_CLAN = "TheCoalition"
 DEFAULT_LIMIT = 100
 DEFAULT_INTERVAL = 120
 RECENT_CACHE_LIMIT = 200
 POLL_LOOP_SLEEP = 20
 SKILL_ICON_MAP = {
-    "attack": "⚔️",
-    "strength": "💪",
-    "defence": "🛡️",
-    "archery": "🏹",
-    "magic": "✨",
-    "health": "❤️",
-    "crafting": "✂️",
-    "woodcutting": "🪓",
-    "carpentry": "🪚",
-    "fishing": "🎣",
-    "cooking": "🍳",
-    "mining": "⛏️",
-    "smithing": "⚒️",
-    "foraging": "🌿",
-    "farming": "🌾",
-    "agility": "🤸",
-    "plundering": "💰",
-    "enchanting": "🔮",
-    "brewing": "🧪",
-    "exterminating": "☠️",
+    "attack": "attack.png",
+    "strength": "strength.png",
+    "defence": "defence.png",
+    "archery": "archery.png",
+    "magic": "magic.png",
+    "health": "health.png",
+    "crafting": "crafting.png",
+    "woodcutting": "woodcutting.png",
+    "carpentry": "carpentry.png",
+    "fishing": "fishing.png",
+    "cooking": "cooking.png",
+    "mining": "mining.png",
+    "smithing": "smithing.png",
+    "foraging": "foraging.png",
+    "farming": "farming.png",
+    "agility": "agility.png",
+    "plundering": "plundering.png",
+    "enchanting": "enchanting.png",
+    "brewing": "brewing.png",
+    "exterminating": "exterminating.png",
 }
 
 
@@ -98,7 +101,11 @@ def _member_color(member: str) -> discord.Color:
 
 
 def _top_stat_lines(
-    entries: Optional[Dict[str, Any]], *, suffix: str, limit: int = 5
+    entries: Optional[Dict[str, Any]],
+    *,
+    suffix: str,
+    limit: int = 5,
+    xp_to_level: Optional[Callable[[float], int]] = None,
 ) -> str:
     if not entries:
         return "No data"
@@ -111,9 +118,13 @@ def _top_stat_lines(
     sortable.sort(key=lambda item: item[1], reverse=True)
     if not sortable:
         return "No data"
-    lines = [
-        f"**{name}** — {_format_number(value)}{suffix}" for name, value in sortable[:limit]
-    ]
+    lines = []
+    for name, value in sortable[:limit]:
+        level_text = ""
+        if xp_to_level:
+            level = xp_to_level(value)
+            level_text = f"Lvl {level} · "
+        lines.append(f"**{name}** — {level_text}{_format_number(value)}{suffix}")
     return "\n".join(lines)
 
 
@@ -140,6 +151,7 @@ class IdleClans(commands.Cog):
         self.poll_task: Optional[asyncio.Task] = None
         self._last_poll: Dict[int, float] = {}
         self._guild_locks: Dict[int, asyncio.Lock] = {}
+        self._xp_thresholds, self._xp_levels = self._load_xp_table()
 
     async def cog_load(self) -> None:
         self._ensure_session()
@@ -328,7 +340,7 @@ class IdleClans(commands.Cog):
         embed.add_field(name="Last task", value=task_value, inline=False)
 
         skills = profile.get("skillExperiences")
-        skill_lines = _top_stat_lines(skills, suffix=" xp")
+        skill_lines = _top_stat_lines(skills, suffix=" xp", xp_to_level=self._xp_to_level)
         if skill_lines and skill_lines != "No data":
             embed.add_field(name="Top skills", value=skill_lines, inline=False)
 
@@ -362,16 +374,31 @@ class IdleClans(commands.Cog):
         sorted_skills = sorted(
             (skills or {}).items(), key=lambda item: float(item[1]), reverse=True
         )
-        lines: List[str] = []
+        entries: List[str] = []
         for name, raw_value in sorted_skills:
             try:
                 value = float(raw_value)
             except (TypeError, ValueError):
                 continue
-            icon = SKILL_ICON_MAP.get(name.lower(), "•")
+            icon_path = SKILL_ICON_MAP.get(name.lower())
+            if icon_path:
+                icon = f"[‎]({ICON_BASE_URL}/{icon_path})"
+            else:
+                icon = "•"
             pretty = name.replace("_", " ").title()
-            lines.append(f"{icon} **{pretty}** — {_format_number(value)} xp")
-        embed.description = "\n".join(lines) if lines else "No skill data found."
+            level = self._xp_to_level(value)
+            entries.append(f"{icon} **{pretty}**\nLvl {level} · {_format_number(value)} xp")
+        if not entries:
+            embed.description = "No skill data found."
+            return embed
+        columns = 3
+        for idx in range(0, len(entries), columns):
+            chunk = entries[idx : idx + columns]
+            embed.add_field(
+                name="\u200b",
+                value="\n\n".join(chunk),
+                inline=True,
+            )
         embed.set_footer(text="Data from IdleClans API")
         return embed
 
@@ -511,6 +538,43 @@ class IdleClans(commands.Cog):
             return
         cache = [_entry_identity(e) for e in entries][-RECENT_CACHE_LIMIT:]
         await self.config.guild(guild).recent_ids.set(cache)
+
+    def _load_xp_table(self) -> Tuple[List[float], List[int]]:
+        data_path = Path(__file__).with_name("data").joinpath("xp_table.csv")
+        if not data_path.is_file():
+            self.log.warning("XP table file %s missing; skill levels will not display.", data_path)
+            return [0.0], [1]
+        entries: List[Tuple[float, int]] = []
+        with data_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line or "," not in line:
+                    continue
+                level_str, xp_str = line.split(",", 1)
+                try:
+                    level_val = int(level_str)
+                    xp_val = float(xp_str)
+                except ValueError:
+                    continue
+                entries.append((xp_val, level_val))
+        if not entries:
+            return [0.0], [1]
+        entries.sort(key=lambda pair: pair[0])
+        xp_thresholds = [pair[0] for pair in entries]
+        level_values = [pair[1] for pair in entries]
+        return xp_thresholds, level_values
+
+    def _xp_to_level(self, xp_value: float) -> int:
+        thresholds = self._xp_thresholds
+        levels = self._xp_levels
+        if not thresholds:
+            return 0
+        index = bisect_right(thresholds, xp_value) - 1
+        if index < 0:
+            index = 0
+        if index >= len(levels):
+            index = len(levels) - 1
+        return levels[index]
 
     @commands.command(name="player")
     @commands.cooldown(1, 5, commands.BucketType.user)
