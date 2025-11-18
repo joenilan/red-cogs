@@ -356,11 +356,8 @@ class IdleClans(commands.Cog):
             level = self._xp_to_level(xp_val)
             skill_entries.append(f"{icon} **{pretty}**\nLvl {level} · {_format_number(xp_val)} xp")
         if skill_entries:
-            embed.add_field(
-                name="Skill highlights",
-                value=self._format_inline_grid(entries=skill_entries[:6], columns=2),
-                inline=False,
-            )
+            embed.add_field(name="Skill highlights", value="\u200b", inline=False)
+            self._add_skill_grid_fields(embed, entries=skill_entries, columns=2, max_rows=3)
 
         pvm_stats = profile.get("pvmStats")
         pvm_lines = _top_stat_lines(pvm_stats, suffix=" kills", limit=3)
@@ -395,23 +392,28 @@ class IdleClans(commands.Cog):
         return total
 
     @staticmethod
-    @staticmethod
-    def _format_inline_grid(*, entries: List[str], columns: int) -> str:
+    def _add_skill_grid_fields(
+        self, embed: discord.Embed, *, entries: List[str], columns: int, max_rows: int
+    ) -> None:
         column_chunks: List[List[str]] = [[] for _ in range(columns)]
-        for idx, entry in enumerate(entries):
+        limit = columns * max_rows
+        for idx, entry in enumerate(entries[:limit]):
             column_chunks[idx % columns].append(entry)
-        lines: List[str] = []
-        max_rows = min(3, max(len(chunk) for chunk in column_chunks))
-        for row in range(max_rows):
-            row_entries = []
-            for col in range(columns):
-                chunk = column_chunks[col]
-                if row < len(chunk):
-                    row_entries.append(chunk[row])
-            lines.append("   ".join(row_entries))
-        if len(entries) > columns * max_rows:
-            lines.append(f"...and {len(entries) - columns * max_rows} more skills")
-        return "\n".join(lines)
+        for chunk in column_chunks:
+            if not chunk:
+                continue
+            embed.add_field(
+                name="\u200b",
+                value="\n\n".join(chunk),
+                inline=True,
+            )
+        remaining = len(entries) - limit
+        if remaining > 0:
+            embed.add_field(
+                name="\u200b",
+                value=f"...and {remaining} more skills",
+                inline=False,
+            )
 
     def _build_skills_embed(self, profile: Dict[str, Any], skills: Dict[str, Any]) -> discord.Embed:
         username = profile.get("username") or "Unknown player"
