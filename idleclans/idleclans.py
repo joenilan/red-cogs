@@ -358,7 +358,7 @@ class IdleClans(commands.Cog):
         if skill_entries:
             embed.add_field(
                 name="Skill highlights",
-                value=self._format_inline_grid(skill_entries[:6], columns=2),
+                value=self._format_inline_grid(entries=skill_entries[:6], columns=2),
                 inline=False,
             )
 
@@ -395,7 +395,8 @@ class IdleClans(commands.Cog):
         return total
 
     @staticmethod
-    def _format_inline_grid(self, entries: List[str], columns: int) -> str:
+    @staticmethod
+    def _format_inline_grid(*, entries: List[str], columns: int) -> str:
         column_chunks: List[List[str]] = [[] for _ in range(columns)]
         for idx, entry in enumerate(entries):
             column_chunks[idx % columns].append(entry)
