@@ -13,7 +13,6 @@ from redbot.core import Config, commands
 from redbot.core.bot import Red
 
 API_BASE = "https://query.idleclans.com/api"
-ICON_BASE_URL = "https://raw.githubusercontent.com/joenilan/red-cogs/main/idleclans/assets/skills"
 DEFAULT_CLAN = "TheCoalition"
 DEFAULT_LIMIT = 100
 DEFAULT_INTERVAL = 120
@@ -388,8 +387,12 @@ class IdleClans(commands.Cog):
             embed.description = "No skill data found."
             return embed
         columns = 3
-        for idx in range(0, len(entries), columns):
-            chunk = entries[idx : idx + columns]
+        column_chunks: List[List[str]] = [[] for _ in range(columns)]
+        for idx, entry in enumerate(entries):
+            column_chunks[idx % columns].append(entry)
+        for chunk in column_chunks:
+            if not chunk:
+                continue
             embed.add_field(
                 name="\u200b",
                 value="\n\n".join(chunk),
