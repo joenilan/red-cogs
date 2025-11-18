@@ -16,6 +16,28 @@ DEFAULT_LIMIT = 100
 DEFAULT_INTERVAL = 120
 RECENT_CACHE_LIMIT = 200
 POLL_LOOP_SLEEP = 20
+SKILL_ICON_MAP = {
+    "attack": "⚔️",
+    "strength": "💪",
+    "defence": "🛡️",
+    "archery": "🏹",
+    "magic": "✨",
+    "health": "❤️",
+    "crafting": "✂️",
+    "woodcutting": "🪓",
+    "carpentry": "🪚",
+    "fishing": "🎣",
+    "cooking": "🍳",
+    "mining": "⛏️",
+    "smithing": "⚒️",
+    "foraging": "🌿",
+    "farming": "🌾",
+    "agility": "🤸",
+    "plundering": "💰",
+    "enchanting": "🔮",
+    "brewing": "🧪",
+    "exterminating": "☠️",
+}
 
 
 def _entry_identity(entry: Dict[str, Any]) -> str:
@@ -331,6 +353,28 @@ class IdleClans(commands.Cog):
         embed.set_footer(text="Data from IdleClans API")
         return embed
 
+    def _build_skills_embed(self, profile: Dict[str, Any], skills: Dict[str, Any]) -> discord.Embed:
+        username = profile.get("username") or "Unknown player"
+        embed = discord.Embed(
+            title=f"{username}'s skills",
+            color=_member_color(username),
+        )
+        sorted_skills = sorted(
+            (skills or {}).items(), key=lambda item: float(item[1]), reverse=True
+        )
+        lines: List[str] = []
+        for name, raw_value in sorted_skills:
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                continue
+            icon = SKILL_ICON_MAP.get(name.lower(), "•")
+            pretty = name.replace("_", " ").title()
+            lines.append(f"{icon} **{pretty}** — {_format_number(value)} xp")
+        embed.description = "\n".join(lines) if lines else "No skill data found."
+        embed.set_footer(text="Data from IdleClans API")
+        return embed
+
     @commands.group(name="idleclans")
     @commands.guild_only()
     async def idleclans_group(self, ctx: commands.Context) -> None:
@@ -472,27 +516,48 @@ class IdleClans(commands.Cog):
     @commands.cooldown(1, 5, commands.BucketType.user)
     async def idleclans_player(self, ctx: commands.Context, *, player_name: str) -> None:
         """Show IdleClans profile details for a player."""
-        player_name = player_name.strip()
-        if not player_name:
-            await ctx.send("Provide a player name to look up.")
-            return
-        session = self._ensure_session()
-        if not session:
-            await ctx.send("IdleClans session is not ready yet. Try again in a moment.")
-            return
-        await ctx.typing()
-        try:
-            profile = await self._fetch_player_profile(session, player_name)
-        except aiohttp.ClientResponseError as exc:
-            if exc.status == 404:
-                await ctx.send(f"No IdleClans profile found for `{player_name}`.")
-                return
-            self.log.warning("IdleClans player API error (%s): %s", exc.status, exc.message)
-            await ctx.send("IdleClans API returned an error while fetching that player.")
-            return
-        except aiohttp.ClientError as exc:
-            self.log.warning("Network error while fetching IdleClans profile: %s", exc)
-            await ctx.send("Could not reach the IdleClans API. Try again shortly.")
+        profile = await self._resolve_player_profile(ctx, player_name)
+        if not profile:
             return
         embed = self._build_player_embed(profile)
         await ctx.send(embed=embed)
+
+    @commands.command(name="skills")
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    async def idleclans_skills(self, ctx: commands.Context, *, player_name: str) -> None:
+        """List all skill experience values for a player."""
+        profile = await self._resolve_player_profile(ctx, player_name)
+        if not profile:
+            return
+        skills = profile.get("skillExperiences")
+        if not skills:
+            await ctx.send("IdleClans did not return any skill data for that player.")
+            return
+        embed = self._build_skills_embed(profile, skills)
+        await ctx.send(embed=embed)
+
+    async def _resolve_player_profile(
+        self, ctx: commands.Context, player_name: str
+    ) -> Optional[Dict[str, Any]]:
+        subject = player_name.strip()
+        if not subject:
+            await ctx.send("Provide a player name to look up.")
+            return None
+        session = self._ensure_session()
+        if not session:
+            await ctx.send("IdleClans session is not ready yet. Try again in a moment.")
+            return None
+        await ctx.typing()
+        try:
+            return await self._fetch_player_profile(session, subject)
+        except aiohttp.ClientResponseError as exc:
+            if exc.status == 404:
+                await ctx.send(f"No IdleClans profile found for `{subject}`.")
+                return None
+            self.log.warning("IdleClans player API error (%s): %s", exc.status, exc.message)
+            await ctx.send("IdleClans API returned an error while fetching that player.")
+            return None
+        except aiohttp.ClientError as exc:
+            self.log.warning("Network error while fetching IdleClans profile: %s", exc)
+            await ctx.send("Could not reach the IdleClans API. Try again shortly.")
+            return None
