@@ -329,22 +329,38 @@ class IdleClans(commands.Cog):
             embed.description = f"Member of **{clan_name}**"
         game_mode = profile.get("gameMode") or "Unknown"
         total_level = self._infer_total_level(profile.get("skillExperiences"))
-        embed.add_field(name="Game mode", value=game_mode.title(), inline=True)
-        embed.add_field(name="Total level", value=_format_number(total_level), inline=True)
+        embed.add_field(name="Game mode", value=f"🎮 {game_mode.title()}", inline=True)
+        embed.add_field(name="Total level", value=f"⭐ {_format_number(total_level)}", inline=True)
         hours_offline = profile.get("hoursOffline")
         offline_value = (
             f"{float(hours_offline):.1f}h" if isinstance(hours_offline, (int, float)) else "Unknown"
         )
-        embed.add_field(name="Hours offline", value=offline_value, inline=True)
+        embed.add_field(name="Hours offline", value=f"⏱️ {offline_value}", inline=True)
         task_name = profile.get("taskNameOnLogout") or "Unknown"
         task_type = profile.get("taskTypeOnLogout")
-        task_value = f"{task_name} (type {task_type})" if task_type is not None else task_name
-        embed.add_field(name="Last task", value=task_value, inline=False)
+        task_value = f"{task_name} · type {task_type}" if task_type is not None else task_name
+        embed.add_field(name="Last task", value=f"📋 {task_value}", inline=False)
 
-        skills = profile.get("skillExperiences")
-        skill_lines = _top_stat_lines(skills, suffix=" xp", xp_to_level=self._xp_to_level)
-        if skill_lines and skill_lines != "No data":
-            embed.add_field(name="Top skills", value=skill_lines, inline=False)
+        skills = profile.get("skillExperiences") or {}
+        top_skills = _top_stat_lines(skills, suffix=" xp", xp_to_level=self._xp_to_level)
+        if top_skills and top_skills != "No data":
+            embed.add_field(name="Top skills", value=top_skills, inline=False)
+        skill_entries: List[str] = []
+        for name, raw_xp in sorted(skills.items(), key=lambda item: float(item[1]), reverse=True):
+            try:
+                xp_val = float(raw_xp)
+            except (TypeError, ValueError):
+                continue
+            icon = SKILL_ICON_MAP.get(name.lower(), "•")
+            pretty = name.replace("_", " ").title()
+            level = self._xp_to_level(xp_val)
+            skill_entries.append(f"{icon} **{pretty}**\nLvl {level} · {_format_number(xp_val)} xp")
+        if skill_entries:
+            embed.add_field(
+                name="Skill highlights",
+                value=self._format_inline_grid(skill_entries[:6], columns=2),
+                inline=False,
+            )
 
         pvm_stats = profile.get("pvmStats")
         pvm_lines = _top_stat_lines(pvm_stats, suffix=" kills", limit=3)
@@ -377,6 +393,24 @@ class IdleClans(commands.Cog):
             except (TypeError, ValueError):
                 continue
         return total
+
+    @staticmethod
+    def _format_inline_grid(self, entries: List[str], columns: int) -> str:
+        column_chunks: List[List[str]] = [[] for _ in range(columns)]
+        for idx, entry in enumerate(entries):
+            column_chunks[idx % columns].append(entry)
+        lines: List[str] = []
+        max_rows = min(3, max(len(chunk) for chunk in column_chunks))
+        for row in range(max_rows):
+            row_entries = []
+            for col in range(columns):
+                chunk = column_chunks[col]
+                if row < len(chunk):
+                    row_entries.append(chunk[row])
+            lines.append("   ".join(row_entries))
+        if len(entries) > columns * max_rows:
+            lines.append(f"...and {len(entries) - columns * max_rows} more skills")
+        return "\n".join(lines)
 
     def _build_skills_embed(self, profile: Dict[str, Any], skills: Dict[str, Any]) -> discord.Embed:
         username = profile.get("username") or "Unknown player"
