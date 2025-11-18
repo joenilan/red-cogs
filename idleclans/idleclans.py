@@ -391,7 +391,6 @@ class IdleClans(commands.Cog):
                 continue
         return total
 
-    @staticmethod
     def _add_skill_grid_fields(
         self, embed: discord.Embed, *, entries: List[str], columns: int, max_rows: int
     ) -> None:
