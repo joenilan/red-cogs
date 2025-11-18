@@ -56,12 +56,43 @@ def _format_timestamp(value: Optional[str]) -> str:
     return value or "Unknown time"
 
 
+def _format_number(value: Optional[float]) -> str:
+    if value is None:
+        return "0"
+    try:
+        if isinstance(value, float):
+            value = int(round(value))
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _member_color(member: str) -> discord.Color:
     if not member:
         return discord.Color.blurple()
     digest = hashlib.sha1(member.lower().encode("utf-8")).digest()
     value = int.from_bytes(digest[:3], "big")
     return discord.Color(value=value)
+
+
+def _top_stat_lines(
+    entries: Optional[Dict[str, Any]], *, suffix: str, limit: int = 5
+) -> str:
+    if not entries:
+        return "No data"
+    sortable: List[Tuple[str, float]] = []
+    for key, raw_value in entries.items():
+        try:
+            sortable.append((key, float(raw_value)))
+        except (TypeError, ValueError):
+            continue
+    sortable.sort(key=lambda item: item[1], reverse=True)
+    if not sortable:
+        return "No data"
+    lines = [
+        f"**{name}** — {_format_number(value)}{suffix}" for name, value in sortable[:limit]
+    ]
+    return "\n".join(lines)
 
 
 class IdleClans(commands.Cog):
@@ -89,9 +120,7 @@ class IdleClans(commands.Cog):
         self._guild_locks: Dict[int, asyncio.Lock] = {}
 
     async def cog_load(self) -> None:
-        if self.session is None or self.session.closed:
-            timeout = aiohttp.ClientTimeout(total=20)
-            self.session = aiohttp.ClientSession(timeout=timeout)
+        self._ensure_session()
         if not self.poll_task or self.poll_task.done():
             self.poll_task = asyncio.create_task(self._poll_loop())
 
@@ -131,7 +160,7 @@ class IdleClans(commands.Cog):
             self._last_poll[guild.id] = now
 
     async def _process_guild(self, guild: discord.Guild, settings: Dict[str, Any], *, send_history: bool = False) -> None:
-        session = self.session
+        session = self._ensure_session()
         if not session:
             return
         channel_id = settings.get("output_channel")
@@ -234,6 +263,73 @@ class IdleClans(commands.Cog):
                     message="Unexpected IdleClans response format",
                 )
             return data
+
+    async def _fetch_player_profile(
+        self, session: aiohttp.ClientSession, player_name: str
+    ) -> Dict[str, Any]:
+        safe_name = quote(player_name, safe="")
+        url = f"{API_BASE}/Player/profile/{safe_name}"
+        async with session.get(url) as resp:
+            if resp.status == 404:
+                raise aiohttp.ClientResponseError(
+                    resp.request_info, resp.history, status=404, message="Player not found"
+                )
+            resp.raise_for_status()
+            data = await resp.json()
+            if not isinstance(data, dict):
+                raise aiohttp.ClientResponseError(
+                    resp.request_info,
+                    resp.history,
+                    status=500,
+                    message="Unexpected IdleClans response format",
+                )
+            return data
+
+    def _build_player_embed(self, profile: Dict[str, Any]) -> discord.Embed:
+        username = profile.get("username") or "Unknown player"
+        embed = discord.Embed(
+            title=f"{username}",
+            color=_member_color(username),
+        )
+        game_mode = profile.get("gameMode") or "Unknown"
+        clan_name = profile.get("guildName") or "No clan"
+        embed.add_field(name="Game mode", value=game_mode, inline=True)
+        embed.add_field(name="Clan", value=clan_name, inline=True)
+        hours_offline = profile.get("hoursOffline")
+        offline_value = (
+            f"{float(hours_offline):.1f}h" if isinstance(hours_offline, (int, float)) else "Unknown"
+        )
+        embed.add_field(name="Hours offline", value=offline_value, inline=True)
+        task_name = profile.get("taskNameOnLogout") or "Unknown"
+        task_type = profile.get("taskTypeOnLogout")
+        task_value = f"{task_name} (type {task_type})" if task_type is not None else task_name
+        embed.add_field(name="Last task", value=task_value, inline=False)
+
+        skills = profile.get("skillExperiences")
+        skill_lines = _top_stat_lines(skills, suffix=" xp")
+        if skill_lines and skill_lines != "No data":
+            embed.add_field(name="Top skills", value=skill_lines, inline=False)
+
+        pvm_stats = profile.get("pvmStats")
+        pvm_lines = _top_stat_lines(pvm_stats, suffix=" kills", limit=3)
+        if pvm_lines and pvm_lines != "No data":
+            embed.add_field(name="PvM stats", value=pvm_lines, inline=False)
+
+        progression_bits: List[str] = []
+        equipment = profile.get("equipment") or {}
+        upgrades = profile.get("upgrades") or {}
+        enchantments = profile.get("enchantmentBoosts") or {}
+        if equipment:
+            progression_bits.append(f"Equipment slots: {len(equipment)}")
+        if upgrades:
+            progression_bits.append(f"Upgrades: {len(upgrades)}")
+        if enchantments:
+            progression_bits.append(f"Enchantments: {len(enchantments)}")
+        if progression_bits:
+            embed.add_field(name="Progression", value="\n".join(progression_bits), inline=False)
+
+        embed.set_footer(text="Data from IdleClans API")
+        return embed
 
     @commands.group(name="idleclans")
     @commands.guild_only()
@@ -351,8 +447,14 @@ class IdleClans(commands.Cog):
             self._guild_locks[guild_id] = lock
         return lock
 
+    def _ensure_session(self) -> Optional[aiohttp.ClientSession]:
+        if self.session is None or self.session.closed:
+            timeout = aiohttp.ClientTimeout(total=20)
+            self.session = aiohttp.ClientSession(timeout=timeout)
+        return self.session
+
     async def _warm_cache(self, guild: discord.Guild) -> None:
-        session = self.session
+        session = self._ensure_session()
         if not session:
             return
         data = await self.config.guild(guild).all()
@@ -365,3 +467,32 @@ class IdleClans(commands.Cog):
             return
         cache = [_entry_identity(e) for e in entries][-RECENT_CACHE_LIMIT:]
         await self.config.guild(guild).recent_ids.set(cache)
+
+    @commands.command(name="player")
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    async def idleclans_player(self, ctx: commands.Context, *, player_name: str) -> None:
+        """Show IdleClans profile details for a player."""
+        player_name = player_name.strip()
+        if not player_name:
+            await ctx.send("Provide a player name to look up.")
+            return
+        session = self._ensure_session()
+        if not session:
+            await ctx.send("IdleClans session is not ready yet. Try again in a moment.")
+            return
+        await ctx.typing()
+        try:
+            profile = await self._fetch_player_profile(session, player_name)
+        except aiohttp.ClientResponseError as exc:
+            if exc.status == 404:
+                await ctx.send(f"No IdleClans profile found for `{player_name}`.")
+                return
+            self.log.warning("IdleClans player API error (%s): %s", exc.status, exc.message)
+            await ctx.send("IdleClans API returned an error while fetching that player.")
+            return
+        except aiohttp.ClientError as exc:
+            self.log.warning("Network error while fetching IdleClans profile: %s", exc)
+            await ctx.send("Could not reach the IdleClans API. Try again shortly.")
+            return
+        embed = self._build_player_embed(profile)
+        await ctx.send(embed=embed)
