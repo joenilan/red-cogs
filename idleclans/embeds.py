@@ -156,7 +156,19 @@ def build_clanhistory_embed(
             if clan:
                 message = f"[{clan}] {message}"
             lines.append(f"{timestamp} — {message}")
-        embed.add_field(name="Logs", value="\n".join(lines), inline=False)
+        chunk: List[str] = []
+        chunk_len = 0
+        idx = 1
+        for line in lines:
+            if chunk_len + len(line) + 1 > 900:  # keep headroom under 1024
+                embed.add_field(name=f"Logs ({idx})", value="\n".join(chunk), inline=False)
+                idx += 1
+                chunk = []
+                chunk_len = 0
+            chunk.append(line)
+            chunk_len += len(line) + 1
+        if chunk:
+            embed.add_field(name=f"Logs ({idx})", value="\n".join(chunk), inline=False)
     embed.set_footer(text="Data from IdleClans API")
     return embed
 
