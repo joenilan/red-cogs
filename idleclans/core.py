@@ -234,7 +234,7 @@ class IdleClans(commands.Cog):
     @idleclans_group.command(name="help")
     async def idleclans_help(self, ctx: commands.Context) -> None:
         """Show IdleClans-specific help."""
-        await ctx.send(self._build_help_text(ctx.clean_prefix))
+        await ctx.send(embed=self._build_help_embed(ctx.clean_prefix))
 
     @idleclans_group.command(name="channel")
     @commands.admin_or_permissions(manage_guild=True)
@@ -580,20 +580,58 @@ class IdleClans(commands.Cog):
         embed = build_chat_recent_embed(key, messages)
         await ctx.send(embed=embed)
 
-    def _build_help_text(self, prefix: str) -> str:
-        return (
-            "IdleClans commands:\n"
-            f"- `{prefix}player <name>` / `{prefix}skills <name>` — Player profiles & skill grids.\n"
-            f"- `{prefix}recruitment [clan]` — Recruitment info for this guild’s clan (or a named clan).\n"
-            f"- `{prefix}market item <id|name>` / `{prefix}market movers [period]` — Market ladders and movers.\n"
-            f"- `{prefix}clanhistory <player> [clan|global]` — Recent clan logs for a player.\n"
-            f"- `{prefix}clancup [clan]` / `{prefix}clancup standings` — Clan Cup standings.\n"
-            f"- `{prefix}chat recent [channel] [count]` — Recent game chat snapshots.\n"
-            f"- `{prefix}idleclans enable|disable|channel|clan|status|postnow|warmcache|clearcache` — Relay controls."
+    def _build_help_embed(self, prefix: str) -> discord.Embed:
+        embed = discord.Embed(
+            title="IdleClans command reference",
+            description="Use the shorter aliases (shown in parentheses) where you like. "
+            "Most commands default to this guild’s configured clan unless you pass one.",
+            color=discord.Color.blurple(),
         )
+        embed.add_field(
+            name="Player",
+            value=(
+                f"`{prefix}player <ign>` (`{prefix}p`) — profile summary\n"
+                f"`{prefix}skills <ign>` (`{prefix}s`) — level grid with progress bars"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Clan intel",
+            value=(
+                f"`{prefix}recruitment [clan]` (`{prefix}rec`) — recruitment snapshot\n"
+                f"`{prefix}clanhistory <ign> [clan|global]` (`{prefix}ch`) — recent logs\n"
+                f"`{prefix}clancup [clan]` / `{prefix}clancup standings` (`{prefix}cc`) — objective standings"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Market",
+            value=(
+                f"`{prefix}market item <id|name>` (`{prefix}m i`) — ladder + averages\n"
+                f"`{prefix}market movers [period]` (`{prefix}m mv`) — value & volume leaders"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Chat / relay",
+            value=f"`{prefix}chat recent [channel] [count]` (`{prefix}c`) — latest in-game chat messages",
+            inline=False,
+        )
+        embed.add_field(
+            name="Relay controls",
+            value=(
+                f"`{prefix}idleclans enable|disable`\n"
+                f"`{prefix}idleclans channel #chan`\n"
+                f"`{prefix}idleclans clan <name>`\n"
+                f"`{prefix}idleclans status|postnow|warmcache|clearcache|interval|limit`"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="IdleClans cog • https://query.idleclans.com/api-docs/index.html")
+        return embed
 
     async def format_help_for_context(self, ctx: commands.Context) -> str:
-        return self._build_help_text(ctx.clean_prefix)
+        return f"Use `{ctx.clean_prefix}idleclans help` for the full IdleClans command reference."
 
     async def _resolve_player_profile(
         self, ctx: commands.Context, player_name: str
