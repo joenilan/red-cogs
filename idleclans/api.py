@@ -78,7 +78,7 @@ async def fetch_market_latest(
     session: aiohttp.ClientSession, include_average: bool = False
 ) -> List[Dict[str, Any]]:
     url = f"{API_BASE}/PlayerMarket/items/prices/latest"
-    params = {"includeAveragePrice": include_average}
+    params = {"includeAveragePrice": "true" if include_average else "false"}
     async with session.get(url, params=params) as resp:
         resp.raise_for_status()
         data = await resp.json()
@@ -193,7 +193,7 @@ async def fetch_market_latest_item(
     session: aiohttp.ClientSession, item_id: int, include_average: bool = False
 ) -> Dict[str, Any]:
     url = f"{API_BASE}/PlayerMarket/items/prices/latest/{item_id}"
-    params = {"includeAveragePrice": include_average}
+    params = {"includeAveragePrice": "true" if include_average else "false"}
     async with session.get(url, params=params) as resp:
         if resp.status == 404:
             raise aiohttp.ClientResponseError(
