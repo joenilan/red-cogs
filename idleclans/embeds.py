@@ -137,6 +137,83 @@ def build_recruitment_embed(data: Dict[str, Any]) -> discord.Embed:
     return embed
 
 
+def build_clan_bank_embed(clan_name: str, summary: Dict[str, Any]) -> discord.Embed:
+    logs_analyzed = summary.get("logs_analyzed", 0)
+    event_total = summary.get("event_total", 0)
+    embed = discord.Embed(
+        title=f"{clan_name} bank activity",
+        color=discord.Color.gold(),
+        description=(
+            f"Analyzed {format_number(logs_analyzed)} clan logs; "
+            f"found {event_total} bank entries."
+        ),
+    )
+    if not event_total:
+        embed.description += " No deposits or withdrawals were detected in this sample."
+        return embed
+    overview_lines = [
+        f"Deposits: `{summary.get('deposit_count', 0)}` "
+        f"(+{format_number(summary.get('deposit_units', 0))} items)",
+        f"Withdrawals: `{summary.get('withdraw_count', 0)}` "
+        f"(-{format_number(summary.get('withdraw_units', 0))} items)",
+    ]
+    embed.add_field(name="Overview", value="\n".join(overview_lines), inline=False)
+    item_totals = summary.get("item_totals") or []
+    if item_totals:
+        item_lines = []
+        for item, data in item_totals:
+            added = data.get("added", 0)
+            withdrew = data.get("withdrew", 0)
+            segment = f"+{format_number(added)}"
+            if withdrew:
+                segment += f" | -{format_number(withdrew)}"
+            item_lines.append(f"**{item}** — {segment}")
+        embed.add_field(
+            name="Popular items",
+            value="\n".join(item_lines),
+            inline=False,
+        )
+    gold_positive = summary.get("gold_positive") or []
+    if gold_positive:
+        pos_lines = [
+            f"**{name}** +{format_number(amount)}"
+            for name, amount in gold_positive
+        ]
+        embed.add_field(
+            name="Gold contributors",
+            value="\n".join(pos_lines),
+            inline=True,
+        )
+    gold_negative = summary.get("gold_negative") or []
+    if gold_negative:
+        neg_lines = [
+            f"**{name}** -{format_number(amount)}"
+            for name, amount in gold_negative
+        ]
+        embed.add_field(
+            name="Gold spent",
+            value="\n".join(neg_lines),
+            inline=True,
+        )
+    recent_events = summary.get("recent_events") or []
+    if recent_events:
+        recent_lines = []
+        for event in recent_events:
+            timestamp = format_timestamp(event.get("timestamp"))
+            actor = event.get("actor") or "Unknown"
+            action = "deposited" if event.get("action") == "added" else "withdrew"
+            amount = format_number(event.get("amount"))
+            item = event.get("item") or "Unknown item"
+            recent_lines.append(f"`{timestamp}` **{actor}** {action} {amount}x {item}")
+        embed.add_field(
+            name="Recent movements",
+            value="\n".join(recent_lines),
+            inline=False,
+        )
+    embed.set_footer(text="Data from IdleClans API")
+    return embed
+
+
 def build_clanhistory_embed(
     player_name: str, entries: List[Dict[str, Any]], scope: str
 ) -> discord.Embed:
@@ -221,9 +298,11 @@ def build_chat_recent_embed(channel: str, messages: List[Dict[str, Any]]) -> dis
     else:
         lines = []
         for msg in messages[:20]:
-            timestamp = format_timestamp(msg.get("timestamp"))
-            author = msg.get("author") or msg.get("username") or "Unknown"
-            content = msg.get("message") or msg.get("content") or ""
+            timestamp = format_timestamp(
+                msg.get("timestamp") or msg.get("time") or msg.get("sentAt")
+            )
+            author = msg.get("author") or msg.get("username") or msg.get("sender") or "Unknown"
+            content = msg.get("message") or msg.get("content") or msg.get("text") or ""
             lines.append(f"`{timestamp}` **{author}**: {content}")
         embed.description = "\n".join(lines)
     embed.set_footer(text="Data from IdleClans API")
