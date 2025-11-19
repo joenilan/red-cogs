@@ -180,8 +180,6 @@ class XPTable:
 def load_xp_table(path: Path) -> XPTable:
     if not path.is_file():
         return XPTable([0.0], [1], {1: 0.0})
-    thresholds: List[float] = []
-    levels: List[int] = []
     level_to_xp: Dict[int, float] = {}
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
@@ -194,11 +192,10 @@ def load_xp_table(path: Path) -> XPTable:
                 xp_val = float(xp_str)
             except ValueError:
                 continue
-            thresholds.append(xp_val)
-            levels.append(level_val)
             level_to_xp[level_val] = xp_val
-    if not thresholds:
-        thresholds = [0.0]
-    if not levels:
-        levels = [1]
-    return XPTable(thresholds, levels, level_to_xp or {1: 0.0})
+    if not level_to_xp:
+        return XPTable([0.0], [1], {1: 0.0})
+    sorted_items = sorted(level_to_xp.items(), key=lambda item: item[0])
+    thresholds = [xp for _, xp in sorted_items]
+    levels = [lvl for lvl, _ in sorted_items]
+    return XPTable(thresholds, levels, level_to_xp)
