@@ -150,7 +150,7 @@ class IdleClans(commands.Cog):
         self.poll_task: Optional[asyncio.Task] = None
         self._last_poll: Dict[int, float] = {}
         self._guild_locks: Dict[int, asyncio.Lock] = {}
-        self._xp_thresholds, self._xp_levels = self._load_xp_table()
+        self._xp_thresholds, self._xp_levels, self._level_to_xp = self._load_xp_table()
 
     async def cog_load(self) -> None:
         self._ensure_session()
@@ -350,11 +350,16 @@ class IdleClans(commands.Cog):
                 continue
             icon = SKILL_ICON_MAP.get(name.lower(), "•")
             pretty = name.replace("_", " ").title()
-            level = self._xp_to_level(xp_val)
-            skill_entries.append(f"{icon} **{pretty}**\nLvl {level} · {_format_number(xp_val)} xp")
+            level, bar = self._skill_progress(xp_val)
+            skill_entries.append(f"{icon} **{pretty}** — Lvl {level}\n{bar}")
         if skill_entries:
-            embed.add_field(name="Skill highlights", value="\u200b", inline=False)
-            self._add_skill_grid_fields(embed, entries=skill_entries, columns=2, max_rows=3)
+            self._add_skill_grid_fields(
+                embed,
+                entries=skill_entries,
+                columns=2,
+                max_rows=3,
+                title="Skill highlights",
+            )
 
         pvm_stats = profile.get("pvmStats")
         pvm_lines = _top_stat_lines(pvm_stats, suffix=" kills", limit=3)
@@ -389,25 +394,33 @@ class IdleClans(commands.Cog):
         return total
 
     def _add_skill_grid_fields(
-        self, embed: discord.Embed, *, entries: List[str], columns: int, max_rows: int
+        self,
+        embed: discord.Embed,
+        *,
+        entries: List[str],
+        columns: int,
+        max_rows: int,
+        title: Optional[str] = None,
     ) -> None:
         column_chunks: List[List[str]] = [[] for _ in range(columns)]
         limit = columns * max_rows
         for idx, entry in enumerate(entries[:limit]):
             column_chunks[idx % columns].append(entry)
+        header_used = False
         for chunk in column_chunks:
             if not chunk:
                 continue
             embed.add_field(
-                name="\u200b",
+                name=title if title and not header_used else "\u200b",
                 value="\n\n".join(chunk),
                 inline=True,
             )
+            header_used = True
         remaining = len(entries) - limit
         if remaining > 0:
             embed.add_field(
                 name="\u200b",
-                value=f"...and {remaining} more skills",
+                value=f"_...and {remaining} more skills_",
                 inline=False,
             )
 
@@ -428,23 +441,18 @@ class IdleClans(commands.Cog):
                 continue
             icon = SKILL_ICON_MAP.get(name.lower(), "•")
             pretty = name.replace("_", " ").title()
-            level = self._xp_to_level(value)
-            entries.append(f"{icon} **{pretty}**\nLvl {level} · {_format_number(value)} xp")
+            level, bar = self._skill_progress(value)
+            entries.append(f"{icon} **{pretty}** — Lvl {level}\n{bar}")
         if not entries:
             embed.description = "No skill data found."
             return embed
-        columns = 3
-        column_chunks: List[List[str]] = [[] for _ in range(columns)]
-        for idx, entry in enumerate(entries):
-            column_chunks[idx % columns].append(entry)
-        for chunk in column_chunks:
-            if not chunk:
-                continue
-            embed.add_field(
-                name="\u200b",
-                value="\n\n".join(chunk),
-                inline=True,
-            )
+        self._add_skill_grid_fields(
+            embed,
+            entries=entries,
+            columns=3,
+            max_rows=7,
+            title="Skills",
+        )
         embed.set_footer(text="Data from IdleClans API")
         return embed
 
@@ -585,12 +593,13 @@ class IdleClans(commands.Cog):
         cache = [_entry_identity(e) for e in entries][-RECENT_CACHE_LIMIT:]
         await self.config.guild(guild).recent_ids.set(cache)
 
-    def _load_xp_table(self) -> Tuple[List[float], List[int]]:
+    def _load_xp_table(self) -> Tuple[List[float], List[int], Dict[int, float]]:
         data_path = Path(__file__).with_name("data").joinpath("xp_table.csv")
         if not data_path.is_file():
             self.log.warning("XP table file %s missing; skill levels will not display.", data_path)
-            return [0.0], [1]
+            return [0.0], [1], {1: 0.0}
         entries: List[Tuple[float, int]] = []
+        level_to_xp: Dict[int, float] = {}
         with data_path.open("r", encoding="utf-8") as handle:
             for line in handle:
                 line = line.strip()
@@ -603,12 +612,13 @@ class IdleClans(commands.Cog):
                 except ValueError:
                     continue
                 entries.append((xp_val, level_val))
+                level_to_xp[level_val] = xp_val
         if not entries:
-            return [0.0], [1]
+            return [0.0], [1], {1: 0.0}
         entries.sort(key=lambda pair: pair[0])
         xp_thresholds = [pair[0] for pair in entries]
         level_values = [pair[1] for pair in entries]
-        return xp_thresholds, level_values
+        return xp_thresholds, level_values, level_to_xp
 
     def _xp_to_level(self, xp_value: float) -> int:
         thresholds = self._xp_thresholds
@@ -621,6 +631,28 @@ class IdleClans(commands.Cog):
         if index >= len(levels):
             index = len(levels) - 1
         return levels[index]
+
+    def _xp_for_level(self, level: int) -> float:
+        if level <= 1:
+            return 0.0
+        max_level = max(self._level_to_xp.keys() or [1])
+        level = min(max(level, 1), max_level)
+        return self._level_to_xp.get(level, self._level_to_xp.get(max_level, 0.0))
+
+    def _skill_progress(self, xp_value: float) -> Tuple[int, str]:
+        level = self._xp_to_level(xp_value)
+        current_threshold = self._xp_for_level(level)
+        next_threshold = self._xp_for_level(level + 1)
+        if next_threshold <= current_threshold:
+            percent = 1.0
+        else:
+            percent = (xp_value - current_threshold) / (next_threshold - current_threshold)
+            percent = max(0.0, min(1.0, percent))
+        segments = 10
+        filled = round(percent * segments)
+        filled = max(0, min(segments, filled))
+        bar = "█" * filled + "░" * (segments - filled)
+        return level, f"[{bar}] {percent*100:>4.1f}%"
 
     @commands.command(name="player")
     @commands.cooldown(1, 5, commands.BucketType.user)
