@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import json
+from typing import Any, Dict, List, Optional
 
 import discord
 
@@ -42,7 +43,7 @@ def build_player_embed(profile: Dict[str, Any], xp_table: XPTable) -> discord.Em
     pvm_stats = profile.get("pvmStats")
     pvm_lines = top_stat_lines(pvm_stats, suffix=" kills", limit=3)
     if pvm_lines and pvm_lines != "No data":
-        embed.add_field(name="Boss clears", value=pvm_lines, inline=False)
+            embed.add_field(name="Boss clears", value=pvm_lines, inline=False)
 
     progression_bits: List[str] = []
     equipment = profile.get("equipment") or {}
@@ -67,6 +68,152 @@ def build_player_embed(profile: Dict[str, Any], xp_table: XPTable) -> discord.Em
             title="Skill highlights",
         )
 
+    embed.set_footer(text="Data from IdleClans API")
+    return embed
+
+
+def build_recruitment_embed(data: Dict[str, Any]) -> discord.Embed:
+    clan_name = data.get("clanName") or "Unknown clan"
+    message = data.get("recruitmentMessage")
+    if not message or message == "undefined":
+        message = "No recruitment message provided."
+    embed = discord.Embed(
+        title=f"{clan_name} recruitment",
+        description=message,
+        color=discord.Color.blurple(),
+    )
+    recruiting = "✅ Recruiting" if data.get("isRecruiting") else "❌ Closed"
+    embed.add_field(name="Status", value=recruiting, inline=True)
+    embed.add_field(
+        name="Minimum total level",
+        value=format_number(data.get("minimumTotalLevelRequired")),
+        inline=True,
+    )
+    embed.add_field(
+        name="Language",
+        value=data.get("language") or "Unknown",
+        inline=True,
+    )
+    embed.add_field(
+        name="Activity score",
+        value=f"{data.get('activityScore') or 0:.1f}",
+        inline=True,
+    )
+    memberlist = data.get("memberlist") or []
+    member_count = data.get("memberCount") or len(memberlist)
+    embed.add_field(name="Members", value=str(member_count), inline=True)
+    embed.add_field(name="House", value=str(data.get("houseId") or "N/A"), inline=True)
+
+    rank_names = {2: "Leader", 1: "Officer", 0: "Member"}
+    member_lines = []
+    for member in memberlist[:10]:
+        name = member.get("memberName") or "Unknown"
+        rank_value = member.get("rank")
+        label = rank_names.get(rank_value, f"Rank {rank_value}")
+        emoji = "👑" if rank_value == 2 else "🎖️" if rank_value == 1 else "•"
+        member_lines.append(f"{emoji} **{name}** — {label}")
+    if member_lines:
+        embed.add_field(
+            name="Team",
+            value="\n".join(member_lines)
+            + ("\n_...and more_" if len(memberlist) > len(member_lines) else ""),
+            inline=False,
+        )
+
+    skills_text = data.get("serializedSkills") or "{}"
+    try:
+        skills_data = json.loads(skills_text)
+    except json.JSONDecodeError:
+        skills_data = {}
+    if skills_data:
+        lines = []
+        for skill, xp in sorted(
+            skills_data.items(), key=lambda item: float(item[1]), reverse=True
+        )[:6]:
+            lines.append(f"{skill.title()}: {format_number(xp)} xp")
+        embed.add_field(name="Skill focus", value="\n".join(lines), inline=False)
+
+    embed.set_footer(text="Data from IdleClans API")
+    return embed
+
+
+def build_clanhistory_embed(
+    player_name: str, entries: List[Dict[str, Any]], scope: str
+) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"Clan history: {player_name}",
+        description=f"Source: {scope}",
+        color=discord.Color.dark_purple(),
+    )
+    if not entries:
+        embed.add_field(name="Logs", value="No entries found.", inline=False)
+    else:
+        lines = []
+        for entry in entries[:20]:
+            timestamp = format_timestamp(entry.get("timestamp"))
+            message = entry.get("message") or "No message"
+            clan = entry.get("clanName")
+            if clan:
+                message = f"[{clan}] {message}"
+            lines.append(f"{timestamp} — {message}")
+        embed.add_field(name="Logs", value="\n".join(lines), inline=False)
+    embed.set_footer(text="Data from IdleClans API")
+    return embed
+
+
+def build_clancup_clan_embed(clan_name: str, data: Dict[str, Any]) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"Clan Cup standings: {clan_name}",
+        color=discord.Color.green(),
+    )
+    standings = data.get("objectiveStandings") or []
+    for standing in standings:
+        objective = standing.get("objectiveType") or "Objective"
+        rank = standing.get("rank")
+        score = standing.get("score")
+        embed.add_field(
+            name=objective,
+            value=f"Rank {rank} — {format_number(score)} pts",
+            inline=False,
+        )
+    embed.set_footer(text="Data from IdleClans API")
+    return embed
+
+
+def build_clancup_top_embed(data: Dict[str, Any]) -> discord.Embed:
+    embed = discord.Embed(
+        title="Current Clan Cup leaders",
+        color=discord.Color.blue(),
+    )
+    for category, standings in data.items():
+        if not isinstance(standings, list):
+            continue
+        lines = []
+        for entry in standings[:5]:
+            clan = entry.get("clanName") or "Unknown"
+            score = entry.get("score")
+            lines.append(f"{clan} — {format_number(score)} pts")
+        if lines:
+            embed.add_field(name=category, value="\n".join(lines), inline=False)
+    embed.set_footer(text="Data from IdleClans API")
+    return embed
+
+
+def build_chat_recent_embed(channel: str, messages: List[Dict[str, Any]]) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"Chat — {channel}",
+        color=discord.Color.orange(),
+    )
+    if not messages:
+        embed.description = "No messages found."
+    else:
+        lines = []
+        for msg in messages[:20]:
+            timestamp = format_timestamp(msg.get("timestamp"))
+            author = msg.get("author") or msg.get("username") or "Unknown"
+            content = msg.get("message") or msg.get("content") or ""
+            lines.append(f"`{timestamp}` **{author}**: {content}")
+        embed.description = "\n".join(lines)
     embed.set_footer(text="Data from IdleClans API")
     return embed
 
