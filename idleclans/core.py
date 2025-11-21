@@ -388,10 +388,12 @@ class IdleClans(commands.Cog):
             self.session = aiohttp.ClientSession(timeout=timeout)
         return self.session
 
-    @commands.group(name="idleclans")
+    @commands.group(name="idleclans", aliases=["ic", "idc"], invoke_without_command=True)
     @commands.guild_only()
     async def idleclans_group(self, ctx: commands.Context) -> None:
         """Configure IdleClans event relays."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send(embed=self._build_help_embed(ctx.clean_prefix))
 
     @idleclans_group.command(name="help")
     async def idleclans_help(self, ctx: commands.Context) -> None:
@@ -417,7 +419,7 @@ class IdleClans(commands.Cog):
         embed = self._build_summary_embed(clan_name, entries)
         await ctx.send(embed=embed)
 
-    @commands.command(name="skill", aliases=["sk"])
+    @commands.command(name="skill", aliases=["sk"], hidden=True)
     @commands.cooldown(1, 5, commands.BucketType.user)
     async def idleclans_skill(
         self, ctx: commands.Context, player_name: str, *, skill_name: str
@@ -436,7 +438,7 @@ class IdleClans(commands.Cog):
         embed = build_single_skill_embed(profile, match, xp_value, self._xp_table)
         await ctx.send(embed=embed)
 
-    @commands.command(name="bank", aliases=["clanbank"])
+    @commands.command(name="bank", aliases=["clanbank"], hidden=True)
     async def idleclans_bank(self, ctx: commands.Context, *, query: Optional[str] = None) -> None:
         """Summarize recent clan bank deposits and withdrawals."""
         if not ctx.guild:
@@ -854,7 +856,7 @@ class IdleClans(commands.Cog):
         await self.config.guild(ctx.guild).recent_ids.set([])
         await ctx.send("IdleClans cache cleared.")
 
-    @commands.command(name="player", aliases=["p"])
+    @commands.command(name="player", aliases=["p"], hidden=True)
     @commands.cooldown(1, 5, commands.BucketType.user)
     async def idleclans_player(self, ctx: commands.Context, *, player_name: str) -> None:
         """Show IdleClans profile details for a player."""
@@ -864,7 +866,7 @@ class IdleClans(commands.Cog):
         embed = build_player_embed(profile, self._xp_table)
         await ctx.send(embed=embed)
 
-    @commands.command(name="skills", aliases=["s"])
+    @commands.command(name="skills", aliases=["s"], hidden=True)
     @commands.cooldown(1, 5, commands.BucketType.user)
     async def idleclans_skills(self, ctx: commands.Context, *, player_name: str) -> None:
         """List all skill experience values for a player."""
@@ -878,7 +880,7 @@ class IdleClans(commands.Cog):
         embed = build_skills_embed(profile, skills, self._xp_table)
         await ctx.send(embed=embed)
 
-    @commands.command(name="recruitment", aliases=["rec"])
+    @commands.command(name="recruitment", aliases=["rec"], hidden=True)
     async def idleclans_recruitment(
         self, ctx: commands.Context, *, clan_name: Optional[str] = None
     ) -> None:
@@ -910,7 +912,7 @@ class IdleClans(commands.Cog):
         embed = build_recruitment_embed(data)
         await ctx.send(embed=embed)
 
-    @commands.group(name="market", aliases=["m"], invoke_without_command=True)
+    @commands.group(name="market", aliases=["m"], invoke_without_command=True, hidden=True)
     async def market_group(self, ctx: commands.Context) -> None:
         """Market data commands."""
 
@@ -1119,7 +1121,7 @@ class IdleClans(commands.Cog):
         await self.config.guild(ctx.guild).market_watch_interval.set(seconds)
         await ctx.send(f"Market watch interval set to {seconds} seconds.")
 
-    @commands.group(name="logwatch", invoke_without_command=True)
+    @commands.group(name="logwatch", invoke_without_command=True, hidden=True)
     async def logwatch_group(self, ctx: commands.Context) -> None:
         """Alerts when clan log entries contain specific text."""
         prefix = ctx.clean_prefix
@@ -1243,7 +1245,7 @@ class IdleClans(commands.Cog):
         embed = build_clanhistory_embed(player_name, entries, scope)
         await ctx.send(embed=embed)
 
-    @commands.group(name="clancup", aliases=["cc"], invoke_without_command=True)
+    @commands.group(name="clancup", aliases=["cc"], invoke_without_command=True, hidden=True)
     async def clancup_group(
         self, ctx: commands.Context, *, clan_name: Optional[str] = None
     ) -> None:
@@ -1292,7 +1294,7 @@ class IdleClans(commands.Cog):
         embed = build_clancup_top_embed(data)
         await ctx.send(embed=embed)
 
-    @commands.group(name="chat", aliases=["c"])
+    @commands.group(name="chat", aliases=["c"], hidden=True)
     async def chat_group(self, ctx: commands.Context) -> None:
         """Chat utilities."""
 
