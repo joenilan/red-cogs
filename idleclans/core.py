@@ -1202,7 +1202,7 @@ class IdleClans(commands.Cog):
         await self.config.guild(ctx.guild).log_watches.set(new_watches)
         await ctx.send(f"Removed log watch {watch_id}.")
 
-    @commands.command(name="clanhistory", aliases=["ch"])
+    @commands.command(name="clanhistory", aliases=["ch"], hidden=True)
     async def idleclans_clanhistory(
         self, ctx: commands.Context, player_name: str, *, clan_name: Optional[str] = None
     ) -> None:
