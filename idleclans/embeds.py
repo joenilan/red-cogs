@@ -333,6 +333,47 @@ def build_skills_embed(
     return embed
 
 
+def build_single_skill_embed(
+    profile: Dict[str, Any],
+    skill_key: str,
+    xp_value: Any,
+    xp_table: XPTable,
+) -> discord.Embed:
+    username = profile.get("username") or "Unknown player"
+    pretty = skill_key.replace("_", " ").title()
+    icon = SKILL_ICON_MAP.get(skill_key.lower(), "⬜")
+    try:
+        xp = float(xp_value)
+    except (TypeError, ValueError):
+        xp = 0.0
+    level, bar = xp_table.progress(xp)
+    current_xp = xp_table.xp_for_level(level)
+    next_xp = xp_table.xp_for_level(level + 1)
+    to_next = max(0, next_xp - xp) if next_xp > current_xp else 0
+
+    embed = discord.Embed(
+        title=f"{username} — {pretty}",
+        description=f"{icon} {pretty}",
+        color=member_color(username),
+    )
+    embed.add_field(name="Level", value=str(level), inline=True)
+    embed.add_field(name="XP", value=format_number(xp), inline=True)
+    embed.add_field(name="Progress", value=bar, inline=False)
+    if next_xp > current_xp:
+        embed.add_field(
+            name="To next level",
+            value=format_number(to_next),
+            inline=True,
+        )
+        embed.add_field(
+            name="Next level at",
+            value=format_number(next_xp),
+            inline=True,
+        )
+    embed.set_footer(text="Data from IdleClans API")
+    return embed
+
+
 def _build_skill_entries(skills: Dict[str, Any], xp_table: XPTable) -> List[str]:
     entries: List[str] = []
     for name, raw_xp in sorted(skills.items(), key=lambda item: float(item[1]), reverse=True):

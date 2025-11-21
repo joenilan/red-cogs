@@ -35,6 +35,7 @@ from .embeds import (
     build_clanhistory_embed,
     build_player_embed,
     build_recruitment_embed,
+    build_single_skill_embed,
     build_skills_embed,
 )
 from .market import (
@@ -68,7 +69,7 @@ class IdleClans(commands.Cog):
     """Poll IdleClans clan logs and relay new events to Discord channels."""
 
     __author__ = "DreadedZombie"
-    __version__ = "1.3.0"
+    __version__ = "1.4.0"
 
     def __init__(self, bot: Red) -> None:
         self.bot = bot
@@ -416,6 +417,25 @@ class IdleClans(commands.Cog):
         embed = self._build_summary_embed(clan_name, entries)
         await ctx.send(embed=embed)
 
+    @commands.command(name="skill", aliases=["sk"])
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    async def idleclans_skill(
+        self, ctx: commands.Context, player_name: str, *, skill_name: str
+    ) -> None:
+        """Show a single skill highlight for a player."""
+        profile = await self._resolve_player_profile(ctx, player_name)
+        if not profile:
+            return
+        skills = profile.get("skillExperiences") or {}
+        match = self._match_skill_key(skill_name, skills)
+        if not match:
+            suggestions = ", ".join(list(skills.keys())[:6]) or "no skills returned"
+            await ctx.send(f"Skill `{skill_name}` was not found. Try one of: {suggestions}")
+            return
+        xp_value = skills.get(match, 0)
+        embed = build_single_skill_embed(profile, match, xp_value, self._xp_table)
+        await ctx.send(embed=embed)
+
     @commands.command(name="bank", aliases=["clanbank"])
     async def idleclans_bank(self, ctx: commands.Context, *, query: Optional[str] = None) -> None:
         """Summarize recent clan bank deposits and withdrawals."""
@@ -495,6 +515,20 @@ class IdleClans(commands.Cog):
         )
         embed.set_footer(text="Data from IdleClans API")
         return embed
+
+    def _match_skill_key(self, name: str, skills: Dict[str, Any]) -> Optional[str]:
+        if not name or not skills:
+            return None
+        cleaned = name.replace(" ", "").replace("_", "").lower()
+        for key in skills.keys():
+            candidate = (key or "").replace(" ", "").replace("_", "").lower()
+            if candidate == cleaned:
+                return key
+        for key in skills.keys():
+            candidate = (key or "").replace(" ", "").replace("_", "").lower()
+            if cleaned in candidate:
+                return key
+        return None
 
     def _parse_bank_query(
         self, query: str, *, fallback_clan: str, fallback_limit: int
@@ -1463,8 +1497,9 @@ class IdleClans(commands.Cog):
         embed.add_field(
             name="Player",
             value=(
-                f"`{prefix}player <ign>` (`{prefix}p`) — profile summary\n"
-                f"`{prefix}skills <ign>` (`{prefix}s`) — level grid with progress bars"
+                f"`{prefix}player <ign>` (`{prefix}p`) - profile summary\n"
+                f"`{prefix}skills <ign>` (`{prefix}s`) - level grid with progress bars\n"
+                f"`{prefix}skill <ign> <skill>` (`{prefix}sk`) - highlight one skill"
             ),
             inline=False,
         )
