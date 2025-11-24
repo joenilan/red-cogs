@@ -87,7 +87,12 @@ class Raffles(commands.Cog):
     def __init__(self, bot: Red) -> None:
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890, force_registration=True)
-        default_guild = {"raffles": {}, "next_id": 1, "manager_role": None}
+        default_guild = {
+            "raffles": {},
+            "next_id": 1,
+            "manager_role": None,
+            "raffle_channel": None,
+        }
         self.config.register_guild(**default_guild)
         self._loop: Optional[asyncio.Task] = None
 
@@ -121,12 +126,17 @@ class Raffles(commands.Cog):
         max_winners = max(1, min(25, max_winners or 1))
         raffle_id = await self._next_id(ctx.guild.id)
         ends_at = int(time.time() + seconds) if seconds > 0 else None
+        channel = await self._resolve_channel(ctx)
+        if channel is None:
+            await ctx.send("Raffle channel is not set and I cannot use this channel.", delete_after=10)
+            await self._maybe_delete_command(ctx)
+            return
         raffle = {
             "id": raffle_id,
             "title": f"Raffle #{raffle_id}",
             "prize": prize,
             "host_id": ctx.author.id,
-            "channel_id": ctx.channel.id,
+            "channel_id": channel.id,
             "message_id": None,
             "max_winners": max_winners,
             "ends_at": ends_at,
@@ -137,10 +147,14 @@ class Raffles(commands.Cog):
         }
         view = RaffleViewOpen(self, ctx.guild.id, raffle_id)
         embed = build_raffle_embed(raffle, ctx.guild)
-        message = await ctx.send(embed=embed, view=view)
+        try:
+            message = await channel.send(embed=embed, view=view)
+        except discord.HTTPException:
+            await ctx.send("Could not post the raffle in the target channel.", delete_after=10)
+            await self._maybe_delete_command(ctx)
+            return
         raffle["message_id"] = message.id
         await self._save_raffle(ctx.guild.id, raffle)
-        await ctx.send(f"Raffle `{prize}` started. ID: {raffle_id}", delete_after=15)
         await self._maybe_delete_command(ctx)
 
     @raffle_group.command(name="end", hidden=True)
@@ -203,6 +217,19 @@ class Raffles(commands.Cog):
             await ctx.send(f"Manager role set to {role.mention}.", delete_after=10)
         else:
             await ctx.send("Manager role cleared.", delete_after=10)
+        await self._maybe_delete_command(ctx)
+
+    @raffle_group.command(name="channel", hidden=True)
+    @commands.admin_or_permissions(manage_guild=True)
+    async def raffle_channel(
+        self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None
+    ) -> None:
+        """Set/clear the dedicated raffle channel."""
+        await self.config.guild(ctx.guild).raffle_channel.set(channel.id if channel else None)
+        if channel:
+            await ctx.send(f"Raffles will post in {channel.mention}.", delete_after=10)
+        else:
+            await ctx.send("Raffle channel cleared. Current channel will be used when starting.", delete_after=10)
         await self._maybe_delete_command(ctx)
 
 
@@ -297,7 +324,7 @@ class Raffles(commands.Cog):
                             continue
                         ends_at = raffle.get("ends_at")
                         if ends_at and time.time() >= ends_at:
-                            await self._close_raffle(guild, raffle, roll=False)
+                            await self._close_raffle(guild, raffle, roll=True)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -351,6 +378,22 @@ class Raffles(commands.Cog):
             if manager_role_id and user.get_role(manager_role_id):
                 return True
         return False
+
+    async def _resolve_channel(self, ctx: commands.Context) -> Optional[discord.TextChannel]:
+        channel_id = await self.config.guild(ctx.guild).raffle_channel()
+        if channel_id:
+            channel = ctx.guild.get_channel(channel_id)
+            if isinstance(channel, discord.TextChannel):
+                me = ctx.guild.me
+                if me and channel.permissions_for(me).send_messages:
+                    return channel
+                return None
+        # fallback to current channel if allowed
+        if isinstance(ctx.channel, discord.TextChannel):
+            me = ctx.guild.me
+            if me and ctx.channel.permissions_for(me).send_messages:
+                return ctx.channel
+        return None
 
     async def _refresh_message(self, guild_id: int, raffle: Dict[str, Any]) -> None:
         guild = self.bot.get_guild(guild_id)
@@ -407,7 +450,7 @@ class Raffles(commands.Cog):
             name="Basics",
             value=(
                 f"`{prefix}raffle start <prize> [duration] [max_winners]` - start a raffle\n"
-                f"`{prefix}raffle end <id>` - end now and roll winners\n"
+                f"`{prefix}raffle end <id>` - end now (no draw) then use Pick winners\n"
                 f"`{prefix}raffle list` - list active raffles"
             ),
             inline=False,
@@ -420,6 +463,11 @@ class Raffles(commands.Cog):
         embed.add_field(
             name="Permissions",
             value="Host controls are on the raffle message. Host, Manage Server, or the configured manager role can end/pick.",
+            inline=False,
+        )
+        embed.add_field(
+            name="Channel",
+            value=f"Set a dedicated channel with `{prefix}raffle channel #raffles`.",
             inline=False,
         )
         embed.set_footer(text="Aliases: raffle / ra")
