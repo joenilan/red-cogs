@@ -439,6 +439,30 @@ class Raffles(commands.Cog):
         await self._roll_winners(guild, raffle, delete_thread=True)
         await self._safe_interaction_reply(interaction, "Winners picked.")
 
+    async def handle_remove_button(
+        self, interaction: discord.Interaction, guild_id: int, raffle_id: int, message_id: int
+    ) -> None:
+        raffle = await self._get_raffle(guild_id, raffle_id)
+        guild = interaction.guild or self.bot.get_guild(guild_id)
+        allowed = await self._is_host_or_manager(interaction.user, guild, raffle.get("host_id") if raffle else None, guild_id)
+        if not allowed:
+            await self._safe_interaction_reply(interaction, "Only the host or a server manager can remove this message.")
+            return
+        channel = None
+        if raffle:
+            channel = guild.get_channel(raffle.get("channel_id")) if guild else None
+        if not channel and interaction.channel:
+            channel = interaction.channel
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            await self._safe_interaction_reply(interaction, "Channel not found.")
+            return
+        try:
+            msg = await channel.fetch_message(message_id)
+            await msg.delete()
+        except Exception:
+            pass
+        await self._safe_interaction_reply(interaction, "Raffle message removed.")
+
     async def _raffle_loop(self) -> None:
         await self.bot.wait_until_red_ready()
         while True:
@@ -683,14 +707,16 @@ class Raffles(commands.Cog):
                     if entrants:
                         self.bot.add_view(RaffleViewPendingPick(self, guild.id, raffle.get("id")))
                 if raffle.get("status") == "closed":
-                    self.bot.add_view(
-                        RaffleViewClosed(
-                            self,
-                            guild.id,
-                            raffle.get("id"),
-                            raffle.get("message_id") or 0,
+                    message_id = raffle.get("message_id")
+                    if message_id:
+                        self.bot.add_view(
+                            RaffleViewClosed(
+                                self,
+                                guild.id,
+                                raffle.get("id"),
+                                message_id,
+                            )
                         )
-                    )
                 # Host controls live in the thread; register both variants for persistence
                 self.bot.add_view(RaffleHostView(self, guild.id, raffle.get("id"), allow_pick=True))
                 self.bot.add_view(RaffleHostView(self, guild.id, raffle.get("id"), allow_pick=False))
