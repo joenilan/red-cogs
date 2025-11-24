@@ -25,10 +25,13 @@ def build_raffle_embed(raffle: Dict[str, any], guild: discord.Guild) -> discord.
         embed.set_author(name=f"Hosted by {host.display_name}", icon_url=host.display_avatar.url)
     embed.add_field(name="Entries", value=str(len(entries)), inline=True)
     embed.add_field(name="Max winners", value=str(max_winners), inline=True)
-    if ends_at:
-        embed.add_field(name="Ends", value=f"<t:{int(ends_at)}:R>", inline=True)
+    if status == "open":
+        if ends_at:
+            embed.add_field(name="Ends", value=f"<t:{int(ends_at)}:R>", inline=True)
+        else:
+            embed.add_field(name="Ends", value="Manual close", inline=True)
     else:
-        embed.add_field(name="Ends", value="Manual close", inline=True)
+        embed.add_field(name="Ends", value="Closed", inline=True)
     if entries:
         columns = _grid_mentions(entries, guild, columns=3, per_col=15)
         for idx, col in enumerate(columns, start=1):

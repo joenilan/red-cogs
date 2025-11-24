@@ -336,6 +336,7 @@ class Raffles(commands.Cog):
     ) -> None:
         entrants: List[int] = raffle.get("entrants") or []
         raffle["status"] = "closed"
+        raffle["ends_at"] = None
         if roll:
             await self._roll_winners(guild, raffle, entrants=entrants)
         else:
@@ -414,7 +415,9 @@ class Raffles(commands.Cog):
         if raffle.get("status") == "open":
             view = RaffleViewOpen(self, guild_id, raffle.get("id"))
         elif raffle.get("status") == "closed" and not raffle.get("winners"):
-            view = RaffleViewPendingPick(self, guild_id, raffle.get("id"))
+            entrants = raffle.get("entrants") or []
+            if entrants:
+                view = RaffleViewPendingPick(self, guild_id, raffle.get("id"))
         await message.edit(embed=embed, view=view)
 
     async def _get_raffle(self, guild_id: int, raffle_id: int) -> Optional[Dict[str, Any]]:
