@@ -120,6 +120,7 @@ class Raffles(commands.Cog):
         prize: str,
         duration: Optional[str] = "1h",
         max_winners: Optional[int] = 1,
+        quantity: Optional[int] = None,
     ) -> None:
         """Start a raffle. Duration examples: 30m, 1h, 1d."""
         seconds = parse_duration(duration)
@@ -135,6 +136,7 @@ class Raffles(commands.Cog):
             "id": raffle_id,
             "title": f"Raffle #{raffle_id}",
             "prize": prize,
+            "quantity": max(1, quantity) if quantity else None,
             "host_id": ctx.author.id,
             "channel_id": channel.id,
             "message_id": None,
@@ -507,7 +509,7 @@ class Raffles(commands.Cog):
         embed.add_field(
             name="Basics",
             value=(
-                f"`{prefix}raffle start <prize> [duration] [max_winners]` - start a raffle\n"
+                f"`{prefix}raffle start <prize> [duration] [max_winners] [quantity]` - start a raffle\n"
                 f"`{prefix}raffle end <id>` - end now (no draw) then use Pick winners\n"
                 f"`{prefix}raffle list` - list active raffles"
             ),

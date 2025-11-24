@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 def build_raffle_embed(raffle: Dict[str, any], guild: discord.Guild) -> discord.Embed:
     title = raffle.get("title") or "New raffle"
     prize = raffle.get("prize") or "Mystery prize"
+    quantity = raffle.get("quantity")
     host_id = raffle.get("host_id")
     host = guild.get_member(host_id) if host_id else None
     entries = raffle.get("entrants") or []
@@ -16,9 +17,12 @@ def build_raffle_embed(raffle: Dict[str, any], guild: discord.Guild) -> discord.
     winners = raffle.get("winners") or []
     pending_draw = status == "closed" and not winners
 
+    desc = f"Prize: **{prize}**"
+    if quantity:
+        desc += f" x{quantity}"
     embed = discord.Embed(
         title=title,
-        description=f"Prize: **{prize}**",
+        description=desc,
         color=discord.Color.blurple() if status == "open" else discord.Color.gold(),
     )
     if host:
