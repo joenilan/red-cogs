@@ -36,16 +36,6 @@ def build_raffle_embed(raffle: Dict[str, any], guild: discord.Guild) -> discord.
             embed.add_field(name="Ends", value="Manual close", inline=True)
     else:
         embed.add_field(name="Ends", value="Closed", inline=True)
-    if entries:
-        columns = _grid_mentions(entries, guild, columns=3, per_col=15)
-        for idx, col in enumerate(columns, start=1):
-            if not col:
-                continue
-            embed.add_field(
-                name="Entrants" if idx == 1 else "\u200b",
-                value="\n".join(col),
-                inline=True,
-            )
     if status == "closed":
         if winners:
             winners_text = ", ".join(f"<@{uid}>" for uid in winners)
@@ -81,15 +71,14 @@ def build_entrants_embed(
     return embed
 
 
-def _grid_mentions(entries: list[int], guild: discord.Guild, columns: int, per_col: int) -> list[list[str]]:
-    cols: list[list[str]] = [[] for _ in range(columns)]
-    for idx, uid in enumerate(entries):
-        col = idx % columns
+def entrants_text(entries: list[int], guild: discord.Guild, max_lines: int = 100) -> str:
+    if not entries:
+        return "No entrants yet."
+    lines = []
+    for uid in entries[:max_lines]:
         member = guild.get_member(uid)
-        mention = member.mention if member else f"<@{uid}>"
-        cols[col].append(mention)
-    # Trim per column if needed
-    trimmed: list[list[str]] = []
-    for col in cols:
-        trimmed.append(col[:per_col])
-    return trimmed
+        lines.append(member.mention if member else f"<@{uid}>")
+    remaining = len(entries) - len(lines)
+    if remaining > 0:
+        lines.append(f"...and {remaining} more")
+    return "\n".join(lines)

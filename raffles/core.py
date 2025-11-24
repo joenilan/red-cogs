@@ -10,7 +10,7 @@ import discord
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
-from .embeds import build_raffle_embed
+from .embeds import build_raffle_embed, entrants_text
 
 
 def parse_duration(text: Optional[str]) -> int:
@@ -41,25 +41,15 @@ class RaffleViewOpen(discord.ui.View):
         self.cog = cog
         self.guild_id = guild_id
         self.raffle_id = raffle_id
-        self._enter.custom_id = f"raffle:enter:{raffle_id}"
-        self._enter.emoji = "🎟️"
-        self._leave.custom_id = f"raffle:leave:{raffle_id}"
-        self._end.custom_id = f"raffle:end:{raffle_id}"
+        self._toggle.custom_id = f"raffle:toggle:{raffle_id}"
+        self._toggle.emoji = "🎟️"
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return True
 
-    @discord.ui.button(style=discord.ButtonStyle.success, label="Enter")
-    async def _enter(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
-        await self.cog.handle_enter(interaction, self.guild_id, self.raffle_id)
-
-    @discord.ui.button(style=discord.ButtonStyle.secondary, label="Leave")
-    async def _leave(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
-        await self.cog.handle_leave(interaction, self.guild_id, self.raffle_id)
-
-    @discord.ui.button(style=discord.ButtonStyle.danger, label="End now")
-    async def _end(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
-        await self.cog.handle_end_button(interaction, self.guild_id, self.raffle_id)
+    @discord.ui.button(style=discord.ButtonStyle.success, label="Enter / Leave")
+    async def _toggle(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
+        await self.cog.handle_toggle(interaction, self.guild_id, self.raffle_id)
 
 
 class RaffleViewPendingPick(discord.ui.View):
@@ -72,6 +62,27 @@ class RaffleViewPendingPick(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return True
+
+    @discord.ui.button(style=discord.ButtonStyle.success, label="Pick winners")
+    async def _pick(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
+        await self.cog.handle_pick_button(interaction, self.guild_id, self.raffle_id)
+
+
+class RaffleHostView(discord.ui.View):
+    def __init__(self, cog: "Raffles", guild_id: int, raffle_id: int):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.raffle_id = raffle_id
+        self._end.custom_id = f"raffle:end:{raffle_id}"
+        self._pick.custom_id = f"raffle:pick:{raffle_id}"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return True
+
+    @discord.ui.button(style=discord.ButtonStyle.danger, label="End now")
+    async def _end(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
+        await self.cog.handle_end_button(interaction, self.guild_id, self.raffle_id)
 
     @discord.ui.button(style=discord.ButtonStyle.success, label="Pick winners")
     async def _pick(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
@@ -141,6 +152,7 @@ class Raffles(commands.Cog):
             "channel_id": channel.id,
             "message_id": None,
             "thread_id": None,
+            "thread_message_id": None,
             "max_winners": max_winners,
             "ends_at": ends_at,
             "entrants": [],
@@ -168,6 +180,9 @@ class Raffles(commands.Cog):
                 reason="Raffle thread",
             )
             raffle["thread_id"] = thread.id
+            # seed entrant list in thread
+            thread_msg = await thread.send("No entrants yet.")
+            raffle["thread_message_id"] = thread_msg.id
         except discord.HTTPException:
             pass
         await self._save_raffle(ctx.guild.id, raffle)
@@ -279,23 +294,7 @@ class Raffles(commands.Cog):
         await self._maybe_delete_command(ctx)
 
 
-    async def handle_enter(self, interaction: discord.Interaction, guild_id: int, raffle_id: int) -> None:
-        raffle = await self._get_raffle(guild_id, raffle_id)
-        if not raffle or raffle.get("status") != "open":
-            await interaction.response.send_message("This raffle is closed.", ephemeral=True)
-            return
-        user_id = interaction.user.id
-        entrants: List[int] = raffle.get("entrants") or []
-        if user_id in entrants:
-            await interaction.response.send_message("You are already entered.", ephemeral=True)
-            return
-        entrants.append(user_id)
-        raffle["entrants"] = entrants
-        await self._save_raffle(guild_id, raffle)
-        await self._refresh_message(guild_id, raffle)
-        await interaction.response.send_message("You have entered the raffle.", ephemeral=True)
-
-    async def handle_leave(self, interaction: discord.Interaction, guild_id: int, raffle_id: int) -> None:
+    async def handle_toggle(self, interaction: discord.Interaction, guild_id: int, raffle_id: int) -> None:
         raffle = await self._get_raffle(guild_id, raffle_id)
         if not raffle or raffle.get("status") != "open":
             await interaction.response.send_message("This raffle is closed.", ephemeral=True)
@@ -303,13 +302,16 @@ class Raffles(commands.Cog):
         user_id = interaction.user.id
         entrants: List[int] = raffle.get("entrants") or []
         if user_id not in entrants:
-            await interaction.response.send_message("You are not entered.", ephemeral=True)
-            return
-        entrants = [uid for uid in entrants if uid != user_id]
+            entrants.append(user_id)
+            await interaction.response.send_message("You have entered the raffle.", ephemeral=True)
+        else:
+            entrants = [uid for uid in entrants if uid != user_id]
+            await interaction.response.send_message("You have left the raffle.", ephemeral=True)
         raffle["entrants"] = entrants
         await self._save_raffle(guild_id, raffle)
         await self._refresh_message(guild_id, raffle)
-        await interaction.response.send_message("You have left the raffle.", ephemeral=True)
+        await self._sync_thread_listing(interaction.guild or self.bot.get_guild(guild_id), raffle)
+        await self._ensure_host_controls(interaction.guild or self.bot.get_guild(guild_id), raffle)
 
     async def handle_end_button(
         self, interaction: discord.Interaction, guild_id: int, raffle_id: int
@@ -395,7 +397,7 @@ class Raffles(commands.Cog):
             thread = guild.get_thread(thread_id)
             if thread:
                 try:
-                    await thread.edit(archived=True, reason="Raffle closed")
+                    await thread.edit(archived=True, locked=True, reason="Raffle closed")
                 except discord.HTTPException:
                     pass
 
@@ -411,6 +413,8 @@ class Raffles(commands.Cog):
         raffle["winners"] = winners
         await self._save_raffle(guild.id, raffle)
         await self._refresh_message(guild.id, raffle)
+        await self._sync_thread_listing(guild, raffle)
+        await self._ensure_host_controls(guild, raffle)
 
     async def _maybe_delete_command(self, ctx: commands.Context) -> None:
         try:
@@ -451,6 +455,56 @@ class Raffles(commands.Cog):
                 return ctx.channel
         return None
 
+    async def _sync_thread_listing(self, guild: discord.Guild, raffle: Dict[str, Any]) -> None:
+        thread_id = raffle.get("thread_id")
+        if not thread_id:
+            return
+        thread = guild.get_thread(thread_id)
+        if not thread:
+            return
+        text = entrants_text(raffle.get("entrants") or [], guild)
+        msg_id = raffle.get("thread_message_id")
+        if msg_id:
+            try:
+                msg = await thread.fetch_message(msg_id)
+                await msg.edit(content=text)
+                return
+            except discord.HTTPException:
+                pass
+        try:
+            msg = await thread.send(text)
+            raffle["thread_message_id"] = msg.id
+            await self._save_raffle(guild.id, raffle)
+        except discord.HTTPException:
+            pass
+
+    async def _ensure_host_controls(self, guild: Optional[discord.Guild], raffle: Dict[str, Any]) -> None:
+        if not guild:
+            return
+        thread_id = raffle.get("thread_id")
+        if not thread_id:
+            return
+        thread = guild.get_thread(thread_id)
+        if not thread:
+            return
+        try:
+            async for msg in thread.history(limit=10):
+                if msg.author == guild.me and any(
+                    btn.custom_id and btn.custom_id.startswith("raffle:end:")
+                    for row in (msg.components or [])
+                    for btn in row.children
+                ):
+                    return
+        except Exception:
+            pass
+        try:
+            await thread.send(
+                "Host controls:",
+                view=RaffleHostView(self, guild.id, raffle.get("id")),
+            )
+        except discord.HTTPException:
+            pass
+
     async def _refresh_message(self, guild_id: int, raffle: Dict[str, Any]) -> None:
         guild = self.bot.get_guild(guild_id)
         if not guild:
@@ -474,6 +528,8 @@ class Raffles(commands.Cog):
             if entrants:
                 view = RaffleViewPendingPick(self, guild_id, raffle.get("id"))
         await message.edit(embed=embed, view=view)
+        await self._sync_thread_listing(guild, raffle)
+        await self._ensure_host_controls(guild, raffle)
 
     async def _get_raffle(self, guild_id: int, raffle_id: int) -> Optional[Dict[str, Any]]:
         raffles = await self.config.guild_from_id(guild_id).raffles()
@@ -499,6 +555,8 @@ class Raffles(commands.Cog):
                     entrants = raffle.get("entrants") or []
                     if entrants:
                         self.bot.add_view(RaffleViewPendingPick(self, guild.id, raffle.get("id")))
+                # Host controls live in the thread; ensure the view is registered for any interactions
+                self.bot.add_view(RaffleHostView(self, guild.id, raffle.get("id")))
 
     def _build_help_embed(self, prefix: str) -> discord.Embed:
         embed = discord.Embed(
