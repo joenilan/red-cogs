@@ -14,6 +14,7 @@ def build_raffle_embed(raffle: Dict[str, any], guild: discord.Guild) -> discord.
     ends_at = raffle.get("ends_at")
     status = raffle.get("status", "open")
     winners = raffle.get("winners") or []
+    pending_draw = status == "closed" and not winners
 
     embed = discord.Embed(
         title=title,
@@ -28,12 +29,24 @@ def build_raffle_embed(raffle: Dict[str, any], guild: discord.Guild) -> discord.
         embed.add_field(name="Ends", value=f"<t:{int(ends_at)}:R>", inline=True)
     else:
         embed.add_field(name="Ends", value="Manual close", inline=True)
+    if entries:
+        columns = _grid_mentions(entries, guild, columns=3, per_col=15)
+        for idx, col in enumerate(columns, start=1):
+            if not col:
+                continue
+            embed.add_field(
+                name="Entrants" if idx == 1 else "\u200b",
+                value="\n".join(col),
+                inline=True,
+            )
     if status == "closed":
         if winners:
             winners_text = ", ".join(f"<@{uid}>" for uid in winners)
+            embed.add_field(name="Winners", value=winners_text, inline=False)
+        elif pending_draw:
+            embed.add_field(name="Status", value="Closed — ready to draw winners", inline=False)
         else:
-            winners_text = "No entrants"
-        embed.add_field(name="Winners", value=winners_text, inline=False)
+            embed.add_field(name="Winners", value="No entrants", inline=False)
     embed.set_footer(text=f"Raffle ID: {raffle.get('id')}")
     return embed
 
@@ -59,3 +72,17 @@ def build_entrants_embed(
     )
     embed.set_footer(text=f"Page {page+1} of {max(1, (total + page_size - 1) // page_size)}")
     return embed
+
+
+def _grid_mentions(entries: list[int], guild: discord.Guild, columns: int, per_col: int) -> list[list[str]]:
+    cols: list[list[str]] = [[] for _ in range(columns)]
+    for idx, uid in enumerate(entries):
+        col = idx % columns
+        member = guild.get_member(uid)
+        mention = member.mention if member else f"<@{uid}>"
+        cols[col].append(mention)
+    # Trim per column if needed
+    trimmed: list[list[str]] = []
+    for col in cols:
+        trimmed.append(col[:per_col])
+    return trimmed

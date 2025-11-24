@@ -45,7 +45,7 @@ class RaffleView(discord.ui.View):
         self._enter.custom_id = f"raffle:enter:{raffle_id}"
         self._enter.emoji = "🎟️"
         self._leave.custom_id = f"raffle:leave:{raffle_id}"
-        self._view.custom_id = f"raffle:view:{raffle_id}"
+        self._end.custom_id = f"raffle:end:{raffle_id}"
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return True
@@ -58,9 +58,22 @@ class RaffleView(discord.ui.View):
     async def _leave(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
         await self.cog.handle_leave(interaction, self.guild_id, self.raffle_id)
 
-    @discord.ui.button(style=discord.ButtonStyle.primary, label="View entrants")
-    async def _view(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
-        await self.cog.handle_view(interaction, self.guild_id, self.raffle_id)
+    @discord.ui.button(style=discord.ButtonStyle.danger, label="End now")
+    async def _end(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
+        await self.cog.handle_end_button(interaction, self.guild_id, self.raffle_id)
+
+
+class RaffleClosedView(discord.ui.View):
+    def __init__(self, cog: "Raffles", guild_id: int, raffle_id: int):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.raffle_id = raffle_id
+        self._pick.custom_id = f"raffle:pick:{raffle_id}"
+
+    @discord.ui.button(style=discord.ButtonStyle.success, label="Pick winners")
+    async def _pick(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
+        await self.cog.handle_pick_button(interaction, self.guild_id, self.raffle_id)
 
 
 class Raffles(commands.Cog):
@@ -130,7 +143,7 @@ class Raffles(commands.Cog):
     @raffle_group.command(name="end", hidden=True)
     @commands.admin_or_permissions(manage_guild=True)
     async def raffle_end(self, ctx: commands.Context, raffle_id: int) -> None:
-        """Close a raffle immediately and roll winners."""
+        """Close a raffle immediately (no winners drawn)."""
         raffle = await self._get_raffle(ctx.guild.id, raffle_id)
         if not raffle:
             await ctx.send("Raffle not found.")
@@ -138,8 +151,22 @@ class Raffles(commands.Cog):
         if raffle.get("status") == "closed":
             await ctx.send("That raffle is already closed.")
             return
-        await self._close_raffle(ctx.guild, raffle)
-        await ctx.send(f"Raffle {raffle_id} closed.")
+        await self._close_raffle(ctx.guild, raffle, roll=False)
+        await ctx.send(f"Raffle {raffle_id} closed (no winners drawn). Use `raffle pick {raffle_id}` to draw.")
+
+    @raffle_group.command(name="pick", hidden=True)
+    @commands.admin_or_permissions(manage_guild=True)
+    async def raffle_pick(self, ctx: commands.Context, raffle_id: int) -> None:
+        """Draw winners for a closed raffle."""
+        raffle = await self._get_raffle(ctx.guild.id, raffle_id)
+        if not raffle:
+            await ctx.send("Raffle not found.")
+            return
+        if raffle.get("status") != "closed" or raffle.get("winners"):
+            await ctx.send("Raffle is not pending a draw.")
+            return
+        await self._roll_winners(ctx.guild, raffle)
+        await ctx.send(f"Winners picked for raffle {raffle_id}.")
 
     @raffle_group.command(name="list", hidden=True)
     async def raffle_list(self, ctx: commands.Context) -> None:
@@ -188,13 +215,51 @@ class Raffles(commands.Cog):
         await self._refresh_message(guild_id, raffle)
         await interaction.response.send_message("You have left the raffle.", ephemeral=True)
 
-    async def handle_view(self, interaction: discord.Interaction, guild_id: int, raffle_id: int) -> None:
+    async def handle_end_button(
+        self, interaction: discord.Interaction, guild_id: int, raffle_id: int
+    ) -> None:
         raffle = await self._get_raffle(guild_id, raffle_id)
-        if not raffle:
-            await interaction.response.send_message("Raffle not found.", ephemeral=True)
+        if not raffle or raffle.get("status") != "open":
+            await interaction.response.send_message("This raffle is already closed.", ephemeral=True)
             return
-        embed = build_entrants_embed(raffle, interaction.guild)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        host_ok = raffle.get("host_id") == interaction.user.id
+        mod_ok = interaction.user.guild_permissions.manage_guild
+        if not (host_ok or mod_ok):
+            await interaction.response.send_message(
+                "Only the host or a server manager can end this raffle.",
+                ephemeral=True,
+            )
+            return
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("Guild not found.", ephemeral=True)
+            return
+        await self._close_raffle(guild, raffle, roll=False)
+        await interaction.response.send_message(
+            "Raffle closed. Use Pick winners to draw when ready.", ephemeral=True
+        )
+
+    async def handle_pick_button(
+        self, interaction: discord.Interaction, guild_id: int, raffle_id: int
+    ) -> None:
+        raffle = await self._get_raffle(guild_id, raffle_id)
+        if not raffle or raffle.get("status") != "closed" or raffle.get("winners"):
+            await interaction.response.send_message("No pending draw for this raffle.", ephemeral=True)
+            return
+        host_ok = raffle.get("host_id") == interaction.user.id
+        mod_ok = interaction.user.guild_permissions.manage_guild
+        if not (host_ok or mod_ok):
+            await interaction.response.send_message(
+                "Only the host or a server manager can pick winners.",
+                ephemeral=True,
+            )
+            return
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("Guild not found.", ephemeral=True)
+            return
+        await self._roll_winners(guild, raffle)
+        await interaction.response.send_message("Winners picked.", ephemeral=True)
 
     async def _raffle_loop(self) -> None:
         await self.bot.wait_until_red_ready()
@@ -207,15 +272,29 @@ class Raffles(commands.Cog):
                             continue
                         ends_at = raffle.get("ends_at")
                         if ends_at and time.time() >= ends_at:
-                            await self._close_raffle(guild, raffle)
+                            await self._close_raffle(guild, raffle, roll=True)
             except asyncio.CancelledError:
                 break
             except Exception:
                 pass
             await asyncio.sleep(30)
 
-    async def _close_raffle(self, guild: discord.Guild, raffle: Dict[str, Any]) -> None:
+    async def _close_raffle(
+        self, guild: discord.Guild, raffle: Dict[str, Any], *, roll: bool
+    ) -> None:
         entrants: List[int] = raffle.get("entrants") or []
+        raffle["status"] = "closed"
+        if roll:
+            await self._roll_winners(guild, raffle, entrants=entrants)
+        else:
+            raffle["winners"] = []
+            await self._save_raffle(guild.id, raffle)
+            await self._refresh_message(guild.id, raffle)
+
+    async def _roll_winners(
+        self, guild: discord.Guild, raffle: Dict[str, Any], entrants: Optional[List[int]] = None
+    ) -> None:
+        entrants = entrants if entrants is not None else (raffle.get("entrants") or [])
         max_winners = raffle.get("max_winners") or 1
         winners: List[int] = []
         if entrants:
@@ -224,13 +303,6 @@ class Raffles(commands.Cog):
         raffle["winners"] = winners
         await self._save_raffle(guild.id, raffle)
         await self._refresh_message(guild.id, raffle)
-        channel = guild.get_channel(raffle.get("channel_id"))
-        if isinstance(channel, discord.TextChannel):
-            if winners:
-                mentions = ", ".join(f"<@{uid}>" for uid in winners)
-                await channel.send(f"Raffle {raffle.get('id')} ended! Winners: {mentions}")
-            else:
-                await channel.send(f"Raffle {raffle.get('id')} ended with no entrants.")
 
     async def _refresh_message(self, guild_id: int, raffle: Dict[str, Any]) -> None:
         guild = self.bot.get_guild(guild_id)
@@ -250,6 +322,8 @@ class Raffles(commands.Cog):
         view = None
         if raffle.get("status") == "open":
             view = RaffleView(self, guild_id, raffle.get("id"))
+        elif raffle.get("status") == "closed" and not raffle.get("winners"):
+            view = RaffleClosedView(self, guild_id, raffle.get("id"))
         await message.edit(embed=embed, view=view)
 
     async def _get_raffle(self, guild_id: int, raffle_id: int) -> Optional[Dict[str, Any]]:
