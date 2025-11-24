@@ -389,8 +389,8 @@ class Raffles(commands.Cog):
         self, interaction: discord.Interaction, guild_id: int, raffle_id: int
     ) -> None:
         raffle = await self._get_raffle(guild_id, raffle_id)
-        if not raffle or raffle.get("status") != "open":
-            await self._safe_interaction_reply(interaction, "This raffle is already closed.")
+        if not raffle:
+            await self._safe_interaction_reply(interaction, "Raffle not found.")
             return
         guild = interaction.guild or self.bot.get_guild(guild_id)
         allowed = await self._is_host_or_manager(interaction.user, guild, raffle.get("host_id"), guild_id)
