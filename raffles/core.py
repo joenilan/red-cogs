@@ -475,12 +475,12 @@ class Raffles(commands.Cog):
         if msg_id:
             try:
                 msg = await thread.fetch_message(msg_id)
-                await msg.edit(embed=embed)
+                await msg.edit(content="", embed=embed)
                 return
             except discord.HTTPException:
                 pass
         try:
-            msg = await thread.send(embed=embed)
+            msg = await thread.send(content="", embed=embed)
             raffle["thread_message_id"] = msg.id
             await self._save_raffle(guild.id, raffle)
         except discord.HTTPException:
