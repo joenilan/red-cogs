@@ -75,13 +75,16 @@ class RaffleViewPendingPick(discord.ui.View):
 
 
 class RaffleHostView(discord.ui.View):
-    def __init__(self, cog: "Raffles", guild_id: int, raffle_id: int):
+    def __init__(self, cog: "Raffles", guild_id: int, raffle_id: int, *, allow_pick: bool = True):
         super().__init__(timeout=None)
         self.cog = cog
         self.guild_id = guild_id
         self.raffle_id = raffle_id
         self._end.custom_id = f"raffle:end:{raffle_id}"
-        self._pick.custom_id = f"raffle:pick:{raffle_id}"
+        if allow_pick:
+            self._pick.custom_id = f"raffle:pick:{raffle_id}"
+        else:
+            self._pick.disabled = True
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return True
@@ -384,16 +387,16 @@ class Raffles(commands.Cog):
         if not guild:
             await self._safe_interaction_reply(interaction, "Guild not found.")
             return
-        await self._close_raffle(guild, raffle, roll=False)
+        if not interaction.response.is_done():
+            with contextlib.suppress(Exception):
+                await interaction.response.defer(ephemeral=True)
+        await self._close_raffle(guild, raffle, roll=False, delete_thread=False)
         await self._safe_interaction_reply(interaction, "Raffle closed. Use Pick winners to draw when ready.")
 
     async def handle_pick_button(
         self, interaction: discord.Interaction, guild_id: int, raffle_id: int
     ) -> None:
         raffle = await self._get_raffle(guild_id, raffle_id)
-        if not raffle or raffle.get("status") != "closed" or raffle.get("winners"):
-            await self._safe_interaction_reply(interaction, "No pending draw for this raffle.")
-            return
         guild = interaction.guild or self.bot.get_guild(guild_id)
         allowed = await self._is_host_or_manager(interaction.user, guild, raffle.get("host_id"), guild_id)
         if not allowed:
@@ -401,10 +404,23 @@ class Raffles(commands.Cog):
                 interaction, "Only the host or a server manager can pick winners."
             )
             return
+        if not raffle:
+            await self._safe_interaction_reply(interaction, "Raffle not found.")
+            return
+        status = raffle.get("status")
+        if status == "closed" and raffle.get("winners"):
+            await self._safe_interaction_reply(interaction, "Winners have already been picked for this raffle.")
+            return
         if not guild:
             await self._safe_interaction_reply(interaction, "Guild not found.")
             return
-        await self._roll_winners(guild, raffle)
+        # If still open, close and roll; if closed without winners, just roll
+        if not interaction.response.is_done():
+            with contextlib.suppress(Exception):
+                await interaction.response.defer(ephemeral=True)
+        raffle["status"] = "closed"
+        raffle["ends_at"] = None
+        await self._roll_winners(guild, raffle, delete_thread=True)
         await self._safe_interaction_reply(interaction, "Winners picked.")
 
     async def _raffle_loop(self) -> None:
@@ -426,7 +442,7 @@ class Raffles(commands.Cog):
             await asyncio.sleep(30)
 
     async def _close_raffle(
-        self, guild: discord.Guild, raffle: Dict[str, Any], *, roll: bool
+        self, guild: discord.Guild, raffle: Dict[str, Any], *, roll: bool, delete_thread: bool = True
     ) -> None:
         entrants: List[int] = raffle.get("entrants") or []
         raffle["status"] = "closed"
@@ -438,17 +454,22 @@ class Raffles(commands.Cog):
             await self._save_raffle(guild.id, raffle)
             await self._refresh_message(guild.id, raffle)
         # Remove thread if it exists (channel message remains as trophy)
-        thread_id = raffle.get("thread_id")
-        if thread_id:
-            thread = guild.get_thread(thread_id)
-            if thread:
-                try:
-                    await thread.delete(reason="Raffle closed")
-                except discord.HTTPException:
-                    pass
+        if delete_thread:
+            thread_id = raffle.get("thread_id")
+            if thread_id:
+                thread = guild.get_thread(thread_id)
+                if thread:
+                    try:
+                        await thread.delete(reason="Raffle closed")
+                    except discord.HTTPException:
+                        pass
 
     async def _roll_winners(
-        self, guild: discord.Guild, raffle: Dict[str, Any], entrants: Optional[List[int]] = None
+        self,
+        guild: discord.Guild,
+        raffle: Dict[str, Any],
+        entrants: Optional[List[int]] = None,
+        delete_thread: bool = True,
     ) -> None:
         entrants = entrants if entrants is not None else (raffle.get("entrants") or [])
         max_winners = raffle.get("max_winners") or 1
@@ -459,6 +480,15 @@ class Raffles(commands.Cog):
         raffle["winners"] = winners
         await self._save_raffle(guild.id, raffle)
         await self._refresh_message(guild.id, raffle)
+        if delete_thread:
+            thread_id = raffle.get("thread_id")
+            if thread_id:
+                thread = guild.get_thread(thread_id)
+                if thread:
+                    try:
+                        await thread.delete(reason="Raffle closed")
+                    except discord.HTTPException:
+                        pass
         await self._sync_thread_listing(guild, raffle)
         await self._ensure_host_controls(guild, raffle)
 
@@ -553,6 +583,7 @@ class Raffles(commands.Cog):
         # Only skip when fully closed with winners
         if raffle.get("status") == "closed" and raffle.get("winners"):
             return
+        show_pick = bool((raffle.get("entrants") or []))
         try:
             async for msg in thread.history(limit=10):
                 if msg.author == guild.me and any(
@@ -560,13 +591,20 @@ class Raffles(commands.Cog):
                     for row in (msg.components or [])
                     for btn in row.children
                 ):
+                    # If we already have controls but need to adjust pick availability, edit instead
+                    if not show_pick and any(
+                        btn.custom_id and btn.custom_id.startswith("raffle:pick:")
+                        for row in (msg.components or [])
+                        for btn in row.children
+                    ):
+                        await msg.edit(view=RaffleHostView(self, guild.id, raffle.get("id"), allow_pick=False))
                     return
         except Exception:
             pass
         try:
             await thread.send(
                 "Host controls:",
-                view=RaffleHostView(self, guild.id, raffle.get("id")),
+                view=RaffleHostView(self, guild.id, raffle.get("id"), allow_pick=show_pick),
             )
         except discord.HTTPException:
             pass
@@ -621,8 +659,9 @@ class Raffles(commands.Cog):
                     entrants = raffle.get("entrants") or []
                     if entrants:
                         self.bot.add_view(RaffleViewPendingPick(self, guild.id, raffle.get("id")))
-                # Host controls live in the thread; ensure the view is registered for any interactions
-                self.bot.add_view(RaffleHostView(self, guild.id, raffle.get("id")))
+                # Host controls live in the thread; register both variants for persistence
+                self.bot.add_view(RaffleHostView(self, guild.id, raffle.get("id"), allow_pick=True))
+                self.bot.add_view(RaffleHostView(self, guild.id, raffle.get("id"), allow_pick=False))
 
     def _build_help_embed(self, prefix: str) -> discord.Embed:
         embed = discord.Embed(
