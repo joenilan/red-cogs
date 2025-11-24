@@ -45,7 +45,6 @@ class RaffleView(discord.ui.View):
         self._enter.custom_id = f"raffle:enter:{raffle_id}"
         self._enter.emoji = "🎟️"
         self._leave.custom_id = f"raffle:leave:{raffle_id}"
-        self._end.custom_id = f"raffle:end:{raffle_id}"
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return True
@@ -58,18 +57,18 @@ class RaffleView(discord.ui.View):
     async def _leave(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
         await self.cog.handle_leave(interaction, self.guild_id, self.raffle_id)
 
-    @discord.ui.button(style=discord.ButtonStyle.danger, label="End now")
-    async def _end(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
-        await self.cog.handle_end_button(interaction, self.guild_id, self.raffle_id)
-
-
-class RaffleClosedView(discord.ui.View):
+class HostPanelView(discord.ui.View):
     def __init__(self, cog: "Raffles", guild_id: int, raffle_id: int):
         super().__init__(timeout=None)
         self.cog = cog
         self.guild_id = guild_id
         self.raffle_id = raffle_id
+        self._end.custom_id = f"raffle:end:{raffle_id}"
         self._pick.custom_id = f"raffle:pick:{raffle_id}"
+
+    @discord.ui.button(style=discord.ButtonStyle.danger, label="End now")
+    async def _end(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
+        await self.cog.handle_end_button(interaction, self.guild_id, self.raffle_id)
 
     @discord.ui.button(style=discord.ButtonStyle.success, label="Pick winners")
     async def _pick(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
@@ -139,6 +138,7 @@ class Raffles(commands.Cog):
         raffle["message_id"] = message.id
         await self._save_raffle(ctx.guild.id, raffle)
         await ctx.send(f"Raffle `{prize}` started. ID: {raffle_id}")
+        await self._send_host_panel(ctx.author, ctx.guild.id, raffle_id)
 
     @raffle_group.command(name="end", hidden=True)
     @commands.admin_or_permissions(manage_guild=True)
@@ -182,6 +182,21 @@ class Raffles(commands.Cog):
             end_text = f"ends <t:{int(ends_at)}:R>" if ends_at else "manual close"
             lines.append(f"ID {raffle.get('id')}: {raffle.get('prize')} ({end_text})")
         await ctx.send("\n".join(lines))
+
+    @raffle_group.command(name="panel", hidden=True)
+    async def raffle_panel(self, ctx: commands.Context, raffle_id: int) -> None:
+        """DM the host controls panel again."""
+        raffle = await self._get_raffle(ctx.guild.id, raffle_id)
+        if not raffle:
+            await ctx.send("Raffle not found.")
+            return
+        host_ok = raffle.get("host_id") == ctx.author.id
+        mod_ok = ctx.author.guild_permissions.manage_guild
+        if not (host_ok or mod_ok):
+            await ctx.send("Only the host or a server manager can open the host panel.")
+            return
+        await self._send_host_panel(ctx.author, ctx.guild.id, raffle_id)
+        await ctx.send("Host panel sent.")
 
     async def handle_enter(self, interaction: discord.Interaction, guild_id: int, raffle_id: int) -> None:
         raffle = await self._get_raffle(guild_id, raffle_id)
@@ -304,6 +319,15 @@ class Raffles(commands.Cog):
         await self._save_raffle(guild.id, raffle)
         await self._refresh_message(guild.id, raffle)
 
+    async def _send_host_panel(self, user: discord.User, guild_id: int, raffle_id: int) -> None:
+        try:
+            await user.send(
+                f"Host panel for raffle {raffle_id}",
+                view=HostPanelView(self, guild_id, raffle_id),
+            )
+        except discord.HTTPException:
+            pass
+
     async def _refresh_message(self, guild_id: int, raffle: Dict[str, Any]) -> None:
         guild = self.bot.get_guild(guild_id)
         if not guild:
@@ -322,8 +346,6 @@ class Raffles(commands.Cog):
         view = None
         if raffle.get("status") == "open":
             view = RaffleView(self, guild_id, raffle.get("id"))
-        elif raffle.get("status") == "closed" and not raffle.get("winners"):
-            view = RaffleClosedView(self, guild_id, raffle.get("id"))
         await message.edit(embed=embed, view=view)
 
     async def _get_raffle(self, guild_id: int, raffle_id: int) -> Optional[Dict[str, Any]]:
