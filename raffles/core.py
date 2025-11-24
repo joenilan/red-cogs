@@ -590,13 +590,7 @@ class Raffles(commands.Cog):
                     for row in (msg.components or [])
                     for btn in row.children
                 ):
-                    # If we already have controls but need to adjust pick availability, edit instead
-                    if not show_pick and any(
-                        btn.custom_id and btn.custom_id.startswith("raffle:pick:")
-                        for row in (msg.components or [])
-                        for btn in row.children
-                    ):
-                        await msg.edit(view=RaffleHostView(self, guild.id, raffle.get("id"), allow_pick=False))
+                    await msg.edit(view=RaffleHostView(self, guild.id, raffle.get("id"), allow_pick=show_pick))
                     return
         except Exception:
             pass
