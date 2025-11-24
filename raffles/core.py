@@ -10,7 +10,7 @@ import discord
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
-from .embeds import build_raffle_embed, entrants_text
+from .embeds import build_raffle_embed, entrants_grid
 
 
 def parse_duration(text: Optional[str]) -> int:
@@ -391,13 +391,13 @@ class Raffles(commands.Cog):
             raffle["winners"] = []
             await self._save_raffle(guild.id, raffle)
             await self._refresh_message(guild.id, raffle)
-        # Archive thread if it exists
+        # Remove thread if it exists (channel message remains as trophy)
         thread_id = raffle.get("thread_id")
         if thread_id:
             thread = guild.get_thread(thread_id)
             if thread:
                 try:
-                    await thread.edit(archived=True, locked=True, reason="Raffle closed")
+                    await thread.delete(reason="Raffle closed")
                 except discord.HTTPException:
                     pass
 
@@ -462,17 +462,25 @@ class Raffles(commands.Cog):
         thread = guild.get_thread(thread_id)
         if not thread:
             return
-        text = entrants_text(raffle.get("entrants") or [], guild)
+        entries = raffle.get("entrants") or []
+        grid = entrants_grid(entries, guild)
+        embed = discord.Embed(title=f"Entrants ({len(entries)})", color=discord.Color.dark_teal())
+        for idx, col in enumerate(grid, start=1):
+            if not col:
+                continue
+            embed.add_field(name="Entrants" if idx == 1 else "\u200b", value="\n".join(col), inline=True)
+        if not any(grid):
+            embed.description = "No entrants yet."
         msg_id = raffle.get("thread_message_id")
         if msg_id:
             try:
                 msg = await thread.fetch_message(msg_id)
-                await msg.edit(content=text)
+                await msg.edit(embed=embed)
                 return
             except discord.HTTPException:
                 pass
         try:
-            msg = await thread.send(text)
+            msg = await thread.send(embed=embed)
             raffle["thread_message_id"] = msg.id
             await self._save_raffle(guild.id, raffle)
         except discord.HTTPException:
@@ -486,6 +494,9 @@ class Raffles(commands.Cog):
             return
         thread = guild.get_thread(thread_id)
         if not thread:
+            return
+        # Do not show host controls if raffle is already closed with winners
+        if raffle.get("status") == "closed" and raffle.get("winners"):
             return
         try:
             async for msg in thread.history(limit=10):

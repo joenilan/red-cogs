@@ -71,14 +71,14 @@ def build_entrants_embed(
     return embed
 
 
-def entrants_text(entries: list[int], guild: discord.Guild, max_lines: int = 100) -> str:
-    if not entries:
-        return "No entrants yet."
-    lines = []
-    for uid in entries[:max_lines]:
+def entrants_grid(entries: list[int], guild: discord.Guild, columns: int = 3, per_col: int = 15) -> list[list[str]]:
+    cols: list[list[str]] = [[] for _ in range(columns)]
+    for idx, uid in enumerate(entries):
+        col = idx % columns
         member = guild.get_member(uid)
-        lines.append(member.mention if member else f"<@{uid}>")
-    remaining = len(entries) - len(lines)
-    if remaining > 0:
-        lines.append(f"...and {remaining} more")
-    return "\n".join(lines)
+        mention = member.mention if member else f"<@{uid}>"
+        cols[col].append(mention)
+    trimmed: list[list[str]] = []
+    for col in cols:
+        trimmed.append(col[:per_col])
+    return trimmed
