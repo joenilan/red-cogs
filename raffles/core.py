@@ -41,15 +41,20 @@ class RaffleViewOpen(discord.ui.View):
         self.cog = cog
         self.guild_id = guild_id
         self.raffle_id = raffle_id
-        self._toggle.custom_id = f"raffle:toggle:{raffle_id}"
-        self._toggle.emoji = "🎟️"
+        self._enter.custom_id = f"raffle:enter:{raffle_id}"
+        self._enter.emoji = "🎟️"
+        self._leave.custom_id = f"raffle:leave:{raffle_id}"
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return True
 
-    @discord.ui.button(style=discord.ButtonStyle.success, label="Enter / Leave")
-    async def _toggle(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
-        await self.cog.handle_toggle(interaction, self.guild_id, self.raffle_id)
+    @discord.ui.button(style=discord.ButtonStyle.success, label="Enter")
+    async def _enter(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
+        await self.cog.handle_enter(interaction, self.guild_id, self.raffle_id)
+
+    @discord.ui.button(style=discord.ButtonStyle.secondary, label="Leave")
+    async def _leave(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
+        await self.cog.handle_leave(interaction, self.guild_id, self.raffle_id)
 
 
 class RaffleViewPendingPick(discord.ui.View):
@@ -186,6 +191,8 @@ class Raffles(commands.Cog):
         except discord.HTTPException:
             pass
         await self._save_raffle(ctx.guild.id, raffle)
+        await self._sync_thread_listing(ctx.guild, raffle)
+        await self._ensure_host_controls(ctx.guild, raffle)
         await self._maybe_delete_command(ctx)
 
     @raffle_group.command(name="end", hidden=True)
@@ -294,7 +301,25 @@ class Raffles(commands.Cog):
         await self._maybe_delete_command(ctx)
 
 
-    async def handle_toggle(self, interaction: discord.Interaction, guild_id: int, raffle_id: int) -> None:
+    async def handle_enter(self, interaction: discord.Interaction, guild_id: int, raffle_id: int) -> None:
+        raffle = await self._get_raffle(guild_id, raffle_id)
+        if not raffle or raffle.get("status") != "open":
+            await interaction.response.send_message("This raffle is closed.", ephemeral=True)
+            return
+        user_id = interaction.user.id
+        entrants: List[int] = raffle.get("entrants") or []
+        if user_id in entrants:
+            await interaction.response.send_message("You are already entered.", ephemeral=True)
+            return
+        entrants.append(user_id)
+        raffle["entrants"] = entrants
+        await self._save_raffle(guild_id, raffle)
+        await self._refresh_message(guild_id, raffle)
+        await self._sync_thread_listing(interaction.guild or self.bot.get_guild(guild_id), raffle)
+        await self._ensure_host_controls(interaction.guild or self.bot.get_guild(guild_id), raffle)
+        await interaction.response.send_message("You have entered the raffle.", ephemeral=True)
+
+    async def handle_leave(self, interaction: discord.Interaction, guild_id: int, raffle_id: int) -> None:
         raffle = await self._get_raffle(guild_id, raffle_id)
         if not raffle or raffle.get("status") != "open":
             await interaction.response.send_message("This raffle is closed.", ephemeral=True)
@@ -302,16 +327,15 @@ class Raffles(commands.Cog):
         user_id = interaction.user.id
         entrants: List[int] = raffle.get("entrants") or []
         if user_id not in entrants:
-            entrants.append(user_id)
-            await interaction.response.send_message("You have entered the raffle.", ephemeral=True)
-        else:
-            entrants = [uid for uid in entrants if uid != user_id]
-            await interaction.response.send_message("You have left the raffle.", ephemeral=True)
+            await interaction.response.send_message("You are not entered.", ephemeral=True)
+            return
+        entrants = [uid for uid in entrants if uid != user_id]
         raffle["entrants"] = entrants
         await self._save_raffle(guild_id, raffle)
         await self._refresh_message(guild_id, raffle)
         await self._sync_thread_listing(interaction.guild or self.bot.get_guild(guild_id), raffle)
         await self._ensure_host_controls(interaction.guild or self.bot.get_guild(guild_id), raffle)
+        await interaction.response.send_message("You have left the raffle.", ephemeral=True)
 
     async def handle_end_button(
         self, interaction: discord.Interaction, guild_id: int, raffle_id: int
