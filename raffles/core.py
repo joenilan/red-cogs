@@ -495,7 +495,7 @@ class Raffles(commands.Cog):
         thread = guild.get_thread(thread_id)
         if not thread:
             return
-        # Do not show host controls if raffle is already closed with winners
+        # Only skip when fully closed with winners
         if raffle.get("status") == "closed" and raffle.get("winners"):
             return
         try:
