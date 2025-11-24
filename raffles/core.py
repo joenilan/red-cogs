@@ -137,8 +137,9 @@ class Raffles(commands.Cog):
         message = await ctx.send(embed=embed, view=view)
         raffle["message_id"] = message.id
         await self._save_raffle(ctx.guild.id, raffle)
-        await ctx.send(f"Raffle `{prize}` started. ID: {raffle_id}")
-        await self._send_host_panel(ctx.author, ctx.guild.id, raffle_id)
+        await ctx.send(f"Raffle `{prize}` started. ID: {raffle_id}", delete_after=15)
+        await self._post_host_panel(ctx.guild, ctx.author, raffle)
+        await self._maybe_delete_command(ctx)
 
     @raffle_group.command(name="end", hidden=True)
     @commands.admin_or_permissions(manage_guild=True)
@@ -146,13 +147,17 @@ class Raffles(commands.Cog):
         """Close a raffle immediately (no winners drawn)."""
         raffle = await self._get_raffle(ctx.guild.id, raffle_id)
         if not raffle:
-            await ctx.send("Raffle not found.")
+            await ctx.send("Raffle not found.", delete_after=10)
             return
         if raffle.get("status") == "closed":
-            await ctx.send("That raffle is already closed.")
+            await ctx.send("That raffle is already closed.", delete_after=10)
             return
         await self._close_raffle(ctx.guild, raffle, roll=False)
-        await ctx.send(f"Raffle {raffle_id} closed (no winners drawn). Use `raffle pick {raffle_id}` to draw.")
+        await ctx.send(
+            f"Raffle {raffle_id} closed (no winners drawn). Use `raffle pick {raffle_id}` to draw.",
+            delete_after=15,
+        )
+        await self._maybe_delete_command(ctx)
 
     @raffle_group.command(name="pick", hidden=True)
     @commands.admin_or_permissions(manage_guild=True)
@@ -160,13 +165,14 @@ class Raffles(commands.Cog):
         """Draw winners for a closed raffle."""
         raffle = await self._get_raffle(ctx.guild.id, raffle_id)
         if not raffle:
-            await ctx.send("Raffle not found.")
+            await ctx.send("Raffle not found.", delete_after=10)
             return
         if raffle.get("status") != "closed" or raffle.get("winners"):
-            await ctx.send("Raffle is not pending a draw.")
+            await ctx.send("Raffle is not pending a draw.", delete_after=10)
             return
         await self._roll_winners(ctx.guild, raffle)
-        await ctx.send(f"Winners picked for raffle {raffle_id}.")
+        await ctx.send(f"Winners picked for raffle {raffle_id}.", delete_after=15)
+        await self._maybe_delete_command(ctx)
 
     @raffle_group.command(name="list", hidden=True)
     async def raffle_list(self, ctx: commands.Context) -> None:
@@ -174,29 +180,31 @@ class Raffles(commands.Cog):
         raffles = await self.config.guild(ctx.guild).raffles()
         open_raffles = [r for r in raffles.values() if r.get("status") == "open"]
         if not open_raffles:
-            await ctx.send("No active raffles.")
+            await ctx.send("No active raffles.", delete_after=10)
             return
         lines = []
         for raffle in sorted(open_raffles, key=lambda r: r.get("id")):
             ends_at = raffle.get("ends_at")
             end_text = f"ends <t:{int(ends_at)}:R>" if ends_at else "manual close"
             lines.append(f"ID {raffle.get('id')}: {raffle.get('prize')} ({end_text})")
-        await ctx.send("\n".join(lines))
+        await ctx.send("\n".join(lines), delete_after=15)
+        await self._maybe_delete_command(ctx)
 
     @raffle_group.command(name="panel", hidden=True)
     async def raffle_panel(self, ctx: commands.Context, raffle_id: int) -> None:
         """DM the host controls panel again."""
         raffle = await self._get_raffle(ctx.guild.id, raffle_id)
         if not raffle:
-            await ctx.send("Raffle not found.")
+            await ctx.send("Raffle not found.", delete_after=10)
             return
         host_ok = raffle.get("host_id") == ctx.author.id
         mod_ok = ctx.author.guild_permissions.manage_guild
         if not (host_ok or mod_ok):
-            await ctx.send("Only the host or a server manager can open the host panel.")
+            await ctx.send("Only the host or a server manager can open the host panel.", delete_after=10)
             return
-        await self._send_host_panel(ctx.author, ctx.guild.id, raffle_id)
-        await ctx.send("Host panel sent.")
+        await self._post_host_panel(ctx.guild, ctx.author, raffle)
+        await ctx.send("Host panel posted.", delete_after=10)
+        await self._maybe_delete_command(ctx)
 
     async def handle_enter(self, interaction: discord.Interaction, guild_id: int, raffle_id: int) -> None:
         raffle = await self._get_raffle(guild_id, raffle_id)
@@ -245,7 +253,7 @@ class Raffles(commands.Cog):
                 ephemeral=True,
             )
             return
-        guild = interaction.guild
+        guild = interaction.guild or self.bot.get_guild(guild_id)
         if not guild:
             await interaction.response.send_message("Guild not found.", ephemeral=True)
             return
@@ -269,7 +277,7 @@ class Raffles(commands.Cog):
                 ephemeral=True,
             )
             return
-        guild = interaction.guild
+        guild = interaction.guild or self.bot.get_guild(guild_id)
         if not guild:
             await interaction.response.send_message("Guild not found.", ephemeral=True)
             return
@@ -319,13 +327,25 @@ class Raffles(commands.Cog):
         await self._save_raffle(guild.id, raffle)
         await self._refresh_message(guild.id, raffle)
 
-    async def _send_host_panel(self, user: discord.User, guild_id: int, raffle_id: int) -> None:
+    async def _post_host_panel(self, guild: discord.Guild, host: discord.abc.User, raffle: Dict[str, Any]) -> None:
+        channel_id = raffle.get("channel_id")
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if not isinstance(channel, discord.TextChannel):
+            return
         try:
-            await user.send(
-                f"Host panel for raffle {raffle_id}",
-                view=HostPanelView(self, guild_id, raffle_id),
+            await channel.send(
+                f"{host.mention} host panel for raffle {raffle.get('id')}",
+                view=HostPanelView(self, guild.id, raffle.get("id")),
+                delete_after=120,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
             )
         except discord.HTTPException:
+            pass
+
+    async def _maybe_delete_command(self, ctx: commands.Context) -> None:
+        try:
+            await ctx.message.delete()
+        except Exception:
             pass
 
     async def _refresh_message(self, guild_id: int, raffle: Dict[str, Any]) -> None:
@@ -343,9 +363,7 @@ class Raffles(commands.Cog):
         except discord.NotFound:
             return
         embed = build_raffle_embed(raffle, guild)
-        view = None
-        if raffle.get("status") == "open":
-            view = RaffleView(self, guild_id, raffle.get("id"))
+        view = RaffleView(self, guild_id, raffle.get("id")) if raffle.get("status") == "open" else None
         await message.edit(embed=embed, view=view)
 
     async def _get_raffle(self, guild_id: int, raffle_id: int) -> Optional[Dict[str, Any]]:
