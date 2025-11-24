@@ -452,6 +452,15 @@ class Raffles(commands.Cog):
             raffle["winners"] = []
             await self._save_raffle(guild.id, raffle)
             await self._refresh_message(guild.id, raffle)
+            if delete_thread:
+                thread_id = raffle.get("thread_id")
+                if thread_id:
+                    thread = guild.get_thread(thread_id)
+                    if thread:
+                        try:
+                            await thread.delete(reason="Raffle closed")
+                        except discord.HTTPException:
+                            pass
         # Remove thread if it exists (channel message remains as trophy)
         if delete_thread:
             thread_id = raffle.get("thread_id")
