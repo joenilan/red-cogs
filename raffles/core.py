@@ -138,6 +138,7 @@ class Raffles(commands.Cog):
             "host_id": ctx.author.id,
             "channel_id": channel.id,
             "message_id": None,
+            "thread_id": None,
             "max_winners": max_winners,
             "ends_at": ends_at,
             "entrants": [],
@@ -154,6 +155,19 @@ class Raffles(commands.Cog):
             await self._maybe_delete_command(ctx)
             return
         raffle["message_id"] = message.id
+        # Try to create a thread for archival/trophy; channel perms will govern visibility.
+        thread_name = f"raffle-{raffle_id}-{prize}".replace(" ", "-")[:90]
+        try:
+            thread = await channel.create_thread(
+                name=thread_name,
+                message=message,
+                auto_archive_duration=4320,  # 3 days
+                type=discord.ChannelType.public_thread,
+                reason="Raffle thread",
+            )
+            raffle["thread_id"] = thread.id
+        except discord.HTTPException:
+            pass
         await self._save_raffle(ctx.guild.id, raffle)
         await self._maybe_delete_command(ctx)
 
@@ -230,6 +244,36 @@ class Raffles(commands.Cog):
             await ctx.send(f"Raffles will post in {channel.mention}.", delete_after=10)
         else:
             await ctx.send("Raffle channel cleared. Current channel will be used when starting.", delete_after=10)
+        await self._maybe_delete_command(ctx)
+
+    @raffle_group.command(name="resetids", hidden=True)
+    @commands.admin_or_permissions(manage_guild=True)
+    async def raffle_reset_ids(self, ctx: commands.Context) -> None:
+        """Reset the raffle ID counter to 1 (for development/testing)."""
+        await self.config.guild(ctx.guild).next_id.set(1)
+        await ctx.send("Raffle IDs reset to 1.", delete_after=10)
+        await self._maybe_delete_command(ctx)
+
+    @raffle_group.command(name="setup", hidden=True)
+    @commands.admin_or_permissions(manage_guild=True)
+    async def raffle_setup(self, ctx: commands.Context, *, name: str = "raffles") -> None:
+        """Create a dedicated raffle channel (private by default) and store it."""
+        guild = ctx.guild
+        overwrite = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+        }
+        try:
+            channel = await guild.create_text_channel(name=name, overwrites=overwrite, reason="Raffle setup")
+        except discord.HTTPException:
+            await ctx.send("Could not create the raffle channel.", delete_after=10)
+            await self._maybe_delete_command(ctx)
+            return
+        await self.config.guild(guild).raffle_channel.set(channel.id)
+        await ctx.send(
+            f"Raffle channel created at {channel.mention}. Adjust permissions when ready.",
+            delete_after=15,
+        )
         await self._maybe_delete_command(ctx)
 
 
@@ -343,6 +387,15 @@ class Raffles(commands.Cog):
             raffle["winners"] = []
             await self._save_raffle(guild.id, raffle)
             await self._refresh_message(guild.id, raffle)
+        # Archive thread if it exists
+        thread_id = raffle.get("thread_id")
+        if thread_id:
+            thread = guild.get_thread(thread_id)
+            if thread:
+                try:
+                    await thread.edit(archived=True, reason="Raffle closed")
+                except discord.HTTPException:
+                    pass
 
     async def _roll_winners(
         self, guild: discord.Guild, raffle: Dict[str, Any], entrants: Optional[List[int]] = None
@@ -441,7 +494,9 @@ class Raffles(commands.Cog):
                 if raffle.get("status") == "open":
                     self.bot.add_view(RaffleViewOpen(self, guild.id, raffle.get("id")))
                 elif raffle.get("status") == "closed" and not raffle.get("winners"):
-                    self.bot.add_view(RaffleViewPendingPick(self, guild.id, raffle.get("id")))
+                    entrants = raffle.get("entrants") or []
+                    if entrants:
+                        self.bot.add_view(RaffleViewPendingPick(self, guild.id, raffle.get("id")))
 
     def _build_help_embed(self, prefix: str) -> discord.Embed:
         embed = discord.Embed(
@@ -474,7 +529,10 @@ class Raffles(commands.Cog):
         )
         embed.add_field(
             name="Channel",
-            value=f"Set a dedicated channel with `{prefix}raffle channel #raffles`.",
+            value=(
+                f"Set a dedicated channel with `{prefix}raffle channel #raffles` or auto-create one with "
+                f"`{prefix}raffle setup [name]` (private by default)."
+            ),
             inline=False,
         )
         embed.set_footer(text="Aliases: raffle / ra")
