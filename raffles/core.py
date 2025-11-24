@@ -209,7 +209,7 @@ class Raffles(commands.Cog):
         if raffle.get("status") == "closed":
             await ctx.send("That raffle is already closed.", delete_after=10)
             return
-        await self._close_raffle(ctx.guild, raffle, roll=False)
+        await self._close_raffle(ctx.guild, raffle, roll=False, delete_thread=True)
         await ctx.send(
             f"Raffle {raffle_id} closed (no winners drawn). Use `raffle pick {raffle_id}` to draw.",
             delete_after=15,
@@ -389,7 +389,7 @@ class Raffles(commands.Cog):
         if not interaction.response.is_done():
             with contextlib.suppress(Exception):
                 await interaction.response.defer(ephemeral=True)
-        await self._close_raffle(guild, raffle, roll=False, delete_thread=False)
+        await self._close_raffle(guild, raffle, roll=False, delete_thread=True)
         await self._safe_interaction_reply(interaction, "Raffle closed. Use Pick winners to draw when ready.")
 
     async def handle_pick_button(
