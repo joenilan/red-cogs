@@ -670,14 +670,16 @@ class Raffles(commands.Cog):
             return
         embed = build_raffle_embed(raffle, guild)
         view = None
-        if raffle.get("status") == "open":
+        status = raffle.get("status")
+        if status == "open":
             view = RaffleViewOpen(self, guild_id, raffle.get("id"))
-        elif raffle.get("status") == "closed" and not raffle.get("winners"):
+        elif status == "closed":
             entrants = raffle.get("entrants") or []
-            if entrants:
+            winners = raffle.get("winners") or []
+            if not winners and entrants:
                 view = RaffleViewPendingPick(self, guild_id, raffle.get("id"))
-        elif raffle.get("status") == "closed":
-            view = RaffleViewClosed(self, guild_id, raffle.get("id"), message_id)
+            else:
+                view = RaffleViewClosed(self, guild_id, raffle.get("id"), message_id)
         await message.edit(embed=embed, view=view)
         await self._sync_thread_listing(guild, raffle)
         await self._ensure_host_controls(guild, raffle)
