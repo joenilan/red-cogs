@@ -74,6 +74,23 @@ class RaffleViewPendingPick(discord.ui.View):
         await self.cog.handle_pick_button(interaction, self.guild_id, self.raffle_id)
 
 
+class RaffleViewClosed(discord.ui.View):
+    def __init__(self, cog: "Raffles", guild_id: int, raffle_id: int, message_id: int):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.raffle_id = raffle_id
+        self.message_id = message_id
+        self._remove.custom_id = f"raffle:remove:{raffle_id}:{message_id}"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return True
+
+    @discord.ui.button(style=discord.ButtonStyle.danger, label="Remove", emoji="🗑️")
+    async def _remove(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
+        await self.cog.handle_remove_button(interaction, self.guild_id, self.raffle_id, self.message_id)
+
+
 class RaffleHostView(discord.ui.View):
     def __init__(self, cog: "Raffles", guild_id: int, raffle_id: int, *, allow_pick: bool = True):
         super().__init__(timeout=None)
@@ -546,6 +563,8 @@ class Raffles(commands.Cog):
         thread = guild.get_thread(thread_id)
         if not thread:
             return
+        if raffle.get("status") == "closed":
+            return
         entries = raffle.get("entrants") or []
         grid = entrants_grid(entries, guild)
         embed = discord.Embed(title=f"Entrants ({len(entries)})", color=discord.Color.dark_teal())
@@ -633,6 +652,8 @@ class Raffles(commands.Cog):
             entrants = raffle.get("entrants") or []
             if entrants:
                 view = RaffleViewPendingPick(self, guild_id, raffle.get("id"))
+        elif raffle.get("status") == "closed":
+            view = RaffleViewClosed(self, guild_id, raffle.get("id"), message_id)
         await message.edit(embed=embed, view=view)
         await self._sync_thread_listing(guild, raffle)
         await self._ensure_host_controls(guild, raffle)
@@ -661,6 +682,15 @@ class Raffles(commands.Cog):
                     entrants = raffle.get("entrants") or []
                     if entrants:
                         self.bot.add_view(RaffleViewPendingPick(self, guild.id, raffle.get("id")))
+                if raffle.get("status") == "closed":
+                    self.bot.add_view(
+                        RaffleViewClosed(
+                            self,
+                            guild.id,
+                            raffle.get("id"),
+                            raffle.get("message_id") or 0,
+                        )
+                    )
                 # Host controls live in the thread; register both variants for persistence
                 self.bot.add_view(RaffleHostView(self, guild.id, raffle.get("id"), allow_pick=True))
                 self.bot.add_view(RaffleHostView(self, guild.id, raffle.get("id"), allow_pick=False))
