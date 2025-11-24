@@ -462,7 +462,11 @@ class Raffles(commands.Cog):
         )
         embed.add_field(
             name="Permissions",
-            value="Host controls are on the raffle message. Host, Manage Server, or the configured manager role can end/pick.",
+            value=(
+                "Host controls are on the raffle message. Host, Manage Server, or the configured "
+                "manager role can end/pick. Set a manager role with "
+                f"`{prefix}raffle managerrole @Role` (clear with no role)."
+            ),
             inline=False,
         )
         embed.add_field(
