@@ -4,6 +4,7 @@ import asyncio
 import random
 import re
 import time
+import contextlib
 from typing import Any, Dict, List, Optional
 
 import discord
@@ -98,7 +99,7 @@ class Raffles(commands.Cog):
     """Simple button-only raffles/giveaways."""
 
     __author__ = "DreadedZombie"
-    __version__ = "0.2.0"
+    __version__ = "0.2.1"
 
     def __init__(self, bot: Red) -> None:
         self.bot = bot
@@ -302,88 +303,109 @@ class Raffles(commands.Cog):
 
 
     async def handle_enter(self, interaction: discord.Interaction, guild_id: int, raffle_id: int) -> None:
-        raffle = await self._get_raffle(guild_id, raffle_id)
-        if not raffle or raffle.get("status") != "open":
-            await interaction.response.send_message("This raffle is closed.", ephemeral=True)
-            return
-        user_id = interaction.user.id
-        entrants: List[int] = raffle.get("entrants") or []
-        if user_id in entrants:
-            await interaction.response.send_message("You are already entered.", ephemeral=True)
-            return
-        entrants.append(user_id)
-        raffle["entrants"] = entrants
-        await self._save_raffle(guild_id, raffle)
-        await self._refresh_message(guild_id, raffle)
-        await self._sync_thread_listing(interaction.guild or self.bot.get_guild(guild_id), raffle)
-        await self._ensure_host_controls(interaction.guild or self.bot.get_guild(guild_id), raffle)
-        await interaction.response.send_message("You have entered the raffle.", ephemeral=True)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+            raffle = await self._get_raffle(guild_id, raffle_id)
+            if not raffle or raffle.get("status") != "open":
+                await interaction.followup.send("This raffle is closed.", ephemeral=True)
+                return
+            user_id = interaction.user.id
+            entrants: List[int] = raffle.get("entrants") or []
+            if user_id in entrants:
+                await interaction.followup.send("You are already entered.", ephemeral=True)
+                return
+            entrants.append(user_id)
+            raffle["entrants"] = entrants
+            await self._save_raffle(guild_id, raffle)
+            guild = interaction.guild or self.bot.get_guild(guild_id)
+            await self._refresh_message(guild_id, raffle)
+            await self._sync_thread_listing(guild, raffle)
+            await self._ensure_host_controls(guild, raffle)
+            await interaction.followup.send("You have entered the raffle.", ephemeral=True)
+        except Exception as exc:  # noqa: BLE001
+            self.log.exception("Raffle enter handler failed: %s", exc)
+            if interaction.response.is_done():
+                with contextlib.suppress(Exception):
+                    await interaction.followup.send("Something went wrong processing your entry.", ephemeral=True)
+            else:
+                with contextlib.suppress(Exception):
+                    await interaction.response.send_message(
+                        "Something went wrong processing your entry.", ephemeral=True
+                    )
 
     async def handle_leave(self, interaction: discord.Interaction, guild_id: int, raffle_id: int) -> None:
-        raffle = await self._get_raffle(guild_id, raffle_id)
-        if not raffle or raffle.get("status") != "open":
-            await interaction.response.send_message("This raffle is closed.", ephemeral=True)
-            return
-        user_id = interaction.user.id
-        entrants: List[int] = raffle.get("entrants") or []
-        if user_id not in entrants:
-            await interaction.response.send_message("You are not entered.", ephemeral=True)
-            return
-        entrants = [uid for uid in entrants if uid != user_id]
-        raffle["entrants"] = entrants
-        await self._save_raffle(guild_id, raffle)
-        await self._refresh_message(guild_id, raffle)
-        await self._sync_thread_listing(interaction.guild or self.bot.get_guild(guild_id), raffle)
-        await self._ensure_host_controls(interaction.guild or self.bot.get_guild(guild_id), raffle)
-        await interaction.response.send_message("You have left the raffle.", ephemeral=True)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+            raffle = await self._get_raffle(guild_id, raffle_id)
+            if not raffle or raffle.get("status") != "open":
+                await interaction.followup.send("This raffle is closed.", ephemeral=True)
+                return
+            user_id = interaction.user.id
+            entrants: List[int] = raffle.get("entrants") or []
+            if user_id not in entrants:
+                await interaction.followup.send("You are not entered.", ephemeral=True)
+                return
+            entrants = [uid for uid in entrants if uid != user_id]
+            raffle["entrants"] = entrants
+            await self._save_raffle(guild_id, raffle)
+            guild = interaction.guild or self.bot.get_guild(guild_id)
+            await self._refresh_message(guild_id, raffle)
+            await self._sync_thread_listing(guild, raffle)
+            await self._ensure_host_controls(guild, raffle)
+            await interaction.followup.send("You have left the raffle.", ephemeral=True)
+        except Exception as exc:  # noqa: BLE001
+            self.log.exception("Raffle leave handler failed: %s", exc)
+            if interaction.response.is_done():
+                with contextlib.suppress(Exception):
+                    await interaction.followup.send("Something went wrong processing your request.", ephemeral=True)
+            else:
+                with contextlib.suppress(Exception):
+                    await interaction.response.send_message(
+                        "Something went wrong processing your request.", ephemeral=True
+                    )
 
     async def handle_end_button(
         self, interaction: discord.Interaction, guild_id: int, raffle_id: int
     ) -> None:
         raffle = await self._get_raffle(guild_id, raffle_id)
         if not raffle or raffle.get("status") != "open":
-            await interaction.response.send_message("This raffle is already closed.", ephemeral=True)
+            await self._safe_interaction_reply(interaction, "This raffle is already closed.")
             return
         guild = interaction.guild or self.bot.get_guild(guild_id)
-        allowed = await self._is_host_or_manager(
-            interaction.user, guild, raffle.get("host_id"), guild_id
-        )
+        allowed = await self._is_host_or_manager(interaction.user, guild, raffle.get("host_id"), guild_id)
         if not allowed:
-            await interaction.response.send_message(
+            await self._safe_interaction_reply(
+                interaction,
                 "Only the host or a server manager can end this raffle.",
-                ephemeral=True,
             )
             return
         if not guild:
-            await interaction.response.send_message("Guild not found.", ephemeral=True)
+            await self._safe_interaction_reply(interaction, "Guild not found.")
             return
         await self._close_raffle(guild, raffle, roll=False)
-        await interaction.response.send_message(
-            "Raffle closed. Use Pick winners to draw when ready.", ephemeral=True
-        )
+        await self._safe_interaction_reply(interaction, "Raffle closed. Use Pick winners to draw when ready.")
 
     async def handle_pick_button(
         self, interaction: discord.Interaction, guild_id: int, raffle_id: int
     ) -> None:
         raffle = await self._get_raffle(guild_id, raffle_id)
         if not raffle or raffle.get("status") != "closed" or raffle.get("winners"):
-            await interaction.response.send_message("No pending draw for this raffle.", ephemeral=True)
+            await self._safe_interaction_reply(interaction, "No pending draw for this raffle.")
             return
         guild = interaction.guild or self.bot.get_guild(guild_id)
-        allowed = await self._is_host_or_manager(
-            interaction.user, guild, raffle.get("host_id"), guild_id
-        )
+        allowed = await self._is_host_or_manager(interaction.user, guild, raffle.get("host_id"), guild_id)
         if not allowed:
-            await interaction.response.send_message(
-                "Only the host or a server manager can pick winners.",
-                ephemeral=True,
+            await self._safe_interaction_reply(
+                interaction, "Only the host or a server manager can pick winners."
             )
             return
         if not guild:
-            await interaction.response.send_message("Guild not found.", ephemeral=True)
+            await self._safe_interaction_reply(interaction, "Guild not found.")
             return
         await self._roll_winners(guild, raffle)
-        await interaction.response.send_message("Winners picked.", ephemeral=True)
+        await self._safe_interaction_reply(interaction, "Winners picked.")
 
     async def _raffle_loop(self) -> None:
         await self.bot.wait_until_red_ready()
@@ -508,6 +530,15 @@ class Raffles(commands.Cog):
             raffle["thread_message_id"] = msg.id
             await self._save_raffle(guild.id, raffle)
         except discord.HTTPException:
+            pass
+
+    async def _safe_interaction_reply(self, interaction: discord.Interaction, text: str) -> None:
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(text, ephemeral=True)
+            else:
+                await interaction.response.send_message(text, ephemeral=True)
+        except Exception:
             pass
 
     async def _ensure_host_controls(self, guild: Optional[discord.Guild], raffle: Dict[str, Any]) -> None:
