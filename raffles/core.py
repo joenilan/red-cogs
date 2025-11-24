@@ -81,9 +81,8 @@ class RaffleHostView(discord.ui.View):
         self.guild_id = guild_id
         self.raffle_id = raffle_id
         self._end.custom_id = f"raffle:end:{raffle_id}"
-        if allow_pick:
-            self._pick.custom_id = f"raffle:pick:{raffle_id}"
-        else:
+        self._pick.custom_id = f"raffle:pick:{raffle_id}"
+        if not allow_pick:
             self._pick.disabled = True
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
