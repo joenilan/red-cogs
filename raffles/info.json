@@ -1,0 +1,19 @@
+{
+  "name": "raffles",
+  "short": "Button-only raffles and giveaways.",
+  "description": "Start raffles with buttons for entry/leave, auto-close, and winner selection.",
+  "end_user_data_statement": "This cog stores entrant user IDs per guild raffle.",
+  "author": [
+    "DreadedZombie"
+  ],
+  "required_cogs": {},
+  "requirements": [],
+  "tags": [
+    "raffle",
+    "giveaway",
+    "buttons"
+  ],
+  "min_bot_version": "3.5.0",
+  "hidden": false,
+  "disabled": false
+}

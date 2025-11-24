@@ -1,0 +1,297 @@
+from __future__ import annotations
+
+import asyncio
+import random
+import re
+import time
+from typing import Any, Dict, List, Optional
+
+import discord
+from redbot.core import Config, commands
+from redbot.core.bot import Red
+
+from .embeds import build_entrants_embed, build_raffle_embed
+
+
+def parse_duration(text: Optional[str]) -> int:
+    if not text:
+        return 3600
+    text = text.strip().lower()
+    if text in {"0", "forever", "none", "manual", "infinite"}:
+        return 0
+    match = re.match(r"(\d+)\s*([smhd]?)", text)
+    if not match:
+        return 3600
+    value = int(match.group(1))
+    unit = match.group(2)
+    if unit == "s":
+        return max(30, value)
+    if unit == "m":
+        return max(30, value * 60)
+    if unit == "h":
+        return max(60, value * 3600)
+    if unit == "d":
+        return max(3600, value * 86400)
+    return max(30, value)
+
+
+class RaffleView(discord.ui.View):
+    def __init__(self, cog: "Raffles", guild_id: int, raffle_id: int):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.raffle_id = raffle_id
+        # Set custom IDs on the decorated buttons for persistence.
+        self._enter.custom_id = f"raffle:enter:{raffle_id}"
+        self._enter.emoji = "🎟️"
+        self._leave.custom_id = f"raffle:leave:{raffle_id}"
+        self._view.custom_id = f"raffle:view:{raffle_id}"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return True
+
+    @discord.ui.button(style=discord.ButtonStyle.success, label="Enter")
+    async def _enter(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
+        await self.cog.handle_enter(interaction, self.guild_id, self.raffle_id)
+
+    @discord.ui.button(style=discord.ButtonStyle.secondary, label="Leave")
+    async def _leave(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
+        await self.cog.handle_leave(interaction, self.guild_id, self.raffle_id)
+
+    @discord.ui.button(style=discord.ButtonStyle.primary, label="View entrants")
+    async def _view(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # type: ignore
+        await self.cog.handle_view(interaction, self.guild_id, self.raffle_id)
+
+
+class Raffles(commands.Cog):
+    """Simple button-only raffles/giveaways."""
+
+    __author__ = "DreadedZombie"
+    __version__ = "0.1.0"
+
+    def __init__(self, bot: Red) -> None:
+        self.bot = bot
+        self.config = Config.get_conf(self, identifier=1234567890, force_registration=True)
+        default_guild = {"raffles": {}, "next_id": 1}
+        self.config.register_guild(**default_guild)
+        self._loop: Optional[asyncio.Task] = None
+
+    async def cog_load(self) -> None:
+        if not self._loop or self._loop.done():
+            self._loop = asyncio.create_task(self._raffle_loop())
+        await self._restore_views()
+
+    def cog_unload(self) -> None:
+        if self._loop:
+            self._loop.cancel()
+
+    @commands.group(name="raffle", aliases=["ra"], invoke_without_command=True)
+    @commands.guild_only()
+    async def raffle_group(self, ctx: commands.Context) -> None:
+        """Manage raffles."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send(embed=self._build_help_embed(ctx.clean_prefix))
+
+    @raffle_group.command(name="start", hidden=True)
+    @commands.admin_or_permissions(manage_guild=True)
+    async def raffle_start(
+        self,
+        ctx: commands.Context,
+        prize: str,
+        duration: Optional[str] = "1h",
+        max_winners: Optional[int] = 1,
+    ) -> None:
+        """Start a raffle. Duration examples: 30m, 1h, 1d."""
+        seconds = parse_duration(duration)
+        max_winners = max(1, min(25, max_winners or 1))
+        raffle_id = await self._next_id(ctx.guild.id)
+        ends_at = int(time.time() + seconds) if seconds > 0 else None
+        raffle = {
+            "id": raffle_id,
+            "title": f"Raffle #{raffle_id}",
+            "prize": prize,
+            "host_id": ctx.author.id,
+            "channel_id": ctx.channel.id,
+            "message_id": None,
+            "max_winners": max_winners,
+            "ends_at": ends_at,
+            "entrants": [],
+            "winners": [],
+            "status": "open",
+            "created_at": int(time.time()),
+        }
+        view = RaffleView(self, ctx.guild.id, raffle_id)
+        embed = build_raffle_embed(raffle, ctx.guild)
+        message = await ctx.send(embed=embed, view=view)
+        raffle["message_id"] = message.id
+        await self._save_raffle(ctx.guild.id, raffle)
+        await ctx.send(f"Raffle `{prize}` started. ID: {raffle_id}")
+
+    @raffle_group.command(name="end", hidden=True)
+    @commands.admin_or_permissions(manage_guild=True)
+    async def raffle_end(self, ctx: commands.Context, raffle_id: int) -> None:
+        """Close a raffle immediately and roll winners."""
+        raffle = await self._get_raffle(ctx.guild.id, raffle_id)
+        if not raffle:
+            await ctx.send("Raffle not found.")
+            return
+        if raffle.get("status") == "closed":
+            await ctx.send("That raffle is already closed.")
+            return
+        await self._close_raffle(ctx.guild, raffle)
+        await ctx.send(f"Raffle {raffle_id} closed.")
+
+    @raffle_group.command(name="list", hidden=True)
+    async def raffle_list(self, ctx: commands.Context) -> None:
+        """List active raffles."""
+        raffles = await self.config.guild(ctx.guild).raffles()
+        open_raffles = [r for r in raffles.values() if r.get("status") == "open"]
+        if not open_raffles:
+            await ctx.send("No active raffles.")
+            return
+        lines = []
+        for raffle in sorted(open_raffles, key=lambda r: r.get("id")):
+            ends_at = raffle.get("ends_at")
+            end_text = f"ends <t:{int(ends_at)}:R>" if ends_at else "manual close"
+            lines.append(f"ID {raffle.get('id')}: {raffle.get('prize')} ({end_text})")
+        await ctx.send("\n".join(lines))
+
+    async def handle_enter(self, interaction: discord.Interaction, guild_id: int, raffle_id: int) -> None:
+        raffle = await self._get_raffle(guild_id, raffle_id)
+        if not raffle or raffle.get("status") != "open":
+            await interaction.response.send_message("This raffle is closed.", ephemeral=True)
+            return
+        user_id = interaction.user.id
+        entrants: List[int] = raffle.get("entrants") or []
+        if user_id in entrants:
+            await interaction.response.send_message("You are already entered.", ephemeral=True)
+            return
+        entrants.append(user_id)
+        raffle["entrants"] = entrants
+        await self._save_raffle(guild_id, raffle)
+        await self._refresh_message(guild_id, raffle)
+        await interaction.response.send_message("You have entered the raffle.", ephemeral=True)
+
+    async def handle_leave(self, interaction: discord.Interaction, guild_id: int, raffle_id: int) -> None:
+        raffle = await self._get_raffle(guild_id, raffle_id)
+        if not raffle or raffle.get("status") != "open":
+            await interaction.response.send_message("This raffle is closed.", ephemeral=True)
+            return
+        user_id = interaction.user.id
+        entrants: List[int] = raffle.get("entrants") or []
+        if user_id not in entrants:
+            await interaction.response.send_message("You are not entered.", ephemeral=True)
+            return
+        entrants = [uid for uid in entrants if uid != user_id]
+        raffle["entrants"] = entrants
+        await self._save_raffle(guild_id, raffle)
+        await self._refresh_message(guild_id, raffle)
+        await interaction.response.send_message("You have left the raffle.", ephemeral=True)
+
+    async def handle_view(self, interaction: discord.Interaction, guild_id: int, raffle_id: int) -> None:
+        raffle = await self._get_raffle(guild_id, raffle_id)
+        if not raffle:
+            await interaction.response.send_message("Raffle not found.", ephemeral=True)
+            return
+        embed = build_entrants_embed(raffle, interaction.guild)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def _raffle_loop(self) -> None:
+        await self.bot.wait_until_red_ready()
+        while True:
+            try:
+                for guild in self.bot.guilds:
+                    raffles = await self.config.guild(guild).raffles()
+                    for raffle in raffles.values():
+                        if raffle.get("status") != "open":
+                            continue
+                        ends_at = raffle.get("ends_at")
+                        if ends_at and time.time() >= ends_at:
+                            await self._close_raffle(guild, raffle)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
+            await asyncio.sleep(30)
+
+    async def _close_raffle(self, guild: discord.Guild, raffle: Dict[str, Any]) -> None:
+        entrants: List[int] = raffle.get("entrants") or []
+        max_winners = raffle.get("max_winners") or 1
+        winners: List[int] = []
+        if entrants:
+            winners = random.sample(entrants, k=min(len(entrants), max_winners))
+        raffle["status"] = "closed"
+        raffle["winners"] = winners
+        await self._save_raffle(guild.id, raffle)
+        await self._refresh_message(guild.id, raffle)
+        channel = guild.get_channel(raffle.get("channel_id"))
+        if isinstance(channel, discord.TextChannel):
+            if winners:
+                mentions = ", ".join(f"<@{uid}>" for uid in winners)
+                await channel.send(f"Raffle {raffle.get('id')} ended! Winners: {mentions}")
+            else:
+                await channel.send(f"Raffle {raffle.get('id')} ended with no entrants.")
+
+    async def _refresh_message(self, guild_id: int, raffle: Dict[str, Any]) -> None:
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return
+        channel = guild.get_channel(raffle.get("channel_id"))
+        if not isinstance(channel, discord.TextChannel):
+            return
+        message_id = raffle.get("message_id")
+        if not message_id:
+            return
+        try:
+            message = await channel.fetch_message(message_id)
+        except discord.NotFound:
+            return
+        embed = build_raffle_embed(raffle, guild)
+        view = None
+        if raffle.get("status") == "open":
+            view = RaffleView(self, guild_id, raffle.get("id"))
+        await message.edit(embed=embed, view=view)
+
+    async def _get_raffle(self, guild_id: int, raffle_id: int) -> Optional[Dict[str, Any]]:
+        raffles = await self.config.guild_from_id(guild_id).raffles()
+        return raffles.get(str(raffle_id)) or raffles.get(int(raffle_id))  # type: ignore
+
+    async def _save_raffle(self, guild_id: int, raffle: Dict[str, Any]) -> None:
+        raffles = await self.config.guild_from_id(guild_id).raffles()
+        raffles[str(raffle["id"])] = raffle
+        await self.config.guild_from_id(guild_id).raffles.set(raffles)
+
+    async def _next_id(self, guild_id: int) -> int:
+        next_id = await self.config.guild_from_id(guild_id).next_id()
+        await self.config.guild_from_id(guild_id).next_id.set(next_id + 1)
+        return next_id
+
+    async def _restore_views(self) -> None:
+        for guild in self.bot.guilds:
+            raffles = await self.config.guild(guild).raffles()
+            for raffle in raffles.values():
+                if raffle.get("status") == "open":
+                    self.bot.add_view(RaffleView(self, guild.id, raffle.get("id")))
+
+    def _build_help_embed(self, prefix: str) -> discord.Embed:
+        embed = discord.Embed(
+            title="Raffle commands",
+            description="Button-only giveaways. Use the Enter button to join.",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="Basics",
+            value=(
+                f"`{prefix}raffle start <prize> [duration] [max_winners]` - start a raffle\n"
+                f"`{prefix}raffle end <id>` - end now and roll winners\n"
+                f"`{prefix}raffle list` - list active raffles"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Duration tips",
+            value="Use `30m`, `1h`, `1d`, or `0/forever` for manual close.",
+            inline=False,
+        )
+        embed.set_footer(text="Aliases: raffle / ra")
+        return embed
