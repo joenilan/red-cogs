@@ -87,6 +87,23 @@ def format_number(value: Optional[float]) -> str:
         return str(value)
 
 
+def format_duration_ms(value: Any) -> str:
+    try:
+        ms = float(value)
+    except (TypeError, ValueError):
+        return "Unknown"
+    if ms < 0:
+        ms = 0.0
+    seconds = ms / 1000.0
+    if seconds < 60:
+        return f"{seconds:.2f}s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{int(minutes)}m {seconds:05.2f}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{int(hours)}h {int(minutes):02d}m {seconds:05.2f}s"
+
+
 def member_color(member: str) -> discord.Color:
     if not member:
         return discord.Color.blurple()

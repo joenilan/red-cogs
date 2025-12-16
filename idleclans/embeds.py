@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 import discord
@@ -8,6 +9,7 @@ import discord
 from .utils import (
     SKILL_ICON_MAP,
     XPTable,
+    format_duration_ms,
     format_number,
     format_timestamp,
     member_color,
@@ -248,42 +250,207 @@ def build_clanhistory_embed(
             embed.add_field(name=f"Logs ({idx})", value="\n".join(chunk), inline=False)
     embed.set_footer(text="Data from IdleClans API")
     return embed
+def build_clancup_top_embed(data: Dict[str, Any], *, game_mode: str = "Default") -> discord.Embed:
+    embed = discord.Embed(
+        title="Current Clan Cup leaders",
+        description=f"Mode: **{game_mode}**",
+        color=discord.Color.blue(),
+    )
+
+    score_lines: List[str] = []
+    for bucket in data.get("topScoreClans") or []:
+        if not isinstance(bucket, dict):
+            continue
+        objective = bucket.get("objective") or "Objective"
+        standings = bucket.get("standings") or []
+        if not standings or not isinstance(standings, list):
+            continue
+        top = standings[0] if isinstance(standings[0], dict) else None
+        if not top:
+            continue
+        clan = top.get("clanName") or "Unknown"
+        score = top.get("score")
+        score_lines.append(f"{_humanize_identifier(objective)}: **{clan}** — {format_number(score)}")
+
+    time_lines: List[str] = []
+    for bucket in data.get("topTimeClans") or []:
+        if not isinstance(bucket, dict):
+            continue
+        objective = bucket.get("objective") or "Objective"
+        standings = bucket.get("standings") or []
+        if not standings or not isinstance(standings, list):
+            continue
+        top = standings[0] if isinstance(standings[0], dict) else None
+        if not top:
+            continue
+        clan = top.get("clanName") or "Unknown"
+        best = top.get("bestTime") or {}
+        time_ms = best.get("time")
+        time_lines.append(
+            f"{_humanize_identifier(objective)}: **{clan}** — {format_duration_ms(time_ms)}"
+        )
+
+    _add_chunked_lines(embed, "Top score objectives", score_lines)
+    _add_chunked_lines(embed, "Top time objectives", time_lines)
+    embed.set_footer(text="Data from IdleClans API")
+    return embed
 
 
-def build_clancup_clan_embed(clan_name: str, data: Dict[str, Any]) -> discord.Embed:
+def build_clancup_clan_embed(
+    clan_name: str,
+    standings: List[Dict[str, Any]],
+    *,
+    game_mode: str = "Default",
+    previous_cup: bool = False,
+) -> discord.Embed:
+    tag = " (previous cup)" if previous_cup else ""
     embed = discord.Embed(
         title=f"Clan Cup standings: {clan_name}",
+        description=f"Mode: **{game_mode}**{tag}",
         color=discord.Color.green(),
     )
-    standings = data.get("objectiveStandings") or []
-    for standing in standings:
-        objective = standing.get("objectiveType") or "Objective"
-        rank = standing.get("rank")
-        score = standing.get("score")
+
+    score_entries: List[tuple[int, str]] = []
+    time_entries: List[tuple[int, str]] = []
+    for entry in standings or []:
+        if not isinstance(entry, dict):
+            continue
+        objective = entry.get("objective") or entry.get("objectiveType") or "Objective"
+        rank_raw = entry.get("rank")
+        try:
+            rank = int(rank_raw)
+        except (TypeError, ValueError):
+            rank = 999999
+        best_time = entry.get("bestTime")
+        if isinstance(best_time, dict):
+            time_ms = best_time.get("time")
+            achieved_at = best_time.get("achievedAt")
+            achieved = ""
+            if achieved_at:
+                achieved = format_timestamp(achieved_at).split(" ", 1)[0]
+                achieved = f" ({achieved})"
+            line = f"#{rank} {_humanize_identifier(objective)}: {format_duration_ms(time_ms)}{achieved}"
+            time_entries.append((rank, line))
+            continue
+        score = entry.get("score")
+        line = f"#{rank} {_humanize_identifier(objective)}: {format_number(score)}"
+        score_entries.append((rank, line))
+
+    score_entries.sort(key=lambda item: item[0])
+    time_entries.sort(key=lambda item: item[0])
+
+    _add_chunked_lines(embed, "Score objectives", [line for _, line in score_entries])
+    _add_chunked_lines(embed, "Time objectives", [line for _, line in time_entries])
+
+    embed.set_footer(text="Data from IdleClans API")
+    return embed
+
+
+def build_clancup_objective_embed(
+    clan_name: str,
+    standing: Dict[str, Any],
+    *,
+    game_mode: str = "Default",
+    previous_cup: bool = False,
+) -> discord.Embed:
+    objective = standing.get("objective") or standing.get("objectiveType") or "Objective"
+    pretty = _humanize_identifier(objective)
+    tag = " (previous cup)" if previous_cup else ""
+    embed = discord.Embed(
+        title=f"{clan_name} — {pretty}",
+        description=f"Mode: **{game_mode}**{tag}",
+        color=discord.Color.green(),
+    )
+    rank = standing.get("rank")
+    embed.add_field(name="Rank", value=f"#{format_number(rank)}", inline=True)
+    if isinstance(standing.get("bestTime"), dict):
+        best = standing["bestTime"]
+        embed.add_field(name="Best time", value=format_duration_ms(best.get("time")), inline=True)
+        achieved = best.get("achievedAt")
+        if achieved:
+            embed.add_field(name="Achieved", value=format_timestamp(achieved), inline=False)
+    else:
+        embed.add_field(name="Score", value=format_number(standing.get("score")), inline=True)
+    embed.set_footer(text="Data from IdleClans API")
+    return embed
+
+
+def build_clan_leaderboard_embed(
+    profile: Dict[str, Any],
+    *,
+    game_mode: str = "Default",
+) -> discord.Embed:
+    clan_name = profile.get("username") or "Unknown clan"
+    total = profile.get("totalLevelResult") or {}
+    embed = discord.Embed(
+        title=f"{clan_name} clan leaderboard",
+        description=f"Mode: **{game_mode}**",
+        color=discord.Color.dark_gold(),
+    )
+    total_level = total.get("totalLevel")
+    total_rank = total.get("rank")
+    total_score = total.get("score")
+    if total_level is not None:
         embed.add_field(
-            name=objective,
-            value=f"Rank {rank} — {format_number(score)} pts",
-            inline=False,
+            name="Total level",
+            value=f"{format_number(total_level)} (#{format_number(total_rank)})",
+            inline=True,
+        )
+    if total_score is not None:
+        embed.add_field(name="Total XP", value=format_number(total_score), inline=True)
+
+    skills = profile.get("fields") or {}
+    entries: List[tuple[int, str]] = []
+    for skill_key, payload in skills.items():
+        if not isinstance(payload, dict):
+            continue
+        rank_raw = payload.get("rank")
+        try:
+            rank_val = int(rank_raw)
+        except (TypeError, ValueError):
+            rank_val = 999999
+        score = payload.get("score")
+        icon = SKILL_ICON_MAP.get(str(skill_key).lower(), "•")
+        pretty = str(skill_key).replace("_", " ").title()
+        entries.append(
+            (
+                rank_val,
+                f"{icon} **{pretty}**\n#{format_number(rank_raw)} • {format_number(score)} XP",
+            )
+        )
+    entries.sort(key=lambda item: item[0])
+    if entries:
+        _add_skill_grid_fields(
+            embed,
+            entries=[text for _, text in entries],
+            columns=3,
+            max_rows=7,
+            title="Skill ranks",
         )
     embed.set_footer(text="Data from IdleClans API")
     return embed
 
 
-def build_clancup_top_embed(data: Dict[str, Any]) -> discord.Embed:
+def build_clan_leaderboard_skill_embed(
+    profile: Dict[str, Any],
+    skill_key: str,
+    *,
+    game_mode: str = "Default",
+) -> discord.Embed:
+    clan_name = profile.get("username") or "Unknown clan"
+    skills = profile.get("fields") or {}
+    payload = skills.get(skill_key.lower()) or skills.get(skill_key) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    icon = SKILL_ICON_MAP.get(skill_key.lower(), "•")
+    pretty = skill_key.replace("_", " ").title()
     embed = discord.Embed(
-        title="Current Clan Cup leaders",
-        color=discord.Color.blue(),
+        title=f"{clan_name} — {pretty}",
+        description=f"Mode: **{game_mode}**",
+        color=discord.Color.dark_gold(),
     )
-    for category, standings in data.items():
-        if not isinstance(standings, list):
-            continue
-        lines = []
-        for entry in standings[:5]:
-            clan = entry.get("clanName") or "Unknown"
-            score = entry.get("score")
-            lines.append(f"{clan} — {format_number(score)} pts")
-        if lines:
-            embed.add_field(name=category, value="\n".join(lines), inline=False)
+    embed.add_field(name="Rank", value=f"#{format_number(payload.get('rank'))}", inline=True)
+    embed.add_field(name="XP", value=format_number(payload.get("score")), inline=True)
     embed.set_footer(text="Data from IdleClans API")
     return embed
 
@@ -417,3 +584,58 @@ def _add_skill_grid_fields(
             value=f"_...and {remaining} more skills_",
             inline=False,
         )
+
+
+_CAMEL_SPLIT_RE = re.compile(r"(?<!^)(?=[A-Z])")
+
+
+def _humanize_identifier(value: str) -> str:
+    if not value:
+        return "Unknown"
+    value = str(value).replace("_", " ").replace("-", " ")
+    value = _CAMEL_SPLIT_RE.sub(" ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
+def _add_chunked_lines(embed: discord.Embed, header: str, lines: List[str]) -> None:
+    if not lines:
+        embed.add_field(name=header, value="No data.", inline=False)
+        return
+    chunk: List[str] = []
+    chunk_len = 0
+    idx = 1
+    for line in lines:
+        if chunk_len + len(line) + 1 > 900:
+            suffix = f" ({idx})" if idx > 1 else ""
+            embed.add_field(name=f"{header}{suffix}", value="\n".join(chunk), inline=False)
+            idx += 1
+            chunk = []
+            chunk_len = 0
+        chunk.append(line)
+        chunk_len += len(line) + 1
+    if chunk:
+        suffix = f" ({idx})" if idx > 1 else ""
+        embed.add_field(name=f"{header}{suffix}", value="\n".join(chunk), inline=False)
+
+
+def build_active_clans_embed(clans: List[Dict[str, Any]]) -> discord.Embed:
+    embed = discord.Embed(
+        title="Most Active Clans",
+        description="Top clans by recent activity.",
+        color=discord.Color.gold(),
+    )
+    lines = []
+    for idx, clan in enumerate(clans, start=1):
+        name = clan.get("clanName") or "Unknown"
+        score = clan.get("activityScore") or 0
+        members = clan.get("memberCount") or 0
+        lines.append(f"**{idx}. {name}** — Score: `{score:.1f}` ({members} members)")
+
+    if not lines:
+        embed.description = "No active clans found."
+    else:
+        embed.description = "\n".join(lines)
+
+    embed.set_footer(text="Data from IdleClans API")
+    return embed

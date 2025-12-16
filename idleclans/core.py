@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import time
+import difflib
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
@@ -19,24 +20,31 @@ from .api import (
     fetch_clan_logs,
     fetch_clan_player_logs,
     fetch_clan_recruitment,
+    fetch_clancup_standing,
     fetch_clancup_standings,
     fetch_clancup_top_current,
+    fetch_leaderboard_profile,
     fetch_market_latest,
     fetch_market_value_history,
     fetch_market_volume_history,
     fetch_player_logs,
     fetch_player_profile,
+    fetch_clan_most_active,
 )
 from .embeds import (
     build_chat_recent_embed,
     build_clan_bank_embed,
     build_clancup_clan_embed,
+    build_clancup_objective_embed,
     build_clancup_top_embed,
+    build_clan_leaderboard_embed,
+    build_clan_leaderboard_skill_embed,
     build_clanhistory_embed,
     build_player_embed,
     build_recruitment_embed,
     build_single_skill_embed,
     build_skills_embed,
+    build_active_clans_embed,
 )
 from .market import (
     build_market_item_embed,
@@ -106,6 +114,7 @@ class IdleClans(commands.Cog):
         data_dir = Path(__file__).with_name("data")
         self._xp_table: XPTable = load_xp_table(data_dir.joinpath("xp_table.csv"))
         self._market_cache: Dict[str, Any] = {"items": [], "timestamp": 0}
+        self._clancup_cache: Dict[str, Any] = {"data": None, "timestamp": 0.0, "game_mode": "Default"}
         self._market_watch_task: Optional[asyncio.Task] = None
         self._chat_relay_task: Optional[asyncio.Task] = None
         self._summary_task: Optional[asyncio.Task] = None
@@ -419,6 +428,24 @@ class IdleClans(commands.Cog):
         embed = self._build_summary_embed(clan_name, entries)
         await ctx.send(embed=embed)
 
+    @idleclans_group.command(name="topclans")
+    async def idleclans_topclans(self, ctx: commands.Context, limit: int = 10) -> None:
+        """Show the most active clans on the leaderboard."""
+        session = self._ensure_session()
+        if not session:
+            await ctx.send("IdleClans session is not ready yet.")
+            return
+        limit = max(5, min(50, limit))
+        await ctx.typing()
+        try:
+            clans = await fetch_clan_most_active(session, limit)
+        except aiohttp.ClientError as exc:
+            self.log.warning("Top clans fetch failed: %s", exc)
+            await ctx.send("Could not reach the IdleClans API.")
+            return
+        embed = build_active_clans_embed(clans)
+        await ctx.send(embed=embed)
+
     @commands.command(name="skill", aliases=["sk"], hidden=True)
     @commands.cooldown(1, 5, commands.BucketType.user)
     async def idleclans_skill(
@@ -531,6 +558,68 @@ class IdleClans(commands.Cog):
             if cleaned in candidate:
                 return key
         return None
+
+    def _normalize_objective_query(self, query: str) -> str:
+        text = (query or "").strip().lower()
+        if not text:
+            return ""
+        text = text.replace("kill time", "speed").replace("killtime", "speed")
+        return re.sub(r"[^a-z0-9]+", "", text)
+
+    def _normalize_identifier(self, value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+
+    def _match_clancup_objective(
+        self, query: str, objectives: Iterable[str]
+    ) -> List[str]:
+        cleaned = self._normalize_objective_query(query)
+        if not cleaned:
+            return []
+        exact: List[str] = []
+        contains: List[str] = []
+        normalized_map: Dict[str, str] = {}
+        for obj in objectives:
+            norm = self._normalize_identifier(obj)
+            if not norm:
+                continue
+            normalized_map[norm] = obj
+            if norm == cleaned:
+                exact.append(obj)
+            elif cleaned in norm:
+                contains.append(obj)
+        if exact:
+            return exact[:1]
+        if contains:
+            contains.sort(key=len)
+            return contains
+        close = difflib.get_close_matches(cleaned, list(normalized_map.keys()), n=5, cutoff=0.65)
+        return [normalized_map[norm] for norm in close if norm in normalized_map]
+
+    async def _get_clancup_top_current(
+        self, session: aiohttp.ClientSession, *, game_mode: str = "Default"
+    ) -> Dict[str, Any]:
+        now = time.time()
+        cached = self._clancup_cache
+        if (
+            cached.get("data")
+            and cached.get("game_mode") == game_mode
+            and now - float(cached.get("timestamp") or 0.0) < 600
+        ):
+            return cached["data"]
+        data = await fetch_clancup_top_current(session, game_mode=game_mode)
+        self._clancup_cache = {"data": data, "timestamp": now, "game_mode": game_mode}
+        return data
+
+    def _clancup_objectives_from_top(self, data: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+        score_objs: List[str] = []
+        time_objs: List[str] = []
+        for bucket in data.get("topScoreClans") or []:
+            if isinstance(bucket, dict) and bucket.get("objective"):
+                score_objs.append(str(bucket["objective"]))
+        for bucket in data.get("topTimeClans") or []:
+            if isinstance(bucket, dict) and bucket.get("objective"):
+                time_objs.append(str(bucket["objective"]))
+        return score_objs, time_objs
 
     def _parse_bank_query(
         self, query: str, *, fallback_clan: str, fallback_limit: int
@@ -1254,6 +1343,7 @@ class IdleClans(commands.Cog):
         if not session:
             await ctx.send("IdleClans session is not ready yet. Try again in a moment.")
             return
+        game_mode = "Default"
         target = clan_name.strip() if clan_name else None
         if not target:
             target = await self.config.guild(ctx.guild).clan_name()
@@ -1262,7 +1352,7 @@ class IdleClans(commands.Cog):
             return
         await ctx.typing()
         try:
-            data = await fetch_clancup_standings(session, target)
+            standings = await fetch_clancup_standings(session, target, game_mode=game_mode)
         except aiohttp.ClientResponseError as exc:
             if exc.status == 404:
                 await ctx.send(f"Clan `{target}` not found in current Clan Cup.")
@@ -1274,7 +1364,7 @@ class IdleClans(commands.Cog):
             self.log.warning("Network error while fetching Clan Cup info: %s", exc)
             await ctx.send("Could not reach the IdleClans API. Try again shortly.")
             return
-        embed = build_clancup_clan_embed(target, data)
+        embed = build_clancup_clan_embed(target, standings, game_mode=game_mode)
         await ctx.send(embed=embed)
 
     @clancup_group.command(name="standings")
@@ -1284,14 +1374,157 @@ class IdleClans(commands.Cog):
         if not session:
             await ctx.send("IdleClans session is not ready yet. Try again in a moment.")
             return
+        game_mode = "Default"
         await ctx.typing()
         try:
-            data = await fetch_clancup_top_current(session)
+            data = await self._get_clancup_top_current(session, game_mode=game_mode)
         except aiohttp.ClientError as exc:
             self.log.warning("Error fetching Clan Cup standings: %s", exc)
             await ctx.send("Could not reach the IdleClans API. Try again shortly.")
             return
-        embed = build_clancup_top_embed(data)
+        embed = build_clancup_top_embed(data, game_mode=game_mode)
+        await ctx.send(embed=embed)
+
+    @clancup_group.command(name="objective", aliases=["obj", "o"])
+    async def clancup_objective(
+        self,
+        ctx: commands.Context,
+        objective_query: str,
+        *,
+        clan_name: Optional[str] = None,
+    ) -> None:
+        """Show a clan's rank in a specific Clan Cup objective."""
+        session = self._ensure_session()
+        if not session:
+            await ctx.send("IdleClans session is not ready yet. Try again in a moment.")
+            return
+        game_mode = "Default"
+        target = clan_name.strip() if clan_name else None
+        if not target:
+            target = await self.config.guild(ctx.guild).clan_name()
+        if not target:
+            await ctx.send("No clan configured. Pass a clan name to query.")
+            return
+        objective_query = objective_query.strip()
+        if not objective_query:
+            await ctx.send("Provide an objective to look up (e.g. `spider speed`, `citadel completions`).")
+            return
+        await ctx.typing()
+        try:
+            top = await self._get_clancup_top_current(session, game_mode=game_mode)
+        except aiohttp.ClientError as exc:
+            self.log.warning("Clan Cup objective lookup failed: %s", exc)
+            await ctx.send("Could not reach the IdleClans API. Try again shortly.")
+            return
+        score_objs, time_objs = self._clancup_objectives_from_top(top)
+        all_objectives = score_objs + time_objs
+        matches = self._match_clancup_objective(objective_query, all_objectives)
+        if not matches:
+            await ctx.send(
+                "Objective not found. Use `clancup standings` to see objective names, "
+                "or try a more specific query."
+            )
+            return
+        if len(matches) > 1:
+            preview = ", ".join(matches[:8])
+            await ctx.send(f"Objective query is ambiguous. Try one of: {preview}")
+            return
+        objective_type = matches[0]
+        try:
+            standing = await fetch_clancup_standing(
+                session, target, objective_type, game_mode=game_mode
+            )
+        except aiohttp.ClientResponseError as exc:
+            if exc.status == 404:
+                await ctx.send(f"No standing found for `{target}` in `{objective_type}` yet.")
+                return
+            self.log.warning("Clan Cup standing API error (%s): %s", exc.status, exc.message)
+            await ctx.send("IdleClans API returned an error while fetching that objective.")
+            return
+        except aiohttp.ClientError as exc:
+            self.log.warning("Network error while fetching Clan Cup objective: %s", exc)
+            await ctx.send("Could not reach the IdleClans API. Try again shortly.")
+            return
+        embed = build_clancup_objective_embed(target, standing, game_mode=game_mode)
+        await ctx.send(embed=embed)
+
+    @commands.group(name="clanlb", aliases=["clb"], invoke_without_command=True, hidden=True)
+    async def clanlb_group(
+        self, ctx: commands.Context, *, clan_name: Optional[str] = None
+    ) -> None:
+        """Show clan ranks from the clan skill leaderboards."""
+        session = self._ensure_session()
+        if not session:
+            await ctx.send("IdleClans session is not ready yet. Try again in a moment.")
+            return
+        game_mode = "Default"
+        target = clan_name.strip() if clan_name else None
+        if not target:
+            target = await self.config.guild(ctx.guild).clan_name()
+        if not target:
+            await ctx.send("No clan configured. Pass a clan name to query.")
+            return
+        await ctx.typing()
+        leaderboard_name = "clans:default"
+        try:
+            profile = await fetch_leaderboard_profile(session, leaderboard_name, target)
+        except aiohttp.ClientResponseError as exc:
+            if exc.status == 404:
+                await ctx.send(f"Clan `{target}` was not found on the clan leaderboard.")
+                return
+            self.log.warning("Clan leaderboard API error (%s): %s", exc.status, exc.message)
+            await ctx.send("IdleClans API returned an error while fetching that clan leaderboard.")
+            return
+        except aiohttp.ClientError as exc:
+            self.log.warning("Network error while fetching clan leaderboard: %s", exc)
+            await ctx.send("Could not reach the IdleClans API. Try again shortly.")
+            return
+        embed = build_clan_leaderboard_embed(profile, game_mode=game_mode)
+        await ctx.send(embed=embed)
+
+    @clanlb_group.command(name="skill", aliases=["sk"])
+    async def clanlb_skill(
+        self,
+        ctx: commands.Context,
+        skill_name: str,
+        *,
+        clan_name: Optional[str] = None,
+    ) -> None:
+        """Show a clan's rank for a single skill on the clan leaderboards."""
+        session = self._ensure_session()
+        if not session:
+            await ctx.send("IdleClans session is not ready yet. Try again in a moment.")
+            return
+        game_mode = "Default"
+        target = clan_name.strip() if clan_name else None
+        if not target:
+            target = await self.config.guild(ctx.guild).clan_name()
+        if not target:
+            await ctx.send("No clan configured. Pass a clan name to query.")
+            return
+        await ctx.typing()
+        leaderboard_name = "clans:default"
+        try:
+            profile = await fetch_leaderboard_profile(session, leaderboard_name, target)
+        except aiohttp.ClientResponseError as exc:
+            if exc.status == 404:
+                await ctx.send(f"Clan `{target}` was not found on the clan leaderboard.")
+                return
+            self.log.warning("Clan leaderboard API error (%s): %s", exc.status, exc.message)
+            await ctx.send("IdleClans API returned an error while fetching that clan leaderboard.")
+            return
+        except aiohttp.ClientError as exc:
+            self.log.warning("Network error while fetching clan leaderboard: %s", exc)
+            await ctx.send("Could not reach the IdleClans API. Try again shortly.")
+            return
+
+        skills = profile.get("fields") or {}
+        match = self._match_skill_key(skill_name, skills)
+        if not match:
+            suggestions = ", ".join(list(skills.keys())[:10]) or "no skills returned"
+            await ctx.send(f"Skill `{skill_name}` was not found. Try one of: {suggestions}")
+            return
+        embed = build_clan_leaderboard_skill_embed(profile, match, game_mode=game_mode)
         await ctx.send(embed=embed)
 
     @commands.group(name="chat", aliases=["c"], hidden=True)
@@ -1511,7 +1744,8 @@ class IdleClans(commands.Cog):
                 f"`{prefix}recruitment [clan]` (`{prefix}rec`) - recruitment snapshot\n"
                 f"`{prefix}clanhistory <ign> [clan|global]` (`{prefix}ch`) - recent logs\n"
                 f"`{prefix}bank [clan] [limit=50]` (`{prefix}clanbank`) - recent bank deposits/withdrawals\n"
-                f"`{prefix}clancup [clan]` / `{prefix}clancup standings` (`{prefix}cc`) - objective standings"
+                f"`{prefix}clancup [clan]` / `{prefix}clancup objective <objective>` / `{prefix}clancup standings` (`{prefix}cc`) - Clan Cup ranks\n"
+                f"`{prefix}clanlb [clan]` / `{prefix}clanlb skill <skill>` (`{prefix}clb`) - clan leaderboard ranks"
             ),
             inline=False,
         )
