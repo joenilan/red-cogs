@@ -377,6 +377,7 @@ def build_clancup_objective_embed(
 
 def build_clan_leaderboard_embed(
     profile: Dict[str, Any],
+    xp_table: XPTable,
     *,
     game_mode: str = "Default",
 ) -> discord.Embed:
@@ -404,18 +405,26 @@ def build_clan_leaderboard_embed(
     for skill_key, payload in skills.items():
         if not isinstance(payload, dict):
             continue
+        normalized = str(skill_key).lower()
+        if normalized not in SKILL_ICON_MAP:
+            continue
         rank_raw = payload.get("rank")
         try:
             rank_val = int(rank_raw)
         except (TypeError, ValueError):
             rank_val = 999999
         score = payload.get("score")
-        icon = SKILL_ICON_MAP.get(str(skill_key).lower(), "•")
+        icon = SKILL_ICON_MAP.get(normalized, "•")
         pretty = str(skill_key).replace("_", " ").title()
+        try:
+            xp_value = float(score)
+        except (TypeError, ValueError):
+            xp_value = 0.0
+        level, bar = xp_table.progress(xp_value)
         entries.append(
             (
                 rank_val,
-                f"{icon} **{pretty}**\n#{format_number(rank_raw)} • {format_number(score)} XP",
+                f"{icon} **{pretty}** - Lvl {level} (#{format_number(rank_raw)})\n{bar}",
             )
         )
     entries.sort(key=lambda item: item[0])
@@ -427,6 +436,46 @@ def build_clan_leaderboard_embed(
             max_rows=7,
             title="Skill ranks",
         )
+
+    activity_entries = _build_clan_activity_entries(skills)
+    if activity_entries:
+        _add_skill_grid_fields(
+            embed,
+            entries=activity_entries,
+            columns=2,
+            max_rows=3,
+            title="Boss / activity ranks",
+            more_label="activities",
+        )
+    embed.set_footer(text="Data from IdleClans API")
+    return embed
+
+
+def build_clan_leaderboard_activities_embed(
+    profile: Dict[str, Any],
+    *,
+    game_mode: str = "Default",
+) -> discord.Embed:
+    clan_name = profile.get("username") or "Unknown clan"
+    embed = discord.Embed(
+        title=f"{clan_name} boss / activity leaderboards",
+        description=f"Mode: **{game_mode}**",
+        color=discord.Color.dark_gold(),
+    )
+    fields = profile.get("fields") or {}
+    entries = _build_clan_activity_entries(fields)
+    if not entries:
+        embed.description = (embed.description or "") + "\nNo activity fields were returned."
+        embed.set_footer(text="Data from IdleClans API")
+        return embed
+    _add_skill_grid_fields(
+        embed,
+        entries=entries,
+        columns=2,
+        max_rows=10,
+        title="Boss / activity ranks",
+        more_label="activities",
+    )
     embed.set_footer(text="Data from IdleClans API")
     return embed
 
@@ -434,6 +483,7 @@ def build_clan_leaderboard_embed(
 def build_clan_leaderboard_skill_embed(
     profile: Dict[str, Any],
     skill_key: str,
+    xp_table: XPTable,
     *,
     game_mode: str = "Default",
 ) -> discord.Embed:
@@ -444,12 +494,19 @@ def build_clan_leaderboard_skill_embed(
         payload = {}
     icon = SKILL_ICON_MAP.get(skill_key.lower(), "•")
     pretty = skill_key.replace("_", " ").title()
+    try:
+        xp_value = float(payload.get("score") or 0)
+    except (TypeError, ValueError):
+        xp_value = 0.0
+    level, bar = xp_table.progress(xp_value)
     embed = discord.Embed(
         title=f"{clan_name} — {pretty}",
         description=f"Mode: **{game_mode}**",
         color=discord.Color.dark_gold(),
     )
     embed.add_field(name="Rank", value=f"#{format_number(payload.get('rank'))}", inline=True)
+    embed.add_field(name="Level", value=str(level), inline=True)
+    embed.add_field(name="Progress", value=bar, inline=False)
     embed.add_field(name="XP", value=format_number(payload.get("score")), inline=True)
     embed.set_footer(text="Data from IdleClans API")
     return embed
@@ -541,6 +598,30 @@ def build_single_skill_embed(
     return embed
 
 
+def build_clan_leaderboard_field_embed(
+    profile: Dict[str, Any],
+    field_key: str,
+    *,
+    game_mode: str = "Default",
+) -> discord.Embed:
+    clan_name = profile.get("username") or "Unknown clan"
+    fields = profile.get("fields") or {}
+    payload = fields.get(field_key.lower()) or fields.get(field_key) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    icon = _CLAN_ACTIVITY_ICON_MAP.get(field_key.lower(), "🏆")
+    pretty = _humanize_identifier(field_key)
+    embed = discord.Embed(
+        title=f"{clan_name} — {pretty}",
+        description=f"Mode: **{game_mode}**",
+        color=discord.Color.dark_gold(),
+    )
+    embed.add_field(name="Rank", value=f"#{format_number(payload.get('rank'))}", inline=True)
+    embed.add_field(name="Score", value=format_number(payload.get("score")), inline=True)
+    embed.set_footer(text="Data from IdleClans API")
+    return embed
+
+
 def _build_skill_entries(skills: Dict[str, Any], xp_table: XPTable) -> List[str]:
     entries: List[str] = []
     for name, raw_xp in sorted(skills.items(), key=lambda item: float(item[1]), reverse=True):
@@ -562,6 +643,7 @@ def _add_skill_grid_fields(
     columns: int,
     max_rows: int,
     title: Optional[str] = None,
+    more_label: str = "skills",
 ) -> None:
     column_chunks: List[List[str]] = [[] for _ in range(columns)]
     limit = columns * max_rows
@@ -579,14 +661,34 @@ def _add_skill_grid_fields(
         header_used = True or header_used
     remaining = len(entries) - limit
     if remaining > 0:
+        label = (more_label or "").strip()
+        value = f"_...and {remaining} more {label}_" if label else f"_...and {remaining} more_"
         embed.add_field(
             name="\u200b",
-            value=f"_...and {remaining} more skills_",
+            value=value,
             inline=False,
         )
 
 
 _CAMEL_SPLIT_RE = re.compile(r"(?<!^)(?=[A-Z])")
+
+_CLAN_ACTIVITY_ICON_MAP = {
+    "bloodmoon_massacre": "🌕",
+    "chimera": "🐲",
+    "devil": "😈",
+    "griffin": "🦅",
+    "guardians_of_the_citadel": "🏛️",
+    "hades": "🔥",
+    "kronos": "⏳",
+    "malignant_spider": "🕷️",
+    "medusa": "🐍",
+    "mesines": "🦂",
+    "otherworldly_golem": "🗿",
+    "reckoning_of_the_gods": "⚔️",
+    "skeleton_warrior": "💀",
+    "sobek": "🐊",
+    "zeus": "⚡",
+}
 
 
 def _humanize_identifier(value: str) -> str:
@@ -595,7 +697,7 @@ def _humanize_identifier(value: str) -> str:
     value = str(value).replace("_", " ").replace("-", " ")
     value = _CAMEL_SPLIT_RE.sub(" ", value)
     value = re.sub(r"\s+", " ", value).strip()
-    return value
+    return value.title()
 
 
 def _add_chunked_lines(embed: discord.Embed, header: str, lines: List[str]) -> None:
@@ -617,6 +719,34 @@ def _add_chunked_lines(embed: discord.Embed, header: str, lines: List[str]) -> N
     if chunk:
         suffix = f" ({idx})" if idx > 1 else ""
         embed.add_field(name=f"{header}{suffix}", value="\n".join(chunk), inline=False)
+
+
+def _build_clan_activity_entries(
+    fields: Dict[str, Any],
+) -> List[str]:
+    entries: List[tuple[int, str]] = []
+    for key, payload in (fields or {}).items():
+        normalized = str(key).lower()
+        if normalized in SKILL_ICON_MAP:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        rank_raw = payload.get("rank")
+        try:
+            rank_val = int(rank_raw)
+        except (TypeError, ValueError):
+            rank_val = 999999
+        score = payload.get("score")
+        icon = _CLAN_ACTIVITY_ICON_MAP.get(normalized, "🏆")
+        pretty = _humanize_identifier(normalized)
+        entries.append(
+            (
+                rank_val,
+                f"{icon} **{pretty}**\n#{format_number(rank_raw)} • {format_number(score)}",
+            )
+        )
+    entries.sort(key=lambda item: item[0])
+    return [text for _, text in entries]
 
 
 def build_active_clans_embed(clans: List[Dict[str, Any]]) -> discord.Embed:

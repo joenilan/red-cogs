@@ -37,7 +37,9 @@ from .embeds import (
     build_clancup_clan_embed,
     build_clancup_objective_embed,
     build_clancup_top_embed,
+    build_clan_leaderboard_activities_embed,
     build_clan_leaderboard_embed,
+    build_clan_leaderboard_field_embed,
     build_clan_leaderboard_skill_embed,
     build_clanhistory_embed,
     build_player_embed,
@@ -57,6 +59,7 @@ from .utils import (
     DEFAULT_LIMIT,
     POLL_LOOP_SLEEP,
     RECENT_CACHE_LIMIT,
+    SKILL_ICON_MAP,
     XPTable,
     entry_identity,
     format_number,
@@ -1479,7 +1482,7 @@ class IdleClans(commands.Cog):
             self.log.warning("Network error while fetching clan leaderboard: %s", exc)
             await ctx.send("Could not reach the IdleClans API. Try again shortly.")
             return
-        embed = build_clan_leaderboard_embed(profile, game_mode=game_mode)
+        embed = build_clan_leaderboard_embed(profile, self._xp_table, game_mode=game_mode)
         await ctx.send(embed=embed)
 
     @clanlb_group.command(name="skill", aliases=["sk"])
@@ -1524,7 +1527,93 @@ class IdleClans(commands.Cog):
             suggestions = ", ".join(list(skills.keys())[:10]) or "no skills returned"
             await ctx.send(f"Skill `{skill_name}` was not found. Try one of: {suggestions}")
             return
-        embed = build_clan_leaderboard_skill_embed(profile, match, game_mode=game_mode)
+        embed = build_clan_leaderboard_skill_embed(profile, match, self._xp_table, game_mode=game_mode)
+        await ctx.send(embed=embed)
+
+    @clanlb_group.command(name="activities", aliases=["acts", "bosses", "pvm"])
+    async def clanlb_activities(
+        self, ctx: commands.Context, *, clan_name: Optional[str] = None
+    ) -> None:
+        """Show a clan's boss/activity leaderboard fields (non-skill stats)."""
+        session = self._ensure_session()
+        if not session:
+            await ctx.send("IdleClans session is not ready yet. Try again in a moment.")
+            return
+        game_mode = "Default"
+        target = clan_name.strip() if clan_name else None
+        if not target:
+            target = await self.config.guild(ctx.guild).clan_name()
+        if not target:
+            await ctx.send("No clan configured. Pass a clan name to query.")
+            return
+        await ctx.typing()
+        leaderboard_name = "clans:default"
+        try:
+            profile = await fetch_leaderboard_profile(session, leaderboard_name, target)
+        except aiohttp.ClientResponseError as exc:
+            if exc.status == 404:
+                await ctx.send(f"Clan `{target}` was not found on the clan leaderboard.")
+                return
+            self.log.warning("Clan leaderboard API error (%s): %s", exc.status, exc.message)
+            await ctx.send("IdleClans API returned an error while fetching that clan leaderboard.")
+            return
+        except aiohttp.ClientError as exc:
+            self.log.warning("Network error while fetching clan leaderboard: %s", exc)
+            await ctx.send("Could not reach the IdleClans API. Try again shortly.")
+            return
+        embed = build_clan_leaderboard_activities_embed(profile, game_mode=game_mode)
+        await ctx.send(embed=embed)
+
+    @clanlb_group.command(name="stat", aliases=["field"])
+    async def clanlb_stat(
+        self,
+        ctx: commands.Context,
+        stat_name: str,
+        *,
+        clan_name: Optional[str] = None,
+    ) -> None:
+        """Show a single clan leaderboard field (skill or activity)."""
+        session = self._ensure_session()
+        if not session:
+            await ctx.send("IdleClans session is not ready yet. Try again in a moment.")
+            return
+        game_mode = "Default"
+        target = clan_name.strip() if clan_name else None
+        if not target:
+            target = await self.config.guild(ctx.guild).clan_name()
+        if not target:
+            await ctx.send("No clan configured. Pass a clan name to query.")
+            return
+        stat_name = stat_name.strip()
+        if not stat_name:
+            await ctx.send("Provide a stat to look up (e.g. `mining`, `griffin`, `citadel`).")
+            return
+        await ctx.typing()
+        leaderboard_name = "clans:default"
+        try:
+            profile = await fetch_leaderboard_profile(session, leaderboard_name, target)
+        except aiohttp.ClientResponseError as exc:
+            if exc.status == 404:
+                await ctx.send(f"Clan `{target}` was not found on the clan leaderboard.")
+                return
+            self.log.warning("Clan leaderboard API error (%s): %s", exc.status, exc.message)
+            await ctx.send("IdleClans API returned an error while fetching that clan leaderboard.")
+            return
+        except aiohttp.ClientError as exc:
+            self.log.warning("Network error while fetching clan leaderboard: %s", exc)
+            await ctx.send("Could not reach the IdleClans API. Try again shortly.")
+            return
+
+        fields = profile.get("fields") or {}
+        match = self._match_skill_key(stat_name, fields)
+        if not match:
+            suggestions = ", ".join(list(fields.keys())[:10]) or "no fields returned"
+            await ctx.send(f"Stat `{stat_name}` was not found. Try one of: {suggestions}")
+            return
+        if match.lower() in SKILL_ICON_MAP:
+            embed = build_clan_leaderboard_skill_embed(profile, match, self._xp_table, game_mode=game_mode)
+        else:
+            embed = build_clan_leaderboard_field_embed(profile, match, game_mode=game_mode)
         await ctx.send(embed=embed)
 
     @commands.group(name="chat", aliases=["c"], hidden=True)
@@ -1745,7 +1834,7 @@ class IdleClans(commands.Cog):
                 f"`{prefix}clanhistory <ign> [clan|global]` (`{prefix}ch`) - recent logs\n"
                 f"`{prefix}bank [clan] [limit=50]` (`{prefix}clanbank`) - recent bank deposits/withdrawals\n"
                 f"`{prefix}clancup [clan]` / `{prefix}clancup objective <objective>` / `{prefix}clancup standings` (`{prefix}cc`) - Clan Cup ranks\n"
-                f"`{prefix}clanlb [clan]` / `{prefix}clanlb skill <skill>` (`{prefix}clb`) - clan leaderboard ranks"
+                f"`{prefix}clanlb [clan]` / `{prefix}clanlb skill <skill>` / `{prefix}clanlb activities` / `{prefix}clanlb stat <name>` (`{prefix}clb`) - clan leaderboard ranks"
             ),
             inline=False,
         )
