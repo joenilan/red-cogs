@@ -3,6 +3,7 @@ from redbot.core import commands, Config
 from discord.ext.commands import guild_only
 import asyncio
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -392,9 +393,6 @@ class ChampionsCircle(commands.Cog):
     async def questions_add(self, ctx, *, question: str):
         """Add a tournament application question"""
         async with self.config.guild(ctx.guild).custom_questions() as questions:
-            if len(questions) >= 5:
-                await ctx.send("You can only have up to 5 questions (Discord modal limit). Remove one first.")
-                return
             questions.append(question)
         await ctx.send(f"Added question: {question}")
 
@@ -417,10 +415,7 @@ class ChampionsCircle(commands.Cog):
             return
 
         question_list = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-        note = ""
-        if len(questions) > 5:
-            note = "\n\nNote: Only the first 5 questions are shown in the application modal."
-        await ctx.send(f"Current questions:\n{question_list}{note}")
+        await ctx.send(f"Current questions:\n{question_list}")
 
     async def update_embed(self, guild):
         tourney_title = await self.config.guild(guild).tourney_title()
@@ -791,20 +786,39 @@ class ChampionsCircle(commands.Cog):
 
         await ctx.send(embed=embed)
 
-class ApplicationModal(discord.ui.Modal, title="Tournament Application"):
-    def __init__(self, cog, questions: List[str]):
-        super().__init__()
-        self.cog = cog
+class ApplicationModal(discord.ui.Modal):
+    def __init__(
+        self,
+        cog,
+        questions: List[str],
+        *,
+        page: int = 0,
+        answers: Optional[Dict[str, Any]] = None,
+    ):
         trimmed = [str(q).strip() for q in (questions or []) if str(q).strip()]
-        self.questions = trimmed[:5]
-        if not self.questions:
-            self.questions = [
+        if not trimmed:
+            trimmed = [
                 "Epic Account ID:",
                 "Rank:",
                 "Primary Platform:",
                 "Preferred Region:",
                 "RL Tracker Link:",
             ]
+
+        total_pages = max(1, math.ceil(len(trimmed) / 5))
+        title = (
+            f"Tournament Application ({page + 1}/{total_pages})"
+            if total_pages > 1
+            else "Tournament Application"
+        )
+        super().__init__(title=title)
+        self.cog = cog
+        self.all_questions = trimmed
+        self.page = page
+        self.answers_so_far: Dict[str, Any] = answers or {}
+        start = page * 5
+        end = start + 5
+        self.questions = self.all_questions[start:end]
 
         self.inputs: List[discord.ui.TextInput] = []
         for question in self.questions:
@@ -844,9 +858,20 @@ class ApplicationModal(discord.ui.Modal, title="Tournament Application"):
         thread = thread_result.thread if hasattr(thread_result, "thread") else thread_result
 
         answers = {question: field.value for question, field in zip(self.questions, self.inputs)}
+        merged_answers = {**self.answers_so_far, **answers}
+
+        if (self.page + 1) * 5 < len(self.all_questions):
+            next_modal = ApplicationModal(
+                self.cog,
+                self.all_questions,
+                page=self.page + 1,
+                answers=merged_answers,
+            )
+            await interaction.response.send_modal(next_modal)
+            return
 
         def extract_answer(tokens: List[str]) -> Optional[str]:
-            for key, value in answers.items():
+            for key, value in merged_answers.items():
                 key_text = str(key).lower()
                 if any(token in key_text for token in tokens):
                     return str(value).strip()
@@ -869,7 +894,7 @@ class ApplicationModal(discord.ui.Modal, title="Tournament Application"):
         embed = discord.Embed(title="Tournament Application", color=discord.Color.blue())
         if summary_parts:
             embed.description = " | ".join(summary_parts)
-        for question, answer in answers.items():
+        for question, answer in merged_answers.items():
             embed.add_field(name=question, value=answer or "-", inline=False)
         embed.set_author(name=interaction.user.name, icon_url=interaction.user.display_avatar.url)
 
@@ -880,7 +905,7 @@ class ApplicationModal(discord.ui.Modal, title="Tournament Application"):
         entry = {
             "user_id": interaction.user.id,
             "timestamp": int(datetime.now(timezone.utc).timestamp()),
-            "answers": answers,
+            "answers": merged_answers,
             "thread_id": thread.id,
         }
         active_apps = await self.cog._load_application_list(guild, "active_applications")
