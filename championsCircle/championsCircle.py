@@ -22,6 +22,7 @@ class ChampionsCircle(commands.Cog):
             "approved_applications": [],
             "denied_applications": [],
             "champions_message_id": None,
+            "applications_open": False,
             "application_duration": 7,  # days
             "custom_questions": [
                 "Epic Account ID:",
@@ -209,6 +210,7 @@ class ChampionsCircle(commands.Cog):
             )
 
         await self.config.guild(guild).champions_role_id.set(role.id)
+        await self.config.guild(guild).applications_open.set(False)
 
         class SetupButton(discord.ui.Button):
             def __init__(self, cog):
@@ -328,15 +330,7 @@ class ChampionsCircle(commands.Cog):
             await ctx.send("This command can only be used in the Champions Circle channel.")
             return
 
-        view = ChampionsApplyView(self)
-        
-        embed = discord.Embed(
-            title="Tournament Applications",
-            description="Current applicants and their status.",
-            color=0x00ff00,
-        )
-        message = await ctx.send(embed=embed, view=view)
-        await self.config.guild(ctx.guild).champions_message_id.set(message.id)
+        await self.config.guild(ctx.guild).applications_open.set(True)
         await self.update_embed(ctx.guild)
 
     @commands.command(name="ccend")
@@ -415,6 +409,7 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).denied_applications.set([])
         await self.config.guild(ctx.guild).application_threads.set({})
         await self.config.guild(ctx.guild).champions_message_id.set(None)
+        await self.config.guild(ctx.guild).applications_open.set(False)
 
         # Reset cooldowns
         self.reset_cooldowns()
@@ -467,8 +462,128 @@ class ChampionsCircle(commands.Cog):
             return
 
         question_list = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-        note = "\n\nNote: Only the first 5 questions appear in the modal. Extra questions are asked in the thread."
+        note = "\n\nNote: The modal shows the first 5 questions. Extra questions are asked in the thread."
         await ctx.send(f"Current questions:\n{question_list}{note}")
+
+    def _format_time_display(self, tourney_time: Optional[int]) -> str:
+        if not tourney_time:
+            return "Not set"
+        return f"<t:{tourney_time}:F> (<t:{tourney_time}:R>)"
+
+    def _truncate_text(self, text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        return text[: max(limit - 3, 0)].rstrip() + "..."
+
+    def _build_panel_embed(
+        self,
+        *,
+        guild: discord.Guild,
+        title: str,
+        description: str,
+        status: str,
+        time_display: str,
+        duration: int,
+        counts: Dict[str, int],
+        forum: Optional[discord.abc.GuildChannel],
+        updated_ts: int,
+    ) -> discord.Embed:
+        trimmed_description = self._truncate_text(description or "No description set.", 1200)
+        embed = discord.Embed(
+            title=title,
+            description=trimmed_description,
+            color=0x00ff00,
+        )
+        embed.add_field(name="Status", value=status, inline=True)
+        embed.add_field(name="Time", value=time_display, inline=True)
+        embed.add_field(name="Duration", value=f"{duration} days", inline=True)
+        embed.add_field(
+            name="Applications",
+            value=(
+                f"🟡 Active: {counts['active']}\n"
+                f"🟢 Approved: {counts['approved']}\n"
+                f"🔴 Denied: {counts['denied']}\n"
+                f"⚪ Cancelled: {counts['cancelled']}"
+            ),
+            inline=True,
+        )
+        if forum:
+            embed.add_field(name="Review", value=f"Applications live in {forum.mention}.", inline=False)
+        embed.add_field(
+            name="How to apply",
+            value="Use the buttons below to submit or cancel your application.",
+            inline=False,
+        )
+        embed.timestamp = datetime.now(timezone.utc)
+        embed.set_footer(text="Champions Circle - Last updated")
+        return embed
+
+    def _build_panel_view(
+        self,
+        *,
+        guild: discord.Guild,
+        title: str,
+        description: str,
+        status: str,
+        time_display: str,
+        duration: int,
+        counts: Dict[str, int],
+        forum: Optional[discord.abc.GuildChannel],
+        updated_ts: int,
+    ) -> discord.ui.LayoutView:
+        view = discord.ui.LayoutView(timeout=None)
+        container = discord.ui.Container(accent_colour=discord.Color.green())
+
+        trimmed_description = self._truncate_text(description or "No description set.", 1200)
+        header_text = f"**{title}**\n{trimmed_description}"
+        container.add_item(discord.ui.TextDisplay(header_text))
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+
+        overview_lines = [
+            f"**Status:** {status}",
+            f"**Time:** {time_display}",
+            f"**Duration:** {duration} days",
+        ]
+        counts_lines = [
+            f"🟡 Active: {counts['active']}",
+            f"🟢 Approved: {counts['approved']}",
+            f"🔴 Denied: {counts['denied']}",
+            f"⚪ Cancelled: {counts['cancelled']}",
+        ]
+
+        thumbnail_url = None
+        if guild.icon:
+            thumbnail_url = guild.icon.url
+        elif self.bot.user:
+            thumbnail_url = self.bot.user.display_avatar.url
+        if thumbnail_url is None:
+            thumbnail_url = "https://cdn.discordapp.com/embed/avatars/0.png"
+
+        container.add_item(
+            discord.ui.Section(
+                discord.ui.TextDisplay("\n".join(overview_lines)),
+                discord.ui.TextDisplay("\n".join(counts_lines)),
+                accessory=discord.ui.Thumbnail(thumbnail_url),
+            )
+        )
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+
+        review_line = f"Review applications in {forum.mention}." if forum else "Applications forum not configured."
+        instructions = (
+            "_Use the buttons below to apply or cancel._\n"
+            f"{review_line}\n"
+            f"_Last updated <t:{updated_ts}:R>_"
+        )
+        container.add_item(discord.ui.TextDisplay(instructions))
+
+        view.add_item(container)
+
+        row = discord.ui.ActionRow()
+        row.add_item(JoinButton(self))
+        row.add_item(CancelApplicationButton(self))
+        view.add_item(row)
+
+        return view
 
     async def update_embed(self, guild):
         tourney_title = await self.config.guild(guild).tourney_title()
@@ -476,103 +591,48 @@ class ChampionsCircle(commands.Cog):
         tourney_time = await self.config.guild(guild).tourney_time()
         duration = await self.config.guild(guild).application_duration()
 
-        embed = discord.Embed(
-            title=tourney_title,
-            description=tourney_description or "No description set.",
-            color=0x00ff00,
-        )
-
-        def extract_answer(answers: Dict[str, Any], tokens: List[str]) -> Optional[str]:
-            for key, value in answers.items():
-                key_text = str(key).lower()
-                if any(token in key_text for token in tokens):
-                    return str(value).strip()
-            return None
-
-        def format_user_entry(application: Dict[str, Any]) -> str:
-            user_id = application.get("user_id")
-            user = guild.get_member(user_id) if user_id else None
-            display = user.mention if user else f"<@{user_id}>"
-
-            answers = application.get("answers") or {}
-            rank = extract_answer(answers, ["rank"]) or "Unranked"
-            region = extract_answer(answers, ["region"])
-            platform = extract_answer(answers, ["platform"])
-            tracker_link = extract_answer(answers, ["tracker", "rl tracker"])
-
-            parts = [display, f"**{rank}**"]
-            if region:
-                parts.append(region)
-            if platform:
-                parts.append(platform)
-            if tracker_link:
-                parts.append(f"[Tracker]({tracker_link})")
-            return " | ".join(parts)
-
-        def chunk_lines(lines: List[str]) -> List[List[str]]:
-            chunks: List[List[str]] = []
-            current: List[str] = []
-            current_len = 0
-            for line in lines:
-                if current_len + len(line) + 1 > 900:
-                    chunks.append(current)
-                    current = []
-                    current_len = 0
-                current.append(line)
-                current_len += len(line) + 1
-            if current:
-                chunks.append(current)
-            return chunks
-
         active_applications = await self._load_application_list(guild, "active_applications")
         approved_applications = await self._load_application_list(guild, "approved_applications")
         denied_applications = await self._load_application_list(guild, "denied_applications")
         cancelled_applications = await self._load_application_list(guild, "cancelled_applications")
 
-        status = "Open" if await self.config.guild(guild).champions_message_id() else "Not started"
-        time_display = f"<t:{tourney_time}:F> (<t:{tourney_time}:R>)" if tourney_time else "Not set"
+        counts = {
+            "active": len(active_applications),
+            "approved": len(approved_applications),
+            "denied": len(denied_applications),
+            "cancelled": len(cancelled_applications),
+        }
 
-        overview_lines = [
-            f"**Status:** {status}",
-            f"**Time:** {time_display}",
-            f"**Duration:** {duration} days",
-            (
-                f"**Applications:** 🟡 {len(active_applications)} | ✅ {len(approved_applications)} "
-                f"| ❌ {len(denied_applications)} | ⚠️ {len(cancelled_applications)}"
-            ),
-            "",
-            "_Use the Apply button below to submit your application._",
-        ]
-        embed.description = "\n".join([embed.description, *overview_lines])
+        applications_open = await self.config.guild(guild).applications_open()
+        status = "Open" if applications_open else "Not started"
+        time_display = self._format_time_display(tourney_time)
+        updated_ts = int(datetime.now(timezone.utc).timestamp())
 
-        total_apps = (
-            len(active_applications)
-            + len(approved_applications)
-            + len(denied_applications)
-            + len(cancelled_applications)
+        forum_id = await self.config.guild(guild).champions_forum()
+        forum = guild.get_channel(forum_id) if forum_id else None
+
+        panel_view = self._build_panel_view(
+            guild=guild,
+            title=tourney_title,
+            description=tourney_description,
+            status=status,
+            time_display=time_display,
+            duration=duration,
+            counts=counts,
+            forum=forum,
+            updated_ts=updated_ts,
         )
-        if total_apps == 0:
-            embed.add_field(
-                name="Applicants",
-                value="No applications yet.",
-                inline=False,
-            )
-        else:
-            for label, apps in (
-                ("Active Applicants", active_applications),
-                ("Approved Champions", approved_applications),
-                ("Denied Applications", denied_applications),
-                ("Cancelled Applications", cancelled_applications),
-            ):
-                if not apps:
-                    continue
-                lines = [format_user_entry(app) for app in apps]
-                for idx, chunk in enumerate(chunk_lines(lines), start=1):
-                    name = label if idx == 1 else f"{label} ({idx})"
-                    embed.add_field(name=name, value="\n".join(chunk), inline=False)
-
-        embed.timestamp = datetime.now(timezone.utc)
-        embed.set_footer(text="Champions Circle - Last updated")
+        fallback_embed = self._build_panel_embed(
+            guild=guild,
+            title=tourney_title,
+            description=tourney_description,
+            status=status,
+            time_display=time_display,
+            duration=duration,
+            counts=counts,
+            forum=forum,
+            updated_ts=updated_ts,
+        )
 
         channel = self.bot.get_channel(await self.config.guild(guild).champions_channel())
         if not channel:
@@ -585,12 +645,25 @@ class ChampionsCircle(commands.Cog):
             message_id = await self.config.guild(guild).champions_message_id()
             if message_id:
                 message = await channel.fetch_message(message_id)
-                await message.edit(embed=embed)
+                await message.edit(content=None, embed=None, view=panel_view)
             else:
-                message = await channel.send(embed=embed)
+                message = await channel.send(view=panel_view)
                 await self.config.guild(guild).champions_message_id.set(message.id)
         except discord.HTTPException as e:
-            self.logger.error(f"Error updating embed: {str(e)}")
+            self.logger.error(f"Error updating panel view: {str(e)}")
+            try:
+                message_id = await self.config.guild(guild).champions_message_id()
+                if message_id:
+                    try:
+                        message = await channel.fetch_message(message_id)
+                        await message.edit(embed=fallback_embed)
+                        return
+                    except discord.HTTPException:
+                        await self.config.guild(guild).champions_message_id.set(None)
+                message = await channel.send(embed=fallback_embed)
+                await self.config.guild(guild).champions_message_id.set(message.id)
+            except discord.HTTPException as exc:
+                self.logger.error(f"Error updating embed fallback: {str(exc)}")
 
     @commands.command()
     @guild_only()
@@ -751,7 +824,7 @@ class ChampionsCircle(commands.Cog):
         )
         embed.add_field(
             name="Questions",
-            value="`ccquestions add/remove/list` - manage application questions (max 5)",
+            value="`ccquestions add/remove/list` - manage application questions (first 5 in modal, extras in thread)",
             inline=False,
         )
         embed.add_field(
@@ -812,6 +885,7 @@ class ChampionsCircle(commands.Cog):
         role_id = await self.config.guild(guild).champions_role_id()
         duration = await self.config.guild(guild).application_duration()
         questions = await self.config.guild(guild).custom_questions()
+        applications_open = await self.config.guild(guild).applications_open()
 
         active = await self._load_application_list(guild, "active_applications")
         approved = await self._load_application_list(guild, "approved_applications")
@@ -823,6 +897,7 @@ class ChampionsCircle(commands.Cog):
         role = guild.get_role(role_id) if role_id else None
 
         embed = discord.Embed(title="Champions Circle settings", color=0x00ff00)
+        embed.add_field(name="Status", value="Open" if applications_open else "Not started", inline=True)
         embed.add_field(name="Forum", value=forum.mention if forum else "Not set", inline=True)
         embed.add_field(name="Announcements", value=channel.mention if channel else "Not set", inline=True)
         embed.add_field(name="Champions role", value=role.mention if role else "Not set", inline=True)
@@ -871,10 +946,19 @@ class ApplicationModal(discord.ui.Modal):
             question_lower = question_text.lower()
             is_optional = "optional" in question_lower
 
-            select = self._build_select(question_text)
+            select = self._build_select(question_text, required=not is_optional)
             if select is not None:
                 label_text = question_text[:45] if question_text else "Question"
-                label = discord.ui.Label(text=label_text, component=select)
+                description = None
+                if len(question_text) > 45:
+                    description = question_text[:100]
+                if is_optional:
+                    optional_note = "Optional."
+                    if description:
+                        description = f"{optional_note} {description}"[:100]
+                    else:
+                        description = optional_note
+                label = discord.ui.Label(text=label_text, description=description, component=select)
                 self.select_inputs.append((question_text, select))
                 self.add_item(label)
                 continue
@@ -891,7 +975,7 @@ class ApplicationModal(discord.ui.Modal):
             self.text_inputs.append((question_text, field))
             self.add_item(field)
 
-    def _build_select(self, question: str) -> Optional[discord.ui.Select]:
+    def _build_select(self, question: str, *, required: bool) -> Optional[discord.ui.Select]:
         question_lower = question.lower()
         if "rank" in question_lower:
             options = [
@@ -905,30 +989,33 @@ class ApplicationModal(discord.ui.Modal):
                 "Grand Champion",
                 "Supersonic Legend",
             ]
+            min_values = 1 if required else 0
             return discord.ui.Select(
                 placeholder="Select your rank",
                 options=[discord.SelectOption(label=opt, value=opt) for opt in options],
-                min_values=1,
+                min_values=min_values,
                 max_values=1,
-                required=True,
+                required=required,
             )
         if "region" in question_lower:
             options = ["NA East", "NA West", "EU", "OCE", "SAM", "ME", "Asia"]
+            min_values = 1 if required else 0
             return discord.ui.Select(
                 placeholder="Select your region",
                 options=[discord.SelectOption(label=opt, value=opt) for opt in options],
-                min_values=1,
+                min_values=min_values,
                 max_values=1,
-                required=True,
+                required=required,
             )
         if "platform" in question_lower:
             options = ["PC", "Xbox", "PlayStation", "Switch"]
+            min_values = 1 if required else 0
             return discord.ui.Select(
                 placeholder="Select your platform",
                 options=[discord.SelectOption(label=opt, value=opt) for opt in options],
-                min_values=1,
+                min_values=min_values,
                 max_values=1,
-                required=True,
+                required=required,
             )
         return None
 
@@ -1022,7 +1109,10 @@ class ApplicationModal(discord.ui.Modal):
             await thread.send(embed=extra_embed)
 
         await self.cog.update_embed(guild)
-        await interaction.response.send_message("Your application has been submitted!", ephemeral=True)
+        response_message = "Your application has been submitted!"
+        if self.extra_questions:
+            response_message += f" Please answer the additional questions in {thread.mention}."
+        await interaction.response.send_message(response_message, ephemeral=True)
 
 
 class ApplicationReviewView(discord.ui.View):
@@ -1420,3 +1510,4 @@ class TournamentPhaseScheduleModal(discord.ui.Modal):
 async def setup(bot):
     cog = ChampionsCircle(bot)
     await bot.add_cog(cog)
+
