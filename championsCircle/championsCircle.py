@@ -3,7 +3,6 @@ from redbot.core import commands, Config
 from discord.ext.commands import guild_only
 import asyncio
 import logging
-import math
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -468,7 +467,8 @@ class ChampionsCircle(commands.Cog):
             return
 
         question_list = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-        await ctx.send(f"Current questions:\n{question_list}")
+        note = "\n\nNote: Only the first 5 questions appear in the modal. Extra questions are asked in the thread."
+        await ctx.send(f"Current questions:\n{question_list}{note}")
 
     async def update_embed(self, guild):
         tourney_title = await self.config.guild(guild).tourney_title()
@@ -844,14 +844,7 @@ class ChampionsCircle(commands.Cog):
         await ctx.send(embed=embed)
 
 class ApplicationModal(discord.ui.Modal):
-    def __init__(
-        self,
-        cog,
-        questions: List[str],
-        *,
-        page: int = 0,
-        answers: Optional[Dict[str, Any]] = None,
-    ):
+    def __init__(self, cog, questions: List[str]):
         trimmed = [str(q).strip() for q in (questions or []) if str(q).strip()]
         if not trimmed:
             trimmed = [
@@ -865,54 +858,88 @@ class ApplicationModal(discord.ui.Modal):
                 "Twitch Channel (optional):",
             ]
 
-        total_pages = max(1, math.ceil(len(trimmed) / 5))
-        title = (
-            f"Tournament Application ({page + 1}/{total_pages})"
-            if total_pages > 1
-            else "Tournament Application"
-        )
-        super().__init__(title=title)
+        super().__init__(title="Tournament Application")
         self.cog = cog
-        self.all_questions = trimmed
-        self.page = page
-        self.answers_so_far: Dict[str, Any] = answers or {}
-        start = page * 5
-        end = start + 5
-        self.questions = self.all_questions[start:end]
+        self.questions = trimmed[:5]
+        self.extra_questions = trimmed[5:]
 
-        self.inputs: List[discord.ui.TextInput] = []
+        self.text_inputs: List[Tuple[str, discord.ui.TextInput]] = []
+        self.select_inputs: List[Tuple[str, discord.ui.Select]] = []
+
         for question in self.questions:
-            label = question[:45] if question else "Question"
-            placeholder = question[:100] if question else "Answer"
-            style = discord.TextStyle.paragraph if "note" in question.lower() else discord.TextStyle.short
+            question_text = question.strip()
+            question_lower = question_text.lower()
+            is_optional = "optional" in question_lower
+
+            select = self._build_select(question_text)
+            if select is not None:
+                label_text = question_text[:45] if question_text else "Question"
+                label = discord.ui.Label(text=label_text, component=select)
+                self.select_inputs.append((question_text, select))
+                self.add_item(label)
+                continue
+
+            label = question_text[:45] if question_text else "Question"
+            placeholder = question_text[:100] if question_text else "Answer"
+            style = discord.TextStyle.paragraph if "note" in question_lower else discord.TextStyle.short
             field = discord.ui.TextInput(
                 label=label,
                 placeholder=placeholder,
-                required=True,
+                required=not is_optional,
                 style=style,
             )
-            self.inputs.append(field)
+            self.text_inputs.append((question_text, field))
             self.add_item(field)
+
+    def _build_select(self, question: str) -> Optional[discord.ui.Select]:
+        question_lower = question.lower()
+        if "rank" in question_lower:
+            options = [
+                "Unranked",
+                "Bronze",
+                "Silver",
+                "Gold",
+                "Platinum",
+                "Diamond",
+                "Champion",
+                "Grand Champion",
+                "Supersonic Legend",
+            ]
+            return discord.ui.Select(
+                placeholder="Select your rank",
+                options=[discord.SelectOption(label=opt, value=opt) for opt in options],
+                min_values=1,
+                max_values=1,
+                required=True,
+            )
+        if "region" in question_lower:
+            options = ["NA East", "NA West", "EU", "OCE", "SAM", "ME", "Asia"]
+            return discord.ui.Select(
+                placeholder="Select your region",
+                options=[discord.SelectOption(label=opt, value=opt) for opt in options],
+                min_values=1,
+                max_values=1,
+                required=True,
+            )
+        if "platform" in question_lower:
+            options = ["PC", "Xbox", "PlayStation", "Switch"]
+            return discord.ui.Select(
+                placeholder="Select your platform",
+                options=[discord.SelectOption(label=opt, value=opt) for opt in options],
+                min_values=1,
+                max_values=1,
+                required=True,
+            )
+        return None
 
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
-        answers = {question: field.value for question, field in zip(self.questions, self.inputs)}
-        merged_answers = {**self.answers_so_far, **answers}
-
-        if (self.page + 1) * 5 < len(self.all_questions):
-            view = ContinueApplicationView(
-                self.cog,
-                self.all_questions,
-                page=self.page + 1,
-                answers=merged_answers,
-                user_id=interaction.user.id,
-            )
-            await interaction.response.send_message(
-                "Continue to the next page of the application.",
-                view=view,
-                ephemeral=True,
-            )
-            return
+        answers: Dict[str, Any] = {}
+        for question, field in self.text_inputs:
+            answers[question] = field.value
+        for question, select in self.select_inputs:
+            selected = select.values[0] if select.values else None
+            answers[question] = selected or "-"
 
         forum_id = await self.cog.config.guild(guild).champions_forum()
         forum = guild.get_channel(forum_id) if forum_id else None
@@ -936,7 +963,7 @@ class ApplicationModal(discord.ui.Modal):
         thread = thread_result.thread if hasattr(thread_result, "thread") else thread_result
 
         def extract_answer(tokens: List[str]) -> Optional[str]:
-            for key, value in merged_answers.items():
+            for key, value in answers.items():
                 key_text = str(key).lower()
                 if any(token in key_text for token in tokens):
                     return str(value).strip()
@@ -959,7 +986,7 @@ class ApplicationModal(discord.ui.Modal):
         embed = discord.Embed(title="Tournament Application", color=discord.Color.blue())
         if summary_parts:
             embed.description = " | ".join(summary_parts)
-        for question, answer in merged_answers.items():
+        for question, answer in answers.items():
             embed.add_field(name=question, value=answer or "-", inline=False)
         embed.set_author(name=interaction.user.name, icon_url=interaction.user.display_avatar.url)
 
@@ -970,7 +997,7 @@ class ApplicationModal(discord.ui.Modal):
         entry = {
             "user_id": interaction.user.id,
             "timestamp": int(datetime.now(timezone.utc).timestamp()),
-            "answers": merged_answers,
+            "answers": answers,
             "thread_id": thread.id,
         }
         active_apps = await self.cog._load_application_list(guild, "active_applications")
@@ -981,6 +1008,18 @@ class ApplicationModal(discord.ui.Modal):
         threads = await self.cog.config.guild(guild).application_threads()
         threads[str(interaction.user.id)] = thread.id
         await self.cog.config.guild(guild).application_threads.set(threads)
+
+        if self.extra_questions:
+            follow_up = "\n".join(f"- {q}" for q in self.extra_questions)
+            extra_embed = discord.Embed(
+                title="Additional Questions",
+                description=(
+                    "Please reply in this thread with answers to the following:\n"
+                    f"{follow_up}"
+                ),
+                color=discord.Color.blurple(),
+            )
+            await thread.send(embed=extra_embed)
 
         await self.cog.update_embed(guild)
         await interaction.response.send_message("Your application has been submitted!", ephemeral=True)
@@ -1158,30 +1197,6 @@ class ChampionsApplyView(discord.ui.View):
         self.add_item(JoinButton(cog))
         self.add_item(CancelApplicationButton(cog))
 
-
-class ContinueApplicationView(discord.ui.View):
-    def __init__(self, cog, questions: List[str], page: int, answers: Dict[str, Any], user_id: int):
-        super().__init__(timeout=300)
-        self.cog = cog
-        self.questions = questions
-        self.page = page
-        self.answers = answers
-        self.user_id = user_id
-
-    @discord.ui.button(label="Continue", style=discord.ButtonStyle.primary)
-    async def continue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message(
-                "This continuation button isn't for you.", ephemeral=True
-            )
-            return
-        modal = ApplicationModal(
-            self.cog,
-            self.questions,
-            page=self.page,
-            answers=self.answers,
-        )
-        await interaction.response.send_modal(modal)
 
 
 class CancelApplicationButton(discord.ui.Button):
