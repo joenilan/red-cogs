@@ -532,40 +532,44 @@ class ChampionsCircle(commands.Cog):
         status = "Open" if await self.config.guild(guild).champions_message_id() else "Not started"
         time_display = f"<t:{tourney_time}:F> (<t:{tourney_time}:R>)" if tourney_time else "Not set"
 
-        embed.add_field(
-            name="Status",
-            value=f"**{status}**\nTime: {time_display}\nDuration: {duration} days",
-            inline=True,
-        )
-        embed.add_field(
-            name="Applications",
-            value=(
-                f"🟡 Active: **{len(active_applications)}**\n"
-                f"✅ Approved: **{len(approved_applications)}**\n"
-                f"❌ Denied: **{len(denied_applications)}**\n"
-                f"⚠️ Cancelled: **{len(cancelled_applications)}**"
+        overview_lines = [
+            f"**Status:** {status}",
+            f"**Time:** {time_display}",
+            f"**Duration:** {duration} days",
+            (
+                f"**Applications:** 🟡 {len(active_applications)} | ✅ {len(approved_applications)} "
+                f"| ❌ {len(denied_applications)} | ⚠️ {len(cancelled_applications)}"
             ),
-            inline=True,
-        )
-        embed.add_field(
-            name="How to apply",
-            value="Use the **Apply** button below to submit your application.",
-            inline=True,
-        )
+            "",
+            "_Use the Apply button below to submit your application._",
+        ]
+        embed.description = "\n".join([embed.description, *overview_lines])
 
-        for label, apps, empty_label in (
-            ("Active Applicants", active_applications, "No active applications"),
-            ("Approved Champions", approved_applications, "No approved applications"),
-            ("Denied Applications", denied_applications, "No denied applications"),
-            ("Cancelled Applications", cancelled_applications, "No cancelled applications"),
-        ):
-            lines = [format_user_entry(app) for app in apps]
-            if not lines:
-                embed.add_field(name=label, value=empty_label, inline=False)
-                continue
-            for idx, chunk in enumerate(chunk_lines(lines), start=1):
-                name = label if idx == 1 else f"{label} ({idx})"
-                embed.add_field(name=name, value="\n".join(chunk), inline=False)
+        total_apps = (
+            len(active_applications)
+            + len(approved_applications)
+            + len(denied_applications)
+            + len(cancelled_applications)
+        )
+        if total_apps == 0:
+            embed.add_field(
+                name="Applicants",
+                value="No applications yet.",
+                inline=False,
+            )
+        else:
+            for label, apps in (
+                ("Active Applicants", active_applications),
+                ("Approved Champions", approved_applications),
+                ("Denied Applications", denied_applications),
+                ("Cancelled Applications", cancelled_applications),
+            ):
+                if not apps:
+                    continue
+                lines = [format_user_entry(app) for app in apps]
+                for idx, chunk in enumerate(chunk_lines(lines), start=1):
+                    name = label if idx == 1 else f"{label} ({idx})"
+                    embed.add_field(name=name, value="\n".join(chunk), inline=False)
 
         embed.timestamp = datetime.now(timezone.utc)
         embed.set_footer(text="Champions Circle - Last updated")
