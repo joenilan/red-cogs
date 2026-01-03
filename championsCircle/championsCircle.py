@@ -346,6 +346,35 @@ class ChampionsCircle(commands.Cog):
             await ctx.send("Tournament end cancelled.")
             return
 
+        # Archive/lock application threads
+        forum_id = await self.config.guild(ctx.guild).champions_forum()
+        forum = ctx.guild.get_channel(forum_id) if forum_id else None
+        thread_ids: set[int] = set()
+        for list_name in self._application_lists:
+            for entry in await self._load_application_list(ctx.guild, list_name):
+                thread_id = entry.get("thread_id")
+                if thread_id:
+                    thread_ids.add(thread_id)
+        try:
+            threads_map = await self.config.guild(ctx.guild).application_threads()
+            for thread_id in threads_map.values():
+                thread_ids.add(int(thread_id))
+        except Exception:
+            pass
+
+        for thread_id in thread_ids:
+            thread = ctx.guild.get_thread(thread_id)
+            if not thread and forum:
+                try:
+                    thread = await forum.fetch_thread(thread_id)
+                except discord.HTTPException:
+                    thread = None
+            if isinstance(thread, discord.Thread):
+                try:
+                    await thread.edit(archived=True, locked=True)
+                except discord.HTTPException:
+                    self.logger.error("Failed to archive thread %s", thread_id)
+
         # Clear messages
         channel = ctx.channel
         await ctx.send("Ending tournament and clearing channel...")
