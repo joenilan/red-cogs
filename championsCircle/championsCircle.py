@@ -521,6 +521,9 @@ class ChampionsCircle(commands.Cog):
             parts.append(platform)
         if tracker_link:
             parts.append(f"[Tracker]({tracker_link})")
+        thread_id = application.get("thread_id")
+        if thread_id:
+            parts.append(f"[Application](https://discord.com/channels/{guild.id}/{thread_id})")
         return " | ".join(parts)
 
     def _chunk_lines(self, lines: List[str], limit: int = 900) -> List[List[str]]:
