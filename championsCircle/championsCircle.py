@@ -49,6 +49,7 @@ class ChampionsCircle(commands.Cog):
         self.application_cooldowns = commands.CooldownMapping.from_cooldown(1, 3600, commands.BucketType.user)
 
     async def cog_load(self):
+        self._hide_non_help_commands()
         if not self._expiry_task or self._expiry_task.done():
             self._expiry_task = asyncio.create_task(self.close_expired_applications())
         try:
@@ -59,6 +60,11 @@ class ChampionsCircle(commands.Cog):
     def cog_unload(self):
         if self._expiry_task:
             self._expiry_task.cancel()
+
+    def _hide_non_help_commands(self) -> None:
+        for command in self.walk_commands():
+            if command.name != "cchelp":
+                command.hidden = True
 
     @commands.Cog.listener()
     async def on_ready(self):
