@@ -896,6 +896,24 @@ class ApplicationModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
+        answers = {question: field.value for question, field in zip(self.questions, self.inputs)}
+        merged_answers = {**self.answers_so_far, **answers}
+
+        if (self.page + 1) * 5 < len(self.all_questions):
+            view = ContinueApplicationView(
+                self.cog,
+                self.all_questions,
+                page=self.page + 1,
+                answers=merged_answers,
+                user_id=interaction.user.id,
+            )
+            await interaction.response.send_message(
+                "Continue to the next page of the application.",
+                view=view,
+                ephemeral=True,
+            )
+            return
+
         forum_id = await self.cog.config.guild(guild).champions_forum()
         forum = guild.get_channel(forum_id) if forum_id else None
         if forum is None:
@@ -916,23 +934,6 @@ class ApplicationModal(discord.ui.Modal):
             applied_tags=applied_tags,
         )
         thread = thread_result.thread if hasattr(thread_result, "thread") else thread_result
-
-        answers = {question: field.value for question, field in zip(self.questions, self.inputs)}
-        merged_answers = {**self.answers_so_far, **answers}
-
-        if (self.page + 1) * 5 < len(self.all_questions):
-            view = ContinueApplicationView(
-                self.cog,
-                self.all_questions,
-                page=self.page + 1,
-                answers=merged_answers,
-            )
-            await interaction.response.send_message(
-                "Continue to the next page of the application.",
-                view=view,
-                ephemeral=True,
-            )
-            return
 
         def extract_answer(tokens: List[str]) -> Optional[str]:
             for key, value in merged_answers.items():
@@ -1159,15 +1160,21 @@ class ChampionsApplyView(discord.ui.View):
 
 
 class ContinueApplicationView(discord.ui.View):
-    def __init__(self, cog, questions: List[str], page: int, answers: Dict[str, Any]):
+    def __init__(self, cog, questions: List[str], page: int, answers: Dict[str, Any], user_id: int):
         super().__init__(timeout=300)
         self.cog = cog
         self.questions = questions
         self.page = page
         self.answers = answers
+        self.user_id = user_id
 
     @discord.ui.button(label="Continue", style=discord.ButtonStyle.primary)
     async def continue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "This continuation button isn't for you.", ephemeral=True
+            )
+            return
         modal = ApplicationModal(
             self.cog,
             self.questions,
