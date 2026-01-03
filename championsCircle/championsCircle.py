@@ -25,6 +25,9 @@ class ChampionsCircle(commands.Cog):
             "champions_message_id": None,
             "applications_open": False,
             "applications_opened_at": None,
+            "roster_thread_id": None,
+            "roster_anchor_message_id": None,
+            "roster_message_ids": {},
             "application_duration": 7,  # days
             "custom_questions": [
                 "Epic Account ID:",
@@ -394,6 +397,20 @@ class ChampionsCircle(commands.Cog):
                 except discord.HTTPException:
                     self.logger.error("Failed to archive thread %s", thread_id)
 
+        roster_thread_id = await self.config.guild(ctx.guild).roster_thread_id()
+        if roster_thread_id:
+            roster_thread = ctx.guild.get_thread(roster_thread_id)
+            if not roster_thread:
+                try:
+                    roster_thread = await ctx.guild.fetch_channel(roster_thread_id)
+                except discord.HTTPException:
+                    roster_thread = None
+            if isinstance(roster_thread, discord.Thread):
+                try:
+                    await roster_thread.edit(archived=True, locked=True)
+                except discord.HTTPException:
+                    self.logger.error("Failed to archive roster thread %s", roster_thread_id)
+
         # Clear messages
         channel = ctx.channel
         await ctx.send("Ending tournament and clearing channel...")
@@ -416,6 +433,9 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).champions_message_id.set(None)
         await self.config.guild(ctx.guild).applications_open.set(False)
         await self.config.guild(ctx.guild).applications_opened_at.set(None)
+        await self.config.guild(ctx.guild).roster_thread_id.set(None)
+        await self.config.guild(ctx.guild).roster_anchor_message_id.set(None)
+        await self.config.guild(ctx.guild).roster_message_ids.set({})
 
         # Reset cooldowns
         self.reset_cooldowns()
@@ -518,6 +538,122 @@ class ChampionsCircle(commands.Cog):
             chunks.append(current)
         return chunks
 
+    async def _ensure_roster_thread(self, guild: discord.Guild) -> Optional[discord.Thread]:
+        channel_id = await self.config.guild(guild).champions_channel()
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if not isinstance(channel, discord.TextChannel):
+            return None
+
+        roster_thread_id = await self.config.guild(guild).roster_thread_id()
+        if roster_thread_id:
+            thread = guild.get_thread(roster_thread_id)
+            if not thread:
+                try:
+                    thread = await guild.fetch_channel(roster_thread_id)
+                except discord.HTTPException:
+                    thread = None
+            if isinstance(thread, discord.Thread):
+                return thread
+
+            await self.config.guild(guild).roster_thread_id.set(None)
+            await self.config.guild(guild).roster_message_ids.set({})
+            await self.config.guild(guild).roster_anchor_message_id.set(None)
+
+        try:
+            anchor = await channel.send(
+                "Champions Circle roster board. This thread contains the live applicant lists."
+            )
+        except discord.HTTPException:
+            return None
+
+        try:
+            thread = await channel.create_thread(
+                name="Champions Circle Roster",
+                message=anchor,
+                auto_archive_duration=10080,
+            )
+        except discord.HTTPException:
+            return None
+
+        await self.config.guild(guild).roster_thread_id.set(thread.id)
+        await self.config.guild(guild).roster_anchor_message_id.set(anchor.id)
+        return thread
+
+    def _build_roster_embed(
+        self,
+        *,
+        guild: discord.Guild,
+        label: str,
+        icon: str,
+        color: discord.Color,
+        entries: List[Dict[str, Any]],
+    ) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"{icon} {label}",
+            description=f"Total: {len(entries)}",
+            color=color,
+        )
+        if not entries:
+            embed.add_field(name="Applicants", value="None yet.", inline=False)
+            return embed
+
+        lines = [self._format_user_entry(guild, entry) for entry in entries]
+        for idx, chunk in enumerate(self._chunk_lines(lines), start=1):
+            name = "Applicants" if idx == 1 else f"Applicants ({idx})"
+            embed.add_field(name=name, value="\n".join(chunk), inline=False)
+        return embed
+
+    async def _update_roster_board(self, guild: discord.Guild) -> Optional[str]:
+        thread = await self._ensure_roster_thread(guild)
+        if not thread:
+            return None
+
+        active = await self._load_application_list(guild, "active_applications")
+        approved = await self._load_application_list(guild, "approved_applications")
+        denied = await self._load_application_list(guild, "denied_applications")
+        cancelled = await self._load_application_list(guild, "cancelled_applications")
+
+        boards = [
+            ("active", "Active Applicants", "🟡", discord.Color.gold(), active),
+            ("approved", "Approved Champions", "🟢", discord.Color.green(), approved),
+            ("denied", "Denied Applications", "🔴", discord.Color.red(), denied),
+            ("cancelled", "Cancelled Applications", "⚪", discord.Color.light_grey(), cancelled),
+        ]
+
+        stored_ids = await self.config.guild(guild).roster_message_ids()
+        if not isinstance(stored_ids, dict):
+            stored_ids = {}
+
+        for key, label, icon, color, entries in boards:
+            embed = self._build_roster_embed(
+                guild=guild,
+                label=label,
+                icon=icon,
+                color=color,
+                entries=entries,
+            )
+            msg_id = stored_ids.get(key)
+            message = None
+            if msg_id:
+                try:
+                    message = await thread.fetch_message(int(msg_id))
+                except discord.HTTPException:
+                    message = None
+            if message:
+                try:
+                    await message.edit(embed=embed)
+                except discord.HTTPException:
+                    message = None
+            if not message:
+                try:
+                    message = await thread.send(embed=embed)
+                except discord.HTTPException:
+                    continue
+                stored_ids[key] = message.id
+
+        await self.config.guild(guild).roster_message_ids.set(stored_ids)
+        return thread.jump_url
+
     def _truncate_text(self, text: str, limit: int) -> str:
         if len(text) <= limit:
             return text
@@ -535,6 +671,7 @@ class ChampionsCircle(commands.Cog):
         duration: int,
         counts: Dict[str, int],
         forum: Optional[discord.abc.GuildChannel],
+        roster_url: Optional[str],
         updated_ts: int,
     ) -> discord.Embed:
         trimmed_description = self._truncate_text(description or "No description set.", 1200)
@@ -559,6 +696,8 @@ class ChampionsCircle(commands.Cog):
         )
         if forum:
             embed.add_field(name="Review", value=f"Applications live in {forum.mention}.", inline=False)
+        if roster_url:
+            embed.add_field(name="Roster", value=f"[Open roster]({roster_url})", inline=False)
         embed.add_field(
             name="How to apply",
             value="Use the buttons below to submit or cancel your application.",
@@ -580,6 +719,7 @@ class ChampionsCircle(commands.Cog):
         duration: int,
         counts: Dict[str, int],
         forum: Optional[discord.abc.GuildChannel],
+        roster_url: Optional[str],
         updated_ts: int,
     ) -> discord.ui.LayoutView:
         view = discord.ui.LayoutView(timeout=None)
@@ -633,6 +773,8 @@ class ChampionsCircle(commands.Cog):
         row = discord.ui.ActionRow()
         row.add_item(JoinButton(self))
         row.add_item(CancelApplicationButton(self))
+        if roster_url:
+            row.add_item(discord.ui.Button(label="Roster", style=discord.ButtonStyle.link, url=roster_url))
         view.add_item(row)
 
         return view
@@ -670,6 +812,9 @@ class ChampionsCircle(commands.Cog):
 
         forum_id = await self.config.guild(guild).champions_forum()
         forum = guild.get_channel(forum_id) if forum_id else None
+        roster_url = None
+        if applications_open:
+            roster_url = await self._update_roster_board(guild)
 
         panel_view = self._build_panel_view(
             guild=guild,
@@ -681,6 +826,7 @@ class ChampionsCircle(commands.Cog):
             duration=duration,
             counts=counts,
             forum=forum,
+            roster_url=roster_url,
             updated_ts=updated_ts,
         )
         fallback_embed = self._build_panel_embed(
@@ -693,6 +839,7 @@ class ChampionsCircle(commands.Cog):
             duration=duration,
             counts=counts,
             forum=forum,
+            roster_url=roster_url,
             updated_ts=updated_ts,
         )
 
