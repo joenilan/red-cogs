@@ -386,7 +386,7 @@ class ChampionsCircle(commands.Cog):
             thread = ctx.guild.get_thread(thread_id)
             if not thread and forum:
                 try:
-                    thread = await forum.fetch_thread(thread_id)
+                    thread = await ctx.guild.fetch_channel(thread_id)
                 except discord.HTTPException:
                     thread = None
             if isinstance(thread, discord.Thread):
