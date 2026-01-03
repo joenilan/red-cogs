@@ -561,6 +561,28 @@ class ChampionsCircle(commands.Cog):
     @commands.command()
     @commands.admin_or_permissions(administrator=True)
     @guild_only()
+    async def ccsettime(self, ctx, *, time_value: Optional[str] = None):
+        """Set or clear the tournament time (YYYY-MM-DD HH:MM:SS)."""
+        if not time_value or time_value.strip().lower() in {"clear", "none", "unset"}:
+            await self.config.guild(ctx.guild).tourney_time.set(None)
+            await self.update_embed(ctx.guild)
+            await ctx.send("Tournament time cleared.")
+            return
+
+        try:
+            tourney_time = datetime.fromisoformat(time_value.strip()).replace(tzinfo=timezone.utc)
+        except ValueError:
+            await ctx.send("Invalid time format. Use YYYY-MM-DD HH:MM:SS or `ccsettime clear`.")
+            return
+
+        timestamp = int(tourney_time.timestamp())
+        await self.config.guild(ctx.guild).tourney_time.set(timestamp)
+        await self.update_embed(ctx.guild)
+        await ctx.send(f"Tournament time updated: <t:{timestamp}:F>")
+
+    @commands.command()
+    @commands.admin_or_permissions(administrator=True)
+    @guild_only()
     async def setchampionsrole(self, ctx, role: discord.Role):
         """Set the Champions Circle role."""
         await self.config.guild(ctx.guild).champions_role_id.set(role.id)
