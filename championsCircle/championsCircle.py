@@ -24,6 +24,7 @@ class ChampionsCircle(commands.Cog):
             "denied_applications": [],
             "champions_message_id": None,
             "applications_open": False,
+            "applications_opened_at": None,
             "application_duration": 7,  # days
             "custom_questions": [
                 "Epic Account ID:",
@@ -332,6 +333,9 @@ class ChampionsCircle(commands.Cog):
             return
 
         await self.config.guild(ctx.guild).applications_open.set(True)
+        await self.config.guild(ctx.guild).applications_opened_at.set(
+            int(datetime.now(timezone.utc).timestamp())
+        )
         await self.update_embed(ctx.guild)
 
     @commands.command(name="ccend")
@@ -411,6 +415,7 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).application_threads.set({})
         await self.config.guild(ctx.guild).champions_message_id.set(None)
         await self.config.guild(ctx.guild).applications_open.set(False)
+        await self.config.guild(ctx.guild).applications_opened_at.set(None)
 
         # Reset cooldowns
         self.reset_cooldowns()
@@ -471,6 +476,48 @@ class ChampionsCircle(commands.Cog):
             return "Not set"
         return f"<t:{tourney_time}:F> (<t:{tourney_time}:R>)"
 
+    def _extract_answer(self, answers: Dict[str, Any], tokens: List[str]) -> Optional[str]:
+        for key, value in answers.items():
+            key_text = str(key).lower()
+            if any(token in key_text for token in tokens):
+                return str(value).strip()
+        return None
+
+    def _format_user_entry(self, guild: discord.Guild, application: Dict[str, Any]) -> str:
+        user_id = application.get("user_id")
+        user = guild.get_member(user_id) if user_id else None
+        display = user.mention if user else f"<@{user_id}>"
+
+        answers = application.get("answers") or {}
+        rank = self._extract_answer(answers, ["rank"]) or "Unranked"
+        region = self._extract_answer(answers, ["region"])
+        platform = self._extract_answer(answers, ["platform"])
+        tracker_link = self._extract_answer(answers, ["tracker", "rl tracker"])
+
+        parts = [display, f"**{rank}**"]
+        if region:
+            parts.append(region)
+        if platform:
+            parts.append(platform)
+        if tracker_link:
+            parts.append(f"[Tracker]({tracker_link})")
+        return " | ".join(parts)
+
+    def _chunk_lines(self, lines: List[str], limit: int = 900) -> List[List[str]]:
+        chunks: List[List[str]] = []
+        current: List[str] = []
+        current_len = 0
+        for line in lines:
+            if current_len + len(line) + 1 > limit:
+                chunks.append(current)
+                current = []
+                current_len = 0
+            current.append(line)
+            current_len += len(line) + 1
+        if current:
+            chunks.append(current)
+        return chunks
+
     def _truncate_text(self, text: str, limit: int) -> str:
         if len(text) <= limit:
             return text
@@ -484,6 +531,7 @@ class ChampionsCircle(commands.Cog):
         description: str,
         status: str,
         time_display: str,
+        close_display: str,
         duration: int,
         counts: Dict[str, int],
         forum: Optional[discord.abc.GuildChannel],
@@ -497,6 +545,7 @@ class ChampionsCircle(commands.Cog):
         )
         embed.add_field(name="Status", value=status, inline=True)
         embed.add_field(name="Time", value=time_display, inline=True)
+        embed.add_field(name="Applications close", value=close_display, inline=True)
         embed.add_field(name="Duration", value=f"{duration} days", inline=True)
         embed.add_field(
             name="Applications",
@@ -527,6 +576,7 @@ class ChampionsCircle(commands.Cog):
         description: str,
         status: str,
         time_display: str,
+        close_display: str,
         duration: int,
         counts: Dict[str, int],
         forum: Optional[discord.abc.GuildChannel],
@@ -543,6 +593,7 @@ class ChampionsCircle(commands.Cog):
         overview_lines = [
             f"**Status:** {status}",
             f"**Time:** {time_display}",
+            f"**Applications close:** {close_display}",
             f"**Duration:** {duration} days",
         ]
         counts_lines = [
@@ -605,8 +656,16 @@ class ChampionsCircle(commands.Cog):
         }
 
         applications_open = await self.config.guild(guild).applications_open()
+        opened_at = await self.config.guild(guild).applications_opened_at()
+        if applications_open and not opened_at:
+            opened_at = int(datetime.now(timezone.utc).timestamp())
+            await self.config.guild(guild).applications_opened_at.set(opened_at)
         status = "Open" if applications_open else "Not started"
         time_display = self._format_time_display(tourney_time)
+        close_display = "Not set"
+        if opened_at:
+            close_ts = int(opened_at + (duration * 86400))
+            close_display = f"<t:{close_ts}:F> (<t:{close_ts}:R>)"
         updated_ts = int(datetime.now(timezone.utc).timestamp())
 
         forum_id = await self.config.guild(guild).champions_forum()
@@ -618,6 +677,7 @@ class ChampionsCircle(commands.Cog):
             description=tourney_description,
             status=status,
             time_display=time_display,
+            close_display=close_display,
             duration=duration,
             counts=counts,
             forum=forum,
@@ -629,6 +689,7 @@ class ChampionsCircle(commands.Cog):
             description=tourney_description,
             status=status,
             time_display=time_display,
+            close_display=close_display,
             duration=duration,
             counts=counts,
             forum=forum,
@@ -653,15 +714,16 @@ class ChampionsCircle(commands.Cog):
         except discord.HTTPException as e:
             self.logger.error(f"Error updating panel view: {str(e)}")
             try:
+                fallback_view = ChampionsApplyView(self)
                 message_id = await self.config.guild(guild).champions_message_id()
                 if message_id:
                     try:
                         message = await channel.fetch_message(message_id)
-                        await message.edit(embed=fallback_embed)
+                        await message.edit(embed=fallback_embed, view=fallback_view)
                         return
                     except discord.HTTPException:
                         await self.config.guild(guild).champions_message_id.set(None)
-                message = await channel.send(embed=fallback_embed)
+                message = await channel.send(embed=fallback_embed, view=fallback_view)
                 await self.config.guild(guild).champions_message_id.set(message.id)
             except discord.HTTPException as exc:
                 self.logger.error(f"Error updating embed fallback: {str(exc)}")
@@ -819,7 +881,8 @@ class ChampionsCircle(commands.Cog):
             name="Applications",
             value=(
                 "Use the **Apply** button in the Champions Circle channel to apply.\n"
-                "`cancel_application` - cancel your application"
+                "`cancel_application` - cancel your application\n"
+                "`ccapplicants` - view applicant lists"
             ),
             inline=False,
         )
@@ -876,6 +939,52 @@ class ChampionsCircle(commands.Cog):
 
         await ctx.send(embed=embed)
 
+    @commands.command(name="ccapplicants", aliases=["ccapps", "ccroster"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def ccapplicants(self, ctx):
+        """View applicant lists by status."""
+        guild = ctx.guild
+        active = await self._load_application_list(guild, "active_applications")
+        approved = await self._load_application_list(guild, "approved_applications")
+        denied = await self._load_application_list(guild, "denied_applications")
+        cancelled = await self._load_application_list(guild, "cancelled_applications")
+
+        embed = discord.Embed(
+            title="Champions Circle applicants",
+            color=discord.Color.green(),
+        )
+        embed.add_field(
+            name="Totals",
+            value=(
+                f"🟡 Active: {len(active)}\n"
+                f"🟢 Approved: {len(approved)}\n"
+                f"🔴 Denied: {len(denied)}\n"
+                f"⚪ Cancelled: {len(cancelled)}"
+            ),
+            inline=False,
+        )
+
+        any_entries = any([active, approved, denied, cancelled])
+        if not any_entries:
+            embed.add_field(name="Applicants", value="No applications yet.", inline=False)
+            await ctx.send(embed=embed)
+            return
+
+        for label, apps in (
+            ("Active Applicants", active),
+            ("Approved Champions", approved),
+            ("Denied Applications", denied),
+            ("Cancelled Applications", cancelled),
+        ):
+            if not apps:
+                continue
+            lines = [self._format_user_entry(guild, app) for app in apps]
+            for idx, chunk in enumerate(self._chunk_lines(lines), start=1):
+                name = label if idx == 1 else f"{label} ({idx})"
+                embed.add_field(name=name, value="\n".join(chunk), inline=False)
+
+        await ctx.send(embed=embed)
+
     @commands.command(name="ccsettings")
     @commands.admin_or_permissions(administrator=True)
     async def ccsettings(self, ctx):
@@ -887,6 +996,7 @@ class ChampionsCircle(commands.Cog):
         duration = await self.config.guild(guild).application_duration()
         questions = await self.config.guild(guild).custom_questions()
         applications_open = await self.config.guild(guild).applications_open()
+        opened_at = await self.config.guild(guild).applications_opened_at()
 
         active = await self._load_application_list(guild, "active_applications")
         approved = await self._load_application_list(guild, "approved_applications")
@@ -899,6 +1009,13 @@ class ChampionsCircle(commands.Cog):
 
         embed = discord.Embed(title="Champions Circle settings", color=0x00ff00)
         embed.add_field(name="Status", value="Open" if applications_open else "Not started", inline=True)
+        if opened_at:
+            close_ts = int(opened_at + (duration * 86400))
+            embed.add_field(
+                name="Applications close",
+                value=f"<t:{close_ts}:F> (<t:{close_ts}:R>)",
+                inline=True,
+            )
         embed.add_field(name="Forum", value=forum.mention if forum else "Not set", inline=True)
         embed.add_field(name="Announcements", value=channel.mention if channel else "Not set", inline=True)
         embed.add_field(name="Champions role", value=role.mention if role else "Not set", inline=True)
@@ -1272,6 +1389,12 @@ class JoinButton(discord.ui.Button):
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
+        if not await self.cog.config.guild(interaction.guild).applications_open():
+            await interaction.response.send_message(
+                "Applications are currently closed.",
+                ephemeral=True,
+            )
+            return
         class DummyMessage:
             def __init__(self, author):
                 self.author = author
