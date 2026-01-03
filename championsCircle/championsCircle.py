@@ -1194,6 +1194,7 @@ class ApplicationModal(discord.ui.Modal):
 
         super().__init__(title="Tournament Application")
         self.cog = cog
+        self.all_questions = trimmed
         self.compound_label = "Additional info"
         self.compound_questions: List[str] = []
         if len(trimmed) > 5:
@@ -1363,15 +1364,9 @@ class ApplicationModal(discord.ui.Modal):
                     return str(value).strip()
             return None
 
-        summary_parts = []
-        rank = extract_answer(["rank"])
-        if rank:
-            summary_parts.append(f"**{rank}**")
-
         embed = discord.Embed(title="Tournament Application", color=discord.Color.blue())
-        if summary_parts:
-            embed.description = " | ".join(summary_parts)
-        for question, answer in answers.items():
+        for question in self.all_questions:
+            answer = answers.get(question, "-")
             value_text = str(answer).strip() if answer is not None else ""
             if not value_text:
                 value_text = "-"
@@ -1410,7 +1405,10 @@ class ApplicationModal(discord.ui.Modal):
             line = lines[idx - 1] if idx - 1 < len(lines) else ""
             line = re.sub(r"^(?:\\d+[.)]|[-•])\\s*", "", line).strip()
             question_clean = question.rstrip(":").strip()
-            if question_clean and line.lower().startswith(question_clean.lower()):
+            line_clean = line.rstrip(":").strip()
+            if question_clean and line_clean.lower() == question_clean.lower():
+                line = ""
+            elif question_clean and line.lower().startswith(question_clean.lower()):
                 line = line[len(question_clean):].lstrip(" :-").strip()
             answers.append(line or "-")
         return answers
