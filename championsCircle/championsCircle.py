@@ -29,7 +29,10 @@ class ChampionsCircle(commands.Cog):
                 "Rank:",
                 "Primary Platform (PC, Xbox, PlayStation, Switch):",
                 "Preferred Region for Matches (NA East, NA West, EU):",
-                "RL Tracker Link:"
+                "RL Tracker Link:",
+                "Age:",
+                "Timezone:",
+                "Twitch Channel (optional):"
             ],
             "tourney_title": "Champions Circle Tournament",
             "tourney_description": "Join our exciting tournament!",
@@ -800,9 +803,12 @@ class ApplicationModal(discord.ui.Modal):
             trimmed = [
                 "Epic Account ID:",
                 "Rank:",
-                "Primary Platform:",
-                "Preferred Region:",
+                "Primary Platform (PC, Xbox, PlayStation, Switch):",
+                "Preferred Region for Matches (NA East, NA West, EU):",
                 "RL Tracker Link:",
+                "Age:",
+                "Timezone:",
+                "Twitch Channel (optional):",
             ]
 
         total_pages = max(1, math.ceil(len(trimmed) / 5))
