@@ -148,15 +148,26 @@ class ChampionsCircle(commands.Cog):
         """Initialize and setup the tournament system"""
 
         guild = ctx.guild
+        category = None
+        category_name = "Champions Circle"
         forum_channel = None
         forum_id = await self.config.guild(guild).champions_forum()
         if forum_id:
             forum_channel = guild.get_channel(forum_id)
         if forum_channel is None:
+            category = next(
+                (c for c in guild.categories if c.name.lower() == category_name.lower()), None
+            )
+            if category is None:
+                category = await guild.create_category(
+                    name=category_name,
+                    reason="Champions Circle setup",
+                )
             forum_channel = await guild.create_forum(
                 name="tournament-applications",
                 topic="Tournament Applications",
                 reason="Tournament setup",
+                category=category,
             )
 
         tags = [
@@ -172,9 +183,19 @@ class ChampionsCircle(commands.Cog):
         if announcement_id:
             announcement_channel = guild.get_channel(announcement_id)
         if announcement_channel is None:
+            if category is None:
+                category = next(
+                    (c for c in guild.categories if c.name.lower() == category_name.lower()), None
+                )
+            if category is None:
+                category = await guild.create_category(
+                    name=category_name,
+                    reason="Champions Circle setup",
+                )
             announcement_channel = await guild.create_text_channel(
                 name="tournament-announcements",
                 topic="Tournament Announcements",
+                category=category,
             )
 
         await self.config.guild(guild).champions_forum.set(forum_channel.id)
