@@ -896,13 +896,17 @@ class ApplicationModal(discord.ui.Modal):
         merged_answers = {**self.answers_so_far, **answers}
 
         if (self.page + 1) * 5 < len(self.all_questions):
-            next_modal = ApplicationModal(
+            view = ContinueApplicationView(
                 self.cog,
                 self.all_questions,
                 page=self.page + 1,
                 answers=merged_answers,
             )
-            await interaction.response.send_modal(next_modal)
+            await interaction.response.send_message(
+                "Continue to the next page of the application.",
+                view=view,
+                ephemeral=True,
+            )
             return
 
         def extract_answer(tokens: List[str]) -> Optional[str]:
@@ -1127,6 +1131,25 @@ class ChampionsApplyView(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(JoinButton(cog))
         self.add_item(CancelApplicationButton(cog))
+
+
+class ContinueApplicationView(discord.ui.View):
+    def __init__(self, cog, questions: List[str], page: int, answers: Dict[str, Any]):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.questions = questions
+        self.page = page
+        self.answers = answers
+
+    @discord.ui.button(label="Continue", style=discord.ButtonStyle.primary)
+    async def continue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = ApplicationModal(
+            self.cog,
+            self.questions,
+            page=self.page,
+            answers=self.answers,
+        )
+        await interaction.response.send_modal(modal)
 
 
 class CancelApplicationButton(discord.ui.Button):
