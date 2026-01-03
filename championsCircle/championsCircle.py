@@ -204,20 +204,24 @@ class ChampionsCircle(commands.Cog):
             await self.config.guild(interaction.guild).tourney_title.set(modal.tourney_title.value)
             await self.config.guild(interaction.guild).tourney_description.set(modal.description.value)
 
-            try:
-                tourney_time = datetime.fromisoformat(modal.time.value).replace(tzinfo=timezone.utc)
-                timestamp = int(tourney_time.timestamp())
-                await self.config.guild(interaction.guild).tourney_time.set(timestamp)
-            except ValueError:
-                if interaction.response.is_done():
-                    await interaction.followup.send(
-                        "Invalid time format. Please use YYYY-MM-DD HH:MM:SS", ephemeral=True
-                    )
-                else:
-                    await interaction.response.send_message(
-                        "Invalid time format. Please use YYYY-MM-DD HH:MM:SS", ephemeral=True
-                    )
-                return
+            time_value = (modal.time.value or "").strip()
+            if time_value:
+                try:
+                    tourney_time = datetime.fromisoformat(time_value).replace(tzinfo=timezone.utc)
+                    timestamp = int(tourney_time.timestamp())
+                    await self.config.guild(interaction.guild).tourney_time.set(timestamp)
+                except ValueError:
+                    if interaction.response.is_done():
+                        await interaction.followup.send(
+                            "Invalid time format. Please use YYYY-MM-DD HH:MM:SS", ephemeral=True
+                        )
+                    else:
+                        await interaction.response.send_message(
+                            "Invalid time format. Please use YYYY-MM-DD HH:MM:SS", ephemeral=True
+                        )
+                    return
+            else:
+                await self.config.guild(interaction.guild).tourney_time.set(None)
 
             try:
                 days = int(modal.duration.value)
@@ -240,7 +244,10 @@ class ChampionsCircle(commands.Cog):
             )
             embed.add_field(name="Title", value=modal.tourney_title.value)
             embed.add_field(name="Description", value=modal.description.value)
-            embed.add_field(name="Time", value=f"<t:{timestamp}:F>")
+            if time_value:
+                embed.add_field(name="Time", value=f"<t:{timestamp}:F>")
+            else:
+                embed.add_field(name="Time", value="Not set")
             embed.add_field(name="Application Duration", value=f"{days} days")
 
             forum_id = await self.config.guild(interaction.guild).champions_forum()
@@ -1047,8 +1054,8 @@ class SetupModal(discord.ui.Modal, title="Tournament Setup"):
 
         self.time = discord.ui.TextInput(
             label="Tournament Time",
-            placeholder="YYYY-MM-DD HH:MM:SS",
-            required=True,
+            placeholder="YYYY-MM-DD HH:MM:SS (optional)",
+            required=False,
         )
         self.add_item(self.time)
 
