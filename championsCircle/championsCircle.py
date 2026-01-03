@@ -228,7 +228,7 @@ class ChampionsCircle(commands.Cog):
                 self.add_item(SetupButton(cog))
 
         await ctx.send(
-            "Champions role set automatically. Click to continue tournament setup:",
+            "Tournament setup ready. Click to continue:",
             view=SetupView(self),
         )
 
