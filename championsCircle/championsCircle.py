@@ -510,17 +510,8 @@ class ChampionsCircle(commands.Cog):
 
         answers = application.get("answers") or {}
         rank = self._extract_answer(answers, ["rank"]) or "Unranked"
-        region = self._extract_answer(answers, ["region"])
-        platform = self._extract_answer(answers, ["platform"])
-        tracker_link = self._extract_answer(answers, ["tracker", "rl tracker"])
 
         parts = [display, f"**{rank}**"]
-        if region:
-            parts.append(region)
-        if platform:
-            parts.append(platform)
-        if tracker_link:
-            parts.append(f"[Tracker]({tracker_link})")
         thread_id = application.get("thread_id")
         if thread_id:
             parts.append(f"[Application](https://discord.com/channels/{guild.id}/{thread_id})")
@@ -1264,6 +1255,28 @@ class ApplicationModal(discord.ui.Modal):
             self.text_inputs.append((question_text, field))
             self.add_item(field)
 
+    def _normalize_link_value(self, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            return cleaned
+        if cleaned.startswith(("http://", "https://")):
+            return cleaned
+        if cleaned.startswith("www."):
+            return f"https://{cleaned}"
+        if re.match(r"^[a-z0-9.-]+\\.[a-z]{2,}(/|$)", cleaned, re.IGNORECASE):
+            return f"https://{cleaned}"
+        return cleaned
+
+    def _format_answer(self, question: str, value: str) -> str:
+        if not value:
+            return value
+        question_lower = question.lower()
+        if "link" in question_lower or "tracker" in question_lower:
+            return self._normalize_link_value(value)
+        if re.match(r"^https?://", value.strip(), re.IGNORECASE):
+            return value.strip()
+        return value
+
     def _build_select(self, question: str, *, required: bool) -> Optional[discord.ui.Select]:
         question_lower = question.lower()
         if "rank" in question_lower:
@@ -1315,9 +1328,9 @@ class ApplicationModal(discord.ui.Modal):
             if self.compound_questions and question == self.compound_label:
                 parsed = self._parse_compound_answers(field.value)
                 for q_text, value in zip(self.compound_questions, parsed):
-                    answers[q_text] = value
+                    answers[q_text] = self._format_answer(q_text, value)
                 continue
-            answers[question] = field.value
+            answers[question] = self._format_answer(question, field.value)
         for question, select in self.select_inputs:
             selected = select.values[0] if select.values else None
             answers[question] = selected or "-"
@@ -1352,23 +1365,19 @@ class ApplicationModal(discord.ui.Modal):
 
         summary_parts = []
         rank = extract_answer(["rank"])
-        region = extract_answer(["region"])
-        platform = extract_answer(["platform"])
-        tracker_link = extract_answer(["tracker", "rl tracker"])
         if rank:
             summary_parts.append(f"**{rank}**")
-        if region:
-            summary_parts.append(region)
-        if platform:
-            summary_parts.append(platform)
-        if tracker_link:
-            summary_parts.append(f"[Tracker]({tracker_link})")
 
         embed = discord.Embed(title="Tournament Application", color=discord.Color.blue())
         if summary_parts:
             embed.description = " | ".join(summary_parts)
         for question, answer in answers.items():
-            embed.add_field(name=question, value=answer or "-", inline=False)
+            value_text = str(answer).strip() if answer is not None else ""
+            if not value_text:
+                value_text = "-"
+            if re.match(r"^https?://", value_text, re.IGNORECASE):
+                value_text = f"[Open link]({value_text})"
+            embed.add_field(name=question, value=value_text, inline=False)
         embed.set_author(name=interaction.user.name, icon_url=interaction.user.display_avatar.url)
 
         view = ApplicationReviewView(self.cog, interaction.user.id)
