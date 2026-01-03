@@ -201,7 +201,7 @@ class ChampionsCircle(commands.Cog):
     async def process_setup(self, interaction: discord.Interaction, modal: "SetupModal"):
         """Process the setup modal submission"""
         try:
-            await self.config.guild(interaction.guild).tourney_title.set(modal.title.value)
+            await self.config.guild(interaction.guild).tourney_title.set(modal.tourney_title.value)
             await self.config.guild(interaction.guild).tourney_description.set(modal.description.value)
 
             try:
@@ -238,7 +238,7 @@ class ChampionsCircle(commands.Cog):
                 color=discord.Color.green(),
                 description="Your tournament has been configured with the following settings:",
             )
-            embed.add_field(name="Title", value=modal.title.value)
+            embed.add_field(name="Title", value=modal.tourney_title.value)
             embed.add_field(name="Description", value=modal.description.value)
             embed.add_field(name="Time", value=f"<t:{timestamp}:F>")
             embed.add_field(name="Application Duration", value=f"{days} days")
@@ -1030,12 +1030,12 @@ class SetupModal(discord.ui.Modal, title="Tournament Setup"):
         super().__init__()
         self.cog = cog
 
-        self.title = discord.ui.TextInput(
+        self.tourney_title = discord.ui.TextInput(
             label="Tournament Title",
             placeholder="Enter tournament title",
             required=True,
         )
-        self.add_item(self.title)
+        self.add_item(self.tourney_title)
 
         self.description = discord.ui.TextInput(
             label="Tournament Description",
