@@ -105,7 +105,7 @@ class ChampionsCircle(commands.Cog):
             view=RoleView(self)
         )
 
-    async def process_setup(self, interaction: discord.Interaction, modal: SetupModal):
+    async def process_setup(self, interaction: discord.Interaction, modal: "SetupModal"):
         """Process the setup modal submission"""
         try:
             # Set tournament title and description
