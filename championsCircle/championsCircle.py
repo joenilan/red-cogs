@@ -170,26 +170,32 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(guild).champions_forum.set(forum_channel.id)
         await self.config.guild(guild).champions_channel.set(announcement_channel.id)
 
-        # Create role selection view
-        class RoleSelect(discord.ui.RoleSelect):
-            def __init__(self):
-                super().__init__(placeholder="Select Champions Role", min_values=1, max_values=1)
+        role = next((r for r in guild.roles if r.name.lower() == "champions"), None)
+        if role is None:
+            role = await guild.create_role(
+                name="Champions",
+                reason="Champions Circle setup",
+                mentionable=True,
+            )
+
+        await self.config.guild(guild).champions_role_id.set(role.id)
+
+        class SetupButton(discord.ui.Button):
+            def __init__(self, cog):
+                super().__init__(label="Continue setup", style=discord.ButtonStyle.green)
+                self.cog = cog
 
             async def callback(self, interaction: discord.Interaction):
-                role = self.values[0]
-                await self.view.cog.config.guild(interaction.guild).champions_role_id.set(role.id)
-                await interaction.response.send_modal(SetupModal(self.view.cog))
+                await interaction.response.send_modal(SetupModal(self.cog))
 
-        class RoleView(discord.ui.View):
+        class SetupView(discord.ui.View):
             def __init__(self, cog):
-                super().__init__()
-                self.cog = cog
-                self.add_item(RoleSelect())
+                super().__init__(timeout=600)
+                self.add_item(SetupButton(cog))
 
-        # Start setup process
         await ctx.send(
-            "Let's set up your tournament! First, select the Champions role:",
-            view=RoleView(self),
+            "Champions role set automatically. Click to continue tournament setup:",
+            view=SetupView(self),
         )
 
     async def process_setup(self, interaction: discord.Interaction, modal: "SetupModal"):
