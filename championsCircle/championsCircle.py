@@ -830,11 +830,12 @@ class ApplicationModal(discord.ui.Modal, title="Tournament Application"):
         )
         applied_tags = [pending_tag] if pending_tag else None
 
-        thread = await forum.create_thread(
+        thread_result = await forum.create_thread(
             name=f"Application - {interaction.user.name}",
             content=f"New application from {interaction.user.mention}",
             applied_tags=applied_tags,
         )
+        thread = thread_result.thread if hasattr(thread_result, "thread") else thread_result
 
         answers = {question: field.value for question, field in zip(self.questions, self.inputs)}
 
