@@ -418,36 +418,42 @@ class ChampionsCircle(commands.Cog):
 
     async def update_embed(self, guild):
         tourney_title = await self.config.guild(guild).tourney_title()
-        embed = discord.Embed(title=tourney_title, color=0x00ff00)
-
         tourney_description = await self.config.guild(guild).tourney_description()
         tourney_time = await self.config.guild(guild).tourney_time()
+        duration = await self.config.guild(guild).application_duration()
 
-        embed.add_field(name="Description", value=tourney_description, inline=False)
-        if tourney_time:
-            embed.add_field(name="Time", value=f"<t:{tourney_time}:F>", inline=False)
-        else:
-            embed.add_field(name="Time", value="Not set", inline=False)
+        embed = discord.Embed(
+            title=tourney_title,
+            description=tourney_description or "No description set.",
+            color=0x00ff00,
+        )
 
         def extract_answer(answers: Dict[str, Any], tokens: List[str]) -> Optional[str]:
             for key, value in answers.items():
                 key_text = str(key).lower()
                 if any(token in key_text for token in tokens):
-                    return str(value)
+                    return str(value).strip()
             return None
 
-        async def format_user_entry(application: Dict[str, Any]) -> str:
+        def format_user_entry(application: Dict[str, Any]) -> str:
             user_id = application.get("user_id")
             user = guild.get_member(user_id) if user_id else None
             display = user.mention if user else f"<@{user_id}>"
 
             answers = application.get("answers") or {}
             rank = extract_answer(answers, ["rank"]) or "Unranked"
-            tracker_link = extract_answer(answers, ["tracker", "rl tracker"]) or ""
+            region = extract_answer(answers, ["region"])
+            platform = extract_answer(answers, ["platform"])
+            tracker_link = extract_answer(answers, ["tracker", "rl tracker"])
 
+            parts = [display, f"**{rank}**"]
+            if region:
+                parts.append(region)
+            if platform:
+                parts.append(platform)
             if tracker_link:
-                return f"{display} - [{rank}]({tracker_link})"
-            return f"{display} - {rank}"
+                parts.append(f"[Tracker]({tracker_link})")
+            return " | ".join(parts)
 
         def chunk_lines(lines: List[str]) -> List[List[str]]:
             chunks: List[List[str]] = []
@@ -469,21 +475,46 @@ class ChampionsCircle(commands.Cog):
         denied_applications = await self._load_application_list(guild, "denied_applications")
         cancelled_applications = await self._load_application_list(guild, "cancelled_applications")
 
+        status = "Open" if await self.config.guild(guild).champions_message_id() else "Not started"
+        time_display = f"<t:{tourney_time}:F> (<t:{tourney_time}:R>)" if tourney_time else "Not set"
+
+        embed.add_field(
+            name="Status",
+            value=f"**{status}**\nTime: {time_display}\nDuration: {duration} days",
+            inline=True,
+        )
+        embed.add_field(
+            name="Applications",
+            value=(
+                f"🟡 Active: **{len(active_applications)}**\n"
+                f"✅ Approved: **{len(approved_applications)}**\n"
+                f"❌ Denied: **{len(denied_applications)}**\n"
+                f"⚠️ Cancelled: **{len(cancelled_applications)}**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="How to apply",
+            value="Use the **Apply** button below to submit your application.",
+            inline=True,
+        )
+
         for label, apps, empty_label in (
-            ("Active Applications", active_applications, "No active applications"),
-            ("Approved Applications", approved_applications, "No approved applications"),
+            ("Active Applicants", active_applications, "No active applications"),
+            ("Approved Champions", approved_applications, "No approved applications"),
             ("Denied Applications", denied_applications, "No denied applications"),
             ("Cancelled Applications", cancelled_applications, "No cancelled applications"),
         ):
-            lines: List[str] = []
-            for app in apps:
-                lines.append(await format_user_entry(app))
+            lines = [format_user_entry(app) for app in apps]
             if not lines:
                 embed.add_field(name=label, value=empty_label, inline=False)
                 continue
             for idx, chunk in enumerate(chunk_lines(lines), start=1):
                 name = label if idx == 1 else f"{label} ({idx})"
                 embed.add_field(name=name, value="\n".join(chunk), inline=False)
+
+        embed.timestamp = datetime.now(timezone.utc)
+        embed.set_footer(text="Champions Circle - Last updated")
 
         channel = self.bot.get_channel(await self.config.guild(guild).champions_channel())
         if not channel:
@@ -537,6 +568,12 @@ class ChampionsCircle(commands.Cog):
                         await thread.edit(applied_tags=[cancelled_tag])
                     except discord.HTTPException:
                         self.logger.error("Failed to tag cancelled application thread %s", thread_id)
+                embed = discord.Embed(
+                    title="Application Cancelled",
+                    description=f"{ctx.author.mention} cancelled their application.",
+                    color=discord.Color.orange(),
+                )
+                await thread.send(embed=embed)
 
         await self._move_application(ctx.guild, ctx.author.id, "cancelled_applications", entry=entry)
         await self.update_embed(ctx.guild)
@@ -664,6 +701,7 @@ class ChampionsCircle(commands.Cog):
             value=(
                 "`cclist` - list current champions\n"
                 "`ccsettings` - view current configuration\n"
+                "`ccsettime` - set/clear tournament time\n"
                 "`setchampionschannel` / `setchampionsrole` / `setapplicationduration`"
             ),
             inline=False,
@@ -799,7 +837,31 @@ class ApplicationModal(discord.ui.Modal, title="Tournament Application"):
         )
 
         answers = {question: field.value for question, field in zip(self.questions, self.inputs)}
+
+        def extract_answer(tokens: List[str]) -> Optional[str]:
+            for key, value in answers.items():
+                key_text = str(key).lower()
+                if any(token in key_text for token in tokens):
+                    return str(value).strip()
+            return None
+
+        summary_parts = []
+        rank = extract_answer(["rank"])
+        region = extract_answer(["region"])
+        platform = extract_answer(["platform"])
+        tracker_link = extract_answer(["tracker", "rl tracker"])
+        if rank:
+            summary_parts.append(f"**{rank}**")
+        if region:
+            summary_parts.append(region)
+        if platform:
+            summary_parts.append(platform)
+        if tracker_link:
+            summary_parts.append(f"[Tracker]({tracker_link})")
+
         embed = discord.Embed(title="Tournament Application", color=discord.Color.blue())
+        if summary_parts:
+            embed.description = " | ".join(summary_parts)
         for question, answer in answers.items():
             embed.add_field(name=question, value=answer or "-", inline=False)
         embed.set_author(name=interaction.user.name, icon_url=interaction.user.display_avatar.url)
@@ -845,6 +907,18 @@ class ApplicationReviewView(discord.ui.View):
             return True
         await self._send_ephemeral(interaction, "You don't have permission to review applications.")
         return False
+
+    async def _post_action_embed(
+        self, interaction: discord.Interaction, title: str, description: str, color: discord.Color
+    ) -> None:
+        thread = interaction.channel
+        if isinstance(thread, discord.Thread):
+            embed = discord.Embed(title=title, description=description, color=color)
+            embed.set_author(
+                name=interaction.user.display_name,
+                icon_url=interaction.user.display_avatar.url,
+            )
+            await thread.send(embed=embed)
 
     @discord.ui.select(
         placeholder="Select review action",
@@ -902,8 +976,12 @@ class ApplicationReviewView(discord.ui.View):
         if member and role:
             await member.add_roles(role)
 
-        if isinstance(thread, discord.Thread):
-            await thread.send(f"Application approved by {interaction.user.mention}")
+        await self._post_action_embed(
+            interaction,
+            "Application Approved",
+            f"{interaction.user.mention} approved <@{self.applicant_id}>.",
+            discord.Color.green(),
+        )
 
         if member:
             try:
@@ -917,10 +995,12 @@ class ApplicationReviewView(discord.ui.View):
     async def request_more_info(self, interaction: discord.Interaction):
         thread = interaction.channel
         member = interaction.guild.get_member(self.applicant_id)
-        if isinstance(thread, discord.Thread):
-            await thread.send(
-                f"{interaction.user.mention} requested more info from <@{self.applicant_id}>."
-            )
+        await self._post_action_embed(
+            interaction,
+            "More Info Requested",
+            f"{interaction.user.mention} requested more info from <@{self.applicant_id}>.",
+            discord.Color.orange(),
+        )
         if member:
             try:
                 await member.send(
@@ -1028,6 +1108,12 @@ class CancelApplicationButton(discord.ui.Button):
                         self.cog.logger.error(
                             "Failed to tag cancelled application thread %s", thread_id
                         )
+                embed = discord.Embed(
+                    title="Application Cancelled",
+                    description=f"<@{user_id}> cancelled their application.",
+                    color=discord.Color.orange(),
+                )
+                await thread.send(embed=embed)
 
         await self.cog._move_application(guild, user_id, "cancelled_applications", entry=entry)
         await self.cog.update_embed(guild)
@@ -1126,10 +1212,19 @@ class DenialReasonModal(discord.ui.Modal, title="Application Denial"):
             return
 
         if isinstance(thread, discord.Thread):
-            await thread.send(
-                f"Application denied by {interaction.user.mention}\n"
-                f"Reason: {self.reason.value}"
+            embed = discord.Embed(
+                title="Application Denied",
+                description=(
+                    f"{interaction.user.mention} denied <@{self.applicant_id}>.\n"
+                    f"Reason: {self.reason.value}"
+                ),
+                color=discord.Color.red(),
             )
+            embed.set_author(
+                name=interaction.user.display_name,
+                icon_url=interaction.user.display_avatar.url,
+            )
+            await thread.send(embed=embed)
 
         member = interaction.guild.get_member(self.applicant_id)
         if member:
