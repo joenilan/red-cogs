@@ -4,6 +4,7 @@ from discord.ext.commands import guild_only
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+import re
 from typing import Optional, List, Dict, Any, Tuple
 
 class ChampionsCircle(commands.Cog):
@@ -462,7 +463,7 @@ class ChampionsCircle(commands.Cog):
             return
 
         question_list = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-        note = "\n\nNote: The modal shows the first 5 questions. Extra questions are asked in the thread."
+        note = "\n\nNote: If there are more than 5 questions, extras are grouped into an \"Additional info\" field in the modal."
         await ctx.send(f"Current questions:\n{question_list}{note}")
 
     def _format_time_display(self, tourney_time: Optional[int]) -> str:
@@ -824,7 +825,7 @@ class ChampionsCircle(commands.Cog):
         )
         embed.add_field(
             name="Questions",
-            value="`ccquestions add/remove/list` - manage application questions (first 5 in modal, extras in thread)",
+            value="`ccquestions add/remove/list` - manage questions (extras grouped into Additional info)",
             inline=False,
         )
         embed.add_field(
@@ -935,8 +936,14 @@ class ApplicationModal(discord.ui.Modal):
 
         super().__init__(title="Tournament Application")
         self.cog = cog
-        self.questions = trimmed[:5]
-        self.extra_questions = trimmed[5:]
+        self.compound_label = "Additional info"
+        self.compound_questions: List[str] = []
+        if len(trimmed) > 5:
+            self.compound_questions = trimmed[4:]
+            self.questions = trimmed[:4] + [self.compound_label]
+        else:
+            self.questions = trimmed[:5]
+        self.extra_questions = []
 
         self.text_inputs: List[Tuple[str, discord.ui.TextInput]] = []
         self.select_inputs: List[Tuple[str, discord.ui.Select]] = []
@@ -966,12 +973,27 @@ class ApplicationModal(discord.ui.Modal):
             label = question_text[:45] if question_text else "Question"
             placeholder = question_text[:100] if question_text else "Answer"
             style = discord.TextStyle.paragraph if "note" in question_lower else discord.TextStyle.short
-            field = discord.ui.TextInput(
-                label=label,
-                placeholder=placeholder,
-                required=not is_optional,
-                style=style,
-            )
+
+            if self.compound_questions and question_text == self.compound_label:
+                prompt_lines = [f"{idx + 1}. {q}" for idx, q in enumerate(self.compound_questions)]
+                prompt_text = "\n".join(prompt_lines)
+                if len(prompt_text) > 3800:
+                    prompt_text = prompt_text[:3800].rstrip() + "..."
+                compound_required = any("optional" not in q.lower() for q in self.compound_questions)
+                field = discord.ui.TextInput(
+                    label=label,
+                    placeholder="Answer each item on its own line.",
+                    default=prompt_text,
+                    required=compound_required,
+                    style=discord.TextStyle.paragraph,
+                )
+            else:
+                field = discord.ui.TextInput(
+                    label=label,
+                    placeholder=placeholder,
+                    required=not is_optional,
+                    style=style,
+                )
             self.text_inputs.append((question_text, field))
             self.add_item(field)
 
@@ -1023,6 +1045,11 @@ class ApplicationModal(discord.ui.Modal):
         guild = interaction.guild
         answers: Dict[str, Any] = {}
         for question, field in self.text_inputs:
+            if self.compound_questions and question == self.compound_label:
+                parsed = self._parse_compound_answers(field.value)
+                for q_text, value in zip(self.compound_questions, parsed):
+                    answers[q_text] = value
+                continue
             answers[question] = field.value
         for question, select in self.select_inputs:
             selected = select.values[0] if select.values else None
@@ -1096,23 +1123,21 @@ class ApplicationModal(discord.ui.Modal):
         threads[str(interaction.user.id)] = thread.id
         await self.cog.config.guild(guild).application_threads.set(threads)
 
-        if self.extra_questions:
-            follow_up = "\n".join(f"- {q}" for q in self.extra_questions)
-            extra_embed = discord.Embed(
-                title="Additional Questions",
-                description=(
-                    "Please reply in this thread with answers to the following:\n"
-                    f"{follow_up}"
-                ),
-                color=discord.Color.blurple(),
-            )
-            await thread.send(embed=extra_embed)
-
         await self.cog.update_embed(guild)
         response_message = "Your application has been submitted!"
-        if self.extra_questions:
-            response_message += f" Please answer the additional questions in {thread.mention}."
         await interaction.response.send_message(response_message, ephemeral=True)
+
+    def _parse_compound_answers(self, raw: str) -> List[str]:
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        answers: List[str] = []
+        for idx, question in enumerate(self.compound_questions, start=1):
+            line = lines[idx - 1] if idx - 1 < len(lines) else ""
+            line = re.sub(r"^(?:\\d+[.)]|[-•])\\s*", "", line).strip()
+            question_clean = question.rstrip(":").strip()
+            if question_clean and line.lower().startswith(question_clean.lower()):
+                line = line[len(question_clean):].lstrip(" :-").strip()
+            answers.append(line or "-")
+        return answers
 
 
 class ApplicationReviewView(discord.ui.View):
