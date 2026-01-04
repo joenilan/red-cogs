@@ -352,32 +352,32 @@ class ChampionsCircle(commands.Cog):
     ) -> None:
         try:
             guild = interaction.guild
-            team_count = self._parse_int(modal.team_count.value)
-            if team_count is not None and team_count < 0:
+            team_count = self._parse_int(modal.team_count.value) or 0
+            if team_count < 0:
                 team_count = 0
 
-            category_name = modal.voice_category.value.strip() if modal.voice_category.value else ""
-            if not category_name:
-                category_name = "Champions Circle - Teams"
+            prefix = "Team"
+            category_name = (
+                f"Champions Circle - {team_count} Teams" if team_count > 0 else "Champions Circle - Teams"
+            )
 
-            prefix = modal.voice_prefix.value.strip() if modal.voice_prefix.value else "Team"
-            captain_role_text = modal.captain_role.value.strip() if modal.captain_role.value else ""
-
-            if team_count is not None:
-                await self.config.guild(guild).team_count.set(team_count)
+            await self.config.guild(guild).team_count.set(team_count)
             await self.config.guild(guild).team_voice_channel_prefix.set(prefix)
 
-            if captain_role_text:
-                role = self._resolve_role_from_text(guild, captain_role_text)
-                if role is None:
-                    role = await guild.create_role(
-                        name=captain_role_text,
-                        reason="Champions Circle setup",
-                        mentionable=True,
-                    )
-                await self.config.guild(guild).team_captain_role_id.set(role.id)
+            role = guild.get_role(await self.config.guild(guild).team_captain_role_id())
+            if role is None:
+                role = next(
+                    (r for r in guild.roles if r.name.lower() == "team captain"), None
+                )
+            if role is None:
+                role = await guild.create_role(
+                    name="Team Captain",
+                    reason="Champions Circle setup",
+                    mentionable=True,
+                )
+            await self.config.guild(guild).team_captain_role_id.set(role.id)
 
-            if team_count and team_count > 0:
+            if team_count > 0:
                 category = await self._ensure_voice_category(guild, category_name)
                 if category:
                     await self._ensure_team_voice_channels(
@@ -434,6 +434,11 @@ class ChampionsCircle(commands.Cog):
             embed.add_field(
                 name="Team voice category",
                 value=team_voice_category.mention if team_voice_category else "Not set",
+                inline=True,
+            )
+            embed.add_field(
+                name="Team count",
+                value=str(await self.config.guild(guild).team_count()),
                 inline=True,
             )
             embed.add_field(
@@ -2576,27 +2581,6 @@ class SetupAdvancedModal(discord.ui.Modal, title="Tournament Setup (Advanced)"):
             required=False,
         )
         self.add_item(self.team_count)
-
-        self.voice_category = discord.ui.TextInput(
-            label="Voice category name",
-            placeholder="Champions Circle - Teams",
-            required=False,
-        )
-        self.add_item(self.voice_category)
-
-        self.voice_prefix = discord.ui.TextInput(
-            label="Voice channel prefix",
-            placeholder="Team",
-            required=False,
-        )
-        self.add_item(self.voice_prefix)
-
-        self.captain_role = discord.ui.TextInput(
-            label="Captain role (name or ID)",
-            placeholder="Team Captain",
-            required=False,
-        )
-        self.add_item(self.captain_role)
 
     async def on_submit(self, interaction: discord.Interaction):
         await self.cog.process_advanced_setup(interaction, self)
