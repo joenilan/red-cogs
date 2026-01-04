@@ -64,11 +64,14 @@ class ChampionsCircle(commands.Cog):
             "challonge_link_grace_hours": 48,
             "challonge_link_reminder_hours": 12,
             "challonge_team_map": {},
+            "challonge_sync_roles_enabled": True,
+            "challonge_sync_roles_interval": 15,
         }
         self.config.register_guild(**default_guild)
         self.logger = logging.getLogger("red.championsCircle")
         self.application_cooldowns = commands.CooldownMapping.from_cooldown(1, 3600, commands.BucketType.user)
         self._expiry_task: Optional[asyncio.Task] = None
+        self._roles_sync_task: Optional[asyncio.Task] = None
         self._application_lists = [
             "active_applications",
             "approved_applications",
@@ -83,6 +86,8 @@ class ChampionsCircle(commands.Cog):
         self._hide_non_help_commands()
         if not self._expiry_task or self._expiry_task.done():
             self._expiry_task = asyncio.create_task(self.close_expired_applications())
+        if not self._roles_sync_task or self._roles_sync_task.done():
+            self._roles_sync_task = asyncio.create_task(self._auto_sync_roles_loop())
         try:
             self.bot.add_view(ChampionsApplyView(self))
         except Exception as exc:
@@ -91,6 +96,8 @@ class ChampionsCircle(commands.Cog):
     def cog_unload(self):
         if self._expiry_task:
             self._expiry_task.cancel()
+        if self._roles_sync_task:
+            self._roles_sync_task.cancel()
 
     def _hide_non_help_commands(self) -> None:
         for command in self.walk_commands():
@@ -636,6 +643,54 @@ class ChampionsCircle(commands.Cog):
         # Send a temporary message that will be deleted after 10 seconds
         temp_msg = await channel.send("Tournament ended. Channel cleared, cog state reset, and application cooldowns reset. You can now use the tourney start command for a new tournament.", delete_after=10)
 
+    @commands.group(name="ccscore")
+    @commands.guild_only()
+    async def ccscore(self, ctx):
+        """Report match scores for your team."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send("Use `ccscore report <match_id> <score>` or `ccscore panel`.")
+
+    @ccscore.command(name="panel")
+    async def ccscore_panel(self, ctx):
+        """Post a score report button in the current team channel."""
+        team_number = await self._get_team_number_for_channel(ctx.guild, ctx.channel)
+        if not team_number:
+            await ctx.send("This is not a team text channel.")
+            return
+        team_role = self._get_team_role_for_number(ctx.guild, team_number)
+        captain_role_id = await self.config.guild(ctx.guild).team_captain_role_id()
+        if not self._member_can_report_score(ctx.author, team_role, captain_role_id):
+            await ctx.send("Only team captains or mods can post the score panel.")
+            return
+        await ctx.send("Use the button below to report your match score:", view=ScoreReportView(self))
+
+    @ccscore.command(name="report")
+    async def ccscore_report(self, ctx, match_id: int, score: str):
+        """Report a match score (format: X-Y)."""
+        team_number = await self._get_team_number_for_channel(ctx.guild, ctx.channel)
+        if not team_number:
+            await ctx.send("This is not a team text channel.")
+            return
+        team_role = self._get_team_role_for_number(ctx.guild, team_number)
+        captain_role_id = await self.config.guild(ctx.guild).team_captain_role_id()
+        if not self._member_can_report_score(ctx.author, team_role, captain_role_id):
+            await ctx.send("Only team captains or mods can report scores.")
+            return
+        team_map = await self.config.guild(ctx.guild).challonge_team_map()
+        if not isinstance(team_map, dict):
+            team_map = {}
+        participant_id = team_map.get(str(team_number))
+        if not participant_id:
+            await ctx.send("No Challonge team mapping for this channel.")
+            return
+        ok, message = await self._submit_match_score(
+            ctx.guild,
+            match_id=match_id,
+            participant_id=int(participant_id),
+            score_input=score,
+        )
+        await ctx.send(message)
+
     @commands.group(name="ccquestions")
     @commands.admin_or_permissions(administrator=True)
     async def ccquestions(self, ctx):
@@ -1089,6 +1144,216 @@ class ChampionsCircle(commands.Cog):
             )
         return overwrites
 
+    async def _get_team_number_for_channel(
+        self, guild: discord.Guild, channel: discord.abc.GuildChannel
+    ) -> Optional[int]:
+        team_channels = await self.config.guild(guild).team_text_channel_ids()
+        if channel.id not in (team_channels or []):
+            return None
+        return self._extract_team_number(channel.name or "")
+
+    def _get_team_role_for_number(
+        self, guild: discord.Guild, team_number: int
+    ) -> Optional[discord.Role]:
+        if team_number <= 0:
+            return None
+        for role in guild.roles:
+            if role.name.lower() == f"team {team_number}":
+                return role
+        for role in guild.roles:
+            if self._extract_team_number(role.name or "") == team_number:
+                return role
+        return None
+
+    def _member_can_report_score(
+        self, member: discord.Member, team_role: Optional[discord.Role], captain_role_id: Optional[int]
+    ) -> bool:
+        if member.guild_permissions.manage_guild or member.guild_permissions.administrator:
+            return True
+        if captain_role_id:
+            captain_role = member.guild.get_role(captain_role_id)
+            if captain_role and captain_role in member.roles:
+                return True
+        if team_role and team_role in member.roles:
+            return True
+        return False
+
+    def _parse_score_input(self, value: str) -> Optional[Tuple[int, int]]:
+        cleaned = value.replace(" ", "")
+        if "-" not in cleaned:
+            return None
+        parts = cleaned.split("-", 1)
+        if len(parts) != 2:
+            return None
+        try:
+            left = int(parts[0])
+            right = int(parts[1])
+        except ValueError:
+            return None
+        return left, right
+
+    async def _get_participant_name_map(self, guild: discord.Guild) -> Dict[int, str]:
+        api_key, slug = await self._get_challonge_credentials(guild)
+        if not api_key or not slug:
+            return {}
+        ok, payload = await self._challonge_request(
+            guild, "GET", f"/tournaments/{slug}/participants.json"
+        )
+        if not ok:
+            return {}
+        participants = payload if isinstance(payload, list) else []
+        name_map: Dict[int, str] = {}
+        for entry in participants:
+            participant = entry.get("participant", {})
+            pid = participant.get("id")
+            name = participant.get("name")
+            if pid is not None and name:
+                name_map[int(pid)] = name
+        return name_map
+
+    async def _get_open_matches_for_participant(
+        self, guild: discord.Guild, participant_id: int
+    ) -> List[Dict[str, Any]]:
+        api_key, slug = await self._get_challonge_credentials(guild)
+        if not api_key or not slug:
+            return []
+        ok, payload = await self._challonge_request(
+            guild, "GET", f"/tournaments/{slug}/matches.json"
+        )
+        if not ok:
+            return []
+        matches = payload if isinstance(payload, list) else []
+        filtered: List[Dict[str, Any]] = []
+        for entry in matches:
+            match = entry.get("match", {})
+            state = match.get("state")
+            if state not in {"open", "pending"}:
+                continue
+            p1 = match.get("player1_id") or match.get("participant1_id")
+            p2 = match.get("player2_id") or match.get("participant2_id")
+            if participant_id in {p1, p2}:
+                filtered.append(match)
+        return filtered
+
+    async def _submit_match_score(
+        self,
+        guild: discord.Guild,
+        *,
+        match_id: int,
+        participant_id: int,
+        score_input: str,
+    ) -> Tuple[bool, str]:
+        api_key, slug = await self._get_challonge_credentials(guild)
+        if not api_key or not slug:
+            return False, "Challonge API key or tournament not set."
+
+        ok, payload = await self._challonge_request(
+            guild, "GET", f"/tournaments/{slug}/matches/{match_id}.json"
+        )
+        if not ok:
+            return False, f"Challonge match fetch failed: {payload}"
+        match = payload.get("match") if isinstance(payload, dict) else None
+        if not match:
+            return False, "Match not found."
+
+        p1 = match.get("player1_id") or match.get("participant1_id")
+        p2 = match.get("player2_id") or match.get("participant2_id")
+        if participant_id not in {p1, p2}:
+            return False, "Your team is not part of that match."
+
+        scores = self._parse_score_input(score_input)
+        if not scores:
+            return False, "Score must be in the form `X-Y`."
+        our_score, opp_score = scores
+        if our_score == opp_score:
+            return False, "Scores cannot be tied."
+
+        opponent_id = p2 if participant_id == p1 else p1
+        winner_id = participant_id if our_score > opp_score else opponent_id
+        scores_csv = f"{our_score}-{opp_score}"
+
+        ok, result = await self._challonge_request(
+            guild,
+            "PUT",
+            f"/tournaments/{slug}/matches/{match_id}.json",
+            data={
+                "match[scores_csv]": scores_csv,
+                "match[winner_id]": winner_id,
+            },
+        )
+        if not ok:
+            return False, f"Challonge update failed: {result}"
+        return True, "Score submitted."
+
+    async def _start_score_report(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        channel = interaction.channel
+        if not guild or not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "Score reporting must be used in a team text channel.", ephemeral=True
+            )
+            return
+
+        team_number = await self._get_team_number_for_channel(guild, channel)
+        if not team_number:
+            await interaction.response.send_message(
+                "This is not a team channel.", ephemeral=True
+            )
+            return
+
+        team_role = self._get_team_role_for_number(guild, team_number)
+        captain_role_id = await self.config.guild(guild).team_captain_role_id()
+        if not self._member_can_report_score(interaction.user, team_role, captain_role_id):
+            await interaction.response.send_message(
+                "Only team captains or mods can report scores.", ephemeral=True
+            )
+            return
+
+        team_map = await self.config.guild(guild).challonge_team_map()
+        if not isinstance(team_map, dict):
+            team_map = {}
+        participant_id = team_map.get(str(team_number))
+        if not participant_id:
+            await interaction.response.send_message(
+                "No Challonge team mapping for this channel. Use `ccchallonge teammap set`.",
+                ephemeral=True,
+            )
+            return
+
+        matches = await self._get_open_matches_for_participant(guild, int(participant_id))
+        if not matches:
+            await interaction.response.send_message(
+                "No open matches found for your team.", ephemeral=True
+            )
+            return
+
+        name_map = await self._get_participant_name_map(guild)
+        if len(matches) == 1:
+            match = matches[0]
+            p1 = match.get("player1_id") or match.get("participant1_id")
+            p2 = match.get("player2_id") or match.get("participant2_id")
+            opponent_id = p2 if int(participant_id) == p1 else p1
+            opponent_name = name_map.get(opponent_id)
+            await interaction.response.send_modal(
+                ScoreReportModal(
+                    self,
+                    guild.id,
+                    int(match.get("id")),
+                    int(participant_id),
+                    opponent_name=opponent_name,
+                )
+            )
+            return
+
+        view = ScoreMatchSelectView(
+            self, guild.id, int(participant_id), matches, name_map
+        )
+        await interaction.response.send_message(
+            "Select the match you want to report:",
+            view=view,
+            ephemeral=True,
+        )
+
     async def _ensure_team_voice_channels(
         self,
         guild: discord.Guild,
@@ -1470,6 +1735,86 @@ class ChampionsCircle(commands.Cog):
             if name and name.lower() == cleaned.lower():
                 return participant
         return None
+
+    async def _sync_roles_from_challonge(
+        self, guild: discord.Guild
+    ) -> Tuple[int, int, Optional[str]]:
+        api_key, slug = await self._get_challonge_credentials(guild)
+        if not api_key:
+            return 0, 0, "Challonge API key is not set."
+        if not slug:
+            return 0, 0, "Challonge tournament is not set."
+
+        role_ids = await self.config.guild(guild).team_role_ids()
+        team_roles = [guild.get_role(role_id) for role_id in role_ids or []]
+        team_roles = [role for role in team_roles if role]
+        if not team_roles:
+            return 0, 0, "No team roles found."
+
+        ok, participants_payload = await self._challonge_request(
+            guild, "GET", f"/tournaments/{slug}/participants.json"
+        )
+        if not ok:
+            return 0, 0, f"Challonge API error: {participants_payload}"
+
+        participant_to_team: Dict[int, int] = {}
+        team_map = await self.config.guild(guild).challonge_team_map()
+        if not isinstance(team_map, dict):
+            team_map = {}
+
+        participants = participants_payload if isinstance(participants_payload, list) else []
+        if team_map:
+            for team_str, participant_id in team_map.items():
+                try:
+                    team_index = int(team_str)
+                except ValueError:
+                    continue
+                if team_index <= 0 or team_index > len(team_roles):
+                    continue
+                try:
+                    participant_to_team[int(participant_id)] = team_index
+                except (TypeError, ValueError):
+                    continue
+        else:
+            ordered = []
+            for entry in participants:
+                participant = entry.get("participant", {})
+                seed = participant.get("seed") or 0
+                pid = participant.get("id") or 0
+                ordered.append((seed, pid, participant))
+            ordered.sort(key=lambda item: (item[0] or 0, item[1] or 0))
+
+            for idx, (_, _, participant) in enumerate(ordered, start=1):
+                if idx > len(team_roles):
+                    break
+                pid = participant.get("id")
+                if pid is not None:
+                    participant_to_team[int(pid)] = idx
+
+        links = await self._get_challonge_links(guild)
+        assigned = 0
+        missing = 0
+        for user_id_str, link in links.items():
+            participant_id = link.get("participant_id")
+            team_index = participant_to_team.get(participant_id)
+            member = guild.get_member(int(user_id_str))
+            if not member or not team_index:
+                missing += 1
+                continue
+            target_role = team_roles[team_index - 1]
+            remove_roles = [
+                role for role in team_roles if role != target_role and role in member.roles
+            ]
+            try:
+                if remove_roles:
+                    await member.remove_roles(*remove_roles)
+                if target_role not in member.roles:
+                    await member.add_roles(target_role)
+                assigned += 1
+            except discord.HTTPException:
+                missing += 1
+
+        return assigned, missing, None
 
     async def _try_autolink_challonge_member(
         self, guild: discord.Guild, member: discord.Member
@@ -2297,6 +2642,7 @@ class ChampionsCircle(commands.Cog):
                 await ctx.send(
                     f"Linked {member.mention} to Challonge participant `{auto_linked.get('name')}`."
                 )
+                await self._sync_roles_from_challonge(ctx.guild)
                 return
             await ctx.send(
                 "No unique match found. Use `ccchallonge link [@user] <participant name|id>`."
@@ -2323,6 +2669,7 @@ class ChampionsCircle(commands.Cog):
         await ctx.send(
             f"Linked {member.mention} to Challonge participant `{participant_name}`."
         )
+        await self._sync_roles_from_challonge(ctx.guild)
 
     @ccchallonge.command(name="unlink")
     async def ccchallonge_unlink(self, ctx, member: Optional[discord.Member] = None):
@@ -2395,83 +2742,10 @@ class ChampionsCircle(commands.Cog):
     @commands.admin_or_permissions(administrator=True)
     async def ccchallonge_syncroles(self, ctx):
         """Assign team roles from Challonge participant order."""
-        api_key, slug = await self._get_challonge_credentials(ctx.guild)
-        if not api_key:
-            await ctx.send("Challonge API key is not set. Use `ccchallonge key <token>`.")
+        assigned, missing, error = await self._sync_roles_from_challonge(ctx.guild)
+        if error:
+            await ctx.send(error)
             return
-        if not slug:
-            await ctx.send("Challonge tournament is not set. Use `ccchallonge tournament <slug>`.")
-            return
-
-        role_ids = await self.config.guild(ctx.guild).team_role_ids()
-        team_roles = [ctx.guild.get_role(role_id) for role_id in role_ids or []]
-        team_roles = [role for role in team_roles if role]
-        if not team_roles:
-            await ctx.send("No team roles found. Run `ccstart` to create teams first.")
-            return
-
-        ok, participants_payload = await self._challonge_request(
-            ctx.guild, "GET", f"/tournaments/{slug}/participants.json"
-        )
-        if not ok:
-            await ctx.send(f"Challonge API error: {participants_payload}")
-            return
-
-        participant_to_team: Dict[int, int] = {}
-        team_map = await self.config.guild(ctx.guild).challonge_team_map()
-        if not isinstance(team_map, dict):
-            team_map = {}
-
-        participants = participants_payload if isinstance(participants_payload, list) else []
-        if team_map:
-            for team_str, participant_id in team_map.items():
-                try:
-                    team_index = int(team_str)
-                except ValueError:
-                    continue
-                if team_index <= 0 or team_index > len(team_roles):
-                    continue
-                try:
-                    participant_to_team[int(participant_id)] = team_index
-                except (TypeError, ValueError):
-                    continue
-        else:
-            ordered = []
-            for entry in participants:
-                participant = entry.get("participant", {})
-                seed = participant.get("seed") or 0
-                pid = participant.get("id") or 0
-                ordered.append((seed, pid, participant))
-            ordered.sort(key=lambda item: (item[0] or 0, item[1] or 0))
-
-            for idx, (_, _, participant) in enumerate(ordered, start=1):
-                if idx > len(team_roles):
-                    break
-                pid = participant.get("id")
-                if pid is not None:
-                    participant_to_team[int(pid)] = idx
-
-        links = await self._get_challonge_links(ctx.guild)
-        assigned = 0
-        missing = 0
-        for user_id_str, link in links.items():
-            participant_id = link.get("participant_id")
-            team_index = participant_to_team.get(participant_id)
-            member = ctx.guild.get_member(int(user_id_str))
-            if not member or not team_index:
-                missing += 1
-                continue
-            target_role = team_roles[team_index - 1]
-            remove_roles = [role for role in team_roles if role != target_role and role in member.roles]
-            try:
-                if remove_roles:
-                    await member.remove_roles(*remove_roles)
-                if target_role not in member.roles:
-                    await member.add_roles(target_role)
-                assigned += 1
-            except discord.HTTPException:
-                missing += 1
-
         await ctx.send(
             f"Team sync complete. Assigned {assigned} members. {missing} missing links/participants."
         )
@@ -2519,6 +2793,23 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).challonge_team_map.set({})
         await ctx.send(f"Purge complete. Removed {removed}, failed {failed}.")
 
+    @ccchallonge.command(name="syncrolesauto")
+    @commands.admin_or_permissions(administrator=True)
+    async def ccchallonge_syncrolesauto(
+        self, ctx, enabled: Optional[str] = None, interval: Optional[int] = None
+    ):
+        """Configure automatic Challonge role sync."""
+        if enabled is None:
+            autosync = await self.config.guild(ctx.guild).challonge_sync_roles_enabled()
+            interval = await self.config.guild(ctx.guild).challonge_sync_roles_interval()
+            await ctx.send(f"Auto sync: {autosync}\nInterval: {interval}m")
+            return
+        flag = enabled.lower() in {"on", "true", "yes", "1"}
+        await self.config.guild(ctx.guild).challonge_sync_roles_enabled.set(flag)
+        if interval is not None:
+            await self.config.guild(ctx.guild).challonge_sync_roles_interval.set(interval)
+        await ctx.send("Auto sync updated.")
+
     @ccchallonge.command(name="linksettings")
     @commands.admin_or_permissions(administrator=True)
     async def ccchallonge_linksettings(
@@ -2529,8 +2820,11 @@ class ChampionsCircle(commands.Cog):
             required = await self.config.guild(ctx.guild).challonge_link_required()
             grace = await self.config.guild(ctx.guild).challonge_link_grace_hours()
             reminder = await self.config.guild(ctx.guild).challonge_link_reminder_hours()
+            autosync = await self.config.guild(ctx.guild).challonge_sync_roles_enabled()
+            interval = await self.config.guild(ctx.guild).challonge_sync_roles_interval()
             await ctx.send(
-                f"Link required: {required}\nGrace hours: {grace}\nReminder hours: {reminder}"
+                f"Link required: {required}\nGrace hours: {grace}\n"
+                f"Reminder hours: {reminder}\nAuto sync: {autosync}\nInterval: {interval}m"
             )
             return
         setting = setting.lower()
@@ -2555,7 +2849,20 @@ class ChampionsCircle(commands.Cog):
             await self.config.guild(ctx.guild).challonge_link_reminder_hours.set(hours)
             await ctx.send(f"Reminder interval set to {hours} hours.")
             return
-        await ctx.send("Unknown setting. Use `require`, `grace`, or `reminder`.")
+        if setting == "autosync":
+            flag = (value or "").lower() in {"on", "true", "yes", "1"}
+            await self.config.guild(ctx.guild).challonge_sync_roles_enabled.set(flag)
+            await ctx.send(f"Auto role sync set to {flag}.")
+            return
+        if setting == "interval":
+            minutes = self._parse_int(value) if value else None
+            if minutes is None:
+                await ctx.send("Provide minutes: `ccchallonge linksettings interval 15`")
+                return
+            await self.config.guild(ctx.guild).challonge_sync_roles_interval.set(minutes)
+            await ctx.send(f"Auto role sync interval set to {minutes} minutes.")
+            return
+        await ctx.send("Unknown setting. Use `require`, `grace`, `reminder`, `autosync`, or `interval`.")
 
     @commands.command()
     @commands.admin_or_permissions(administrator=True)
@@ -2681,13 +2988,45 @@ class ChampionsCircle(commands.Cog):
                             await self._save_application_list(
                                 guild, "cancelled_applications", cancelled_apps
                             )
-                        await self.config.guild(guild).challonge_link_last_reminder.set(reminder_map)
+        await self.config.guild(guild).challonge_link_last_reminder.set(reminder_map)
                         if approved_changed or cancelled_changed:
                             await self.update_embed(guild)
             except Exception as e:
                 self.logger.error(f"Error in close_expired_applications: {str(e)}")
 
             await asyncio.sleep(3600)
+
+    async def _auto_sync_roles_loop(self):
+        """Periodically sync team roles from Challonge."""
+        while self == self.bot.get_cog("ChampionsCircle"):
+            try:
+                all_guilds = await self.config.all_guilds()
+                for guild_id, guild_data in all_guilds.items():
+                    if not guild_data.get("challonge_sync_roles_enabled", True):
+                        continue
+                    if not guild_data.get("applications_open", False):
+                        continue
+                    guild = self.bot.get_guild(guild_id)
+                    if not guild:
+                        continue
+                    await self._sync_roles_from_challonge(guild)
+            except Exception as exc:
+                self.logger.error("Error in auto role sync: %s", exc)
+
+            interval = 15
+            try:
+                interval = int(
+                    min(
+                        max(
+                            (data.get("challonge_sync_roles_interval", 15) or 15),
+                            5,
+                        )
+                        for data in (await self.config.all_guilds()).values()
+                    )
+                )
+            except Exception:
+                interval = 15
+            await asyncio.sleep(interval * 60)
 
     @commands.command()
     async def cchelp(self, ctx):
@@ -2708,7 +3047,9 @@ class ChampionsCircle(commands.Cog):
             value=(
                 "Use the **Apply** button in the Champions Circle channel to apply.\n"
                 "`cancel_application` - cancel your application\n"
-                "`ccapplicants` - view applicant lists"
+                "`ccapplicants` - view applicant lists\n"
+                "`ccscore report <match_id> <score>` - submit a score from team chat\n"
+                "`ccscore panel` - post a score report button"
             ),
             inline=False,
         )
@@ -2734,6 +3075,7 @@ class ChampionsCircle(commands.Cog):
                 "`ccchallonge syncroles` - assign team roles from Challonge\n"
                 "`ccchallonge purgeall` - remove all Challonge participants\n"
                 "`ccchallonge linksettings` - configure link enforcement\n"
+                "`ccchallonge syncrolesauto` - auto sync role settings\n"
                 "`ccmode <1v1|2v2|3v3|4v4>` - set game mode\n"
                 "`ccsetup` now includes game mode + advanced team/voice options\n"
                 "`setchampionschannel` / `setchampionsrole` / `setapplicationduration`"
@@ -2851,6 +3193,8 @@ class ChampionsCircle(commands.Cog):
         link_reminder = await self.config.guild(guild).challonge_link_reminder_hours()
         link_map = await self.config.guild(guild).challonge_links()
         team_map = await self.config.guild(guild).challonge_team_map()
+        auto_sync = await self.config.guild(guild).challonge_sync_roles_enabled()
+        auto_interval = await self.config.guild(guild).challonge_sync_roles_interval()
 
         active = await self._load_application_list(guild, "active_applications")
         approved = await self._load_application_list(guild, "approved_applications")
@@ -2918,7 +3262,8 @@ class ChampionsCircle(commands.Cog):
                 f"Required: {link_required}\n"
                 f"Grace: {link_grace}h\n"
                 f"Reminder: {link_reminder}h\n"
-                f"Linked users: {len(link_map or {})}"
+                f"Linked users: {len(link_map or {})}\n"
+                f"Auto sync: {auto_sync} ({auto_interval}m)"
             ),
             inline=False,
         )
@@ -3733,6 +4078,116 @@ class TournamentPhaseScheduleModal(discord.ui.Modal):
                 "Invalid time format or duration. Please use YYYY-MM-DD HH:MM:SS for time and a number for duration.",
                 ephemeral=True
             )
+
+class ScoreReportModal(discord.ui.Modal, title="Report Match Score"):
+    def __init__(
+        self,
+        cog: ChampionsCircle,
+        guild_id: int,
+        match_id: int,
+        participant_id: int,
+        opponent_name: Optional[str] = None,
+    ):
+        super().__init__()
+        self.cog = cog
+        self.guild_id = guild_id
+        self.match_id = match_id
+        self.participant_id = participant_id
+        label = "Score (your-opponent)"
+        if opponent_name:
+            label = f"Score vs {opponent_name}"[:45]
+        self.score = discord.ui.TextInput(
+            label=label,
+            placeholder="e.g. 3-1",
+            required=True,
+        )
+        self.add_item(self.score)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if not guild or guild.id != self.guild_id:
+            await interaction.response.send_message("Guild mismatch.", ephemeral=True)
+            return
+        ok, message = await self.cog._submit_match_score(
+            guild,
+            match_id=self.match_id,
+            participant_id=self.participant_id,
+            score_input=self.score.value,
+        )
+        await interaction.response.send_message(message, ephemeral=True)
+
+class ScoreMatchSelectView(discord.ui.View):
+    def __init__(
+        self,
+        cog: ChampionsCircle,
+        guild_id: int,
+        participant_id: int,
+        matches: List[Dict[str, Any]],
+        name_map: Dict[int, str],
+    ):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.participant_id = participant_id
+
+        options = []
+        for match in matches:
+            mid = match.get("id")
+            p1 = match.get("player1_id") or match.get("participant1_id")
+            p2 = match.get("player2_id") or match.get("participant2_id")
+            opponent_id = p2 if participant_id == p1 else p1
+            opponent_name = name_map.get(opponent_id, f"Participant {opponent_id}")
+            round_num = match.get("round")
+            label = f"Match {mid}: vs {opponent_name}"
+            if round_num is not None:
+                label = f"R{round_num} · {label}"
+            options.append(
+                discord.SelectOption(label=label[:100], value=str(mid))
+            )
+        self.select = discord.ui.Select(
+            placeholder="Select match",
+            min_values=1,
+            max_values=1,
+            options=options[:25],
+        )
+        self.select.callback = self._on_select
+        self.add_item(self.select)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        if not interaction.guild or interaction.guild.id != self.guild_id:
+            await interaction.response.send_message("Guild mismatch.", ephemeral=True)
+            return
+        match_id = int(self.select.values[0])
+        name_map = await self.cog._get_participant_name_map(interaction.guild)
+        opponent_name = None
+        matches = await self.cog._get_open_matches_for_participant(
+            interaction.guild, self.participant_id
+        )
+        for match in matches:
+            if int(match.get("id", 0)) == match_id:
+                p1 = match.get("player1_id") or match.get("participant1_id")
+                p2 = match.get("player2_id") or match.get("participant2_id")
+                opponent_id = p2 if self.participant_id == p1 else p1
+                opponent_name = name_map.get(opponent_id)
+                break
+        await interaction.response.send_modal(
+            ScoreReportModal(
+                self.cog,
+                interaction.guild.id,
+                match_id,
+                self.participant_id,
+                opponent_name=opponent_name,
+            )
+        )
+
+class ScoreReportView(discord.ui.View):
+    def __init__(self, cog: ChampionsCircle):
+        super().__init__(timeout=3600)
+        self.cog = cog
+
+    @discord.ui.button(label="Report Score", style=discord.ButtonStyle.primary)
+    async def report_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog._start_score_report(interaction)
 
 async def setup(bot):
     cog = ChampionsCircle(bot)
