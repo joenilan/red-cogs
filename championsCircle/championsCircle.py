@@ -340,10 +340,19 @@ class ChampionsCircle(commands.Cog):
             if game_mode_value:
                 await self.config.guild(interaction.guild).game_mode.set(game_mode_value)
 
+            view = SetupContinueView(self, interaction.guild.id, interaction.user.id)
             if interaction.response.is_done():
-                await interaction.followup.send_modal(SetupAdvancedModal(self, interaction.guild.id))
+                await interaction.followup.send(
+                    "Setup step 2: click Continue to configure team channels.",
+                    view=view,
+                    ephemeral=True,
+                )
             else:
-                await interaction.response.send_modal(SetupAdvancedModal(self, interaction.guild.id))
+                await interaction.response.send_message(
+                    "Setup step 2: click Continue to configure team channels.",
+                    view=view,
+                    ephemeral=True,
+                )
 
         except Exception as e:
             self.logger.error(f"Error in setup process: {str(e)}")
@@ -2582,6 +2591,25 @@ class TournamentScheduleView(discord.ui.View):
         await interaction.response.send_modal(
             TournamentPhaseScheduleModal(self.cog, select.values[0])
         )
+
+class SetupContinueView(discord.ui.View):
+    def __init__(self, cog: ChampionsCircle, guild_id: int, author_id: int):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.author_id = author_id
+
+    @discord.ui.button(label="Continue setup", style=discord.ButtonStyle.green)
+    async def continue_setup(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "Only the setup creator can continue.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(SetupAdvancedModal(self.cog, self.guild_id))
 
 class SetupModal(discord.ui.Modal, title="Tournament Setup"):
     def __init__(self, cog):
