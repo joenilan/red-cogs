@@ -2680,6 +2680,8 @@ class ChampionsCircle(commands.Cog):
         ):
             await ctx.send("You can only link yourself.")
             return
+        if participant and participant.strip().lower() in {"me", "self"}:
+            participant = None
         if not participant:
             auto_linked = await self._try_autolink_challonge_member(ctx.guild, member)
             if auto_linked:
@@ -2688,14 +2690,18 @@ class ChampionsCircle(commands.Cog):
                 )
                 await self._sync_roles_from_challonge(ctx.guild)
                 return
+            prefix = await self._get_preferred_prefix(ctx.guild)
             await ctx.send(
-                "No unique match found. Use `ccchallonge link [@user] <participant name|id>`."
+                f"No unique match found. Use `{prefix}ccchallonge link [@user] <participant name|id>`."
             )
             return
 
         participant_data = await self._resolve_challonge_participant(ctx.guild, participant)
         if not participant_data:
-            await ctx.send("Participant not found. Use `ccchallonge participants` to list names/ids.")
+            prefix = await self._get_preferred_prefix(ctx.guild)
+            await ctx.send(
+                f"Participant not found. Use `{prefix}ccchallonge participants` to list names/ids."
+            )
             return
 
         participant_id = participant_data.get("id")
