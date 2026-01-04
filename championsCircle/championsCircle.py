@@ -725,6 +725,16 @@ class ChampionsCircle(commands.Cog):
             lines.append(f"Bracket: {bracket_url}")
         return "\n".join(lines)
 
+    async def _get_preferred_prefix(self, guild: discord.Guild) -> str:
+        try:
+            prefixes = await self.bot.get_valid_prefixes(guild)
+        except Exception:
+            return "!"
+        for prefix in prefixes:
+            if not prefix.startswith("<@"):
+                return prefix
+        return prefixes[0] if prefixes else "!"
+
     async def _send_status_dm(
         self,
         *,
@@ -2651,7 +2661,14 @@ class ChampionsCircle(commands.Cog):
                                         member=member,
                                         guild=guild,
                                         status_line="Reminder: link your Challonge participant.",
-                                        extra="Use `ccchallonge link me <participant name|id>` to stay eligible.",
+                                        extra=(
+                                            "Use the command below in the server (DMs do not work) "
+                                            "to stay eligible."
+                                        ),
+                                        command_hint=(
+                                            f"{await self._get_preferred_prefix(guild)}"
+                                            "ccchallonge link me <participant name|id>"
+                                        ),
                                     )
                                     reminder_map[str(user_id)] = now_ts
                             still_approved.append(app)
@@ -3328,12 +3345,15 @@ class ApplicationReviewView(discord.ui.View):
                 extra_lines.append(
                     f"Action required: link your Challonge participant within {grace_hours} hours."
                 )
-                command_hint = "ccchallonge link me <participant name|id>"
+                prefix = await self.cog._get_preferred_prefix(interaction.guild)
+                command_hint = f"{prefix}ccchallonge link me <participant name|id>"
+                extra_lines.append("Run this command in the server (DMs do not work).")
             elif auto_linked:
                 extra_lines.append(
                     f"Linked you to Challonge participant `{auto_linked.get('name')}`."
                 )
-                command_hint = "ccchallonge unlink"
+                prefix = await self.cog._get_preferred_prefix(interaction.guild)
+                command_hint = f"{prefix}ccchallonge unlink"
 
             thread_url = None
             thread = interaction.guild.get_thread(entry.get("thread_id")) if entry else None
