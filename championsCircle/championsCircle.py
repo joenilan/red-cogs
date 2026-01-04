@@ -3032,7 +3032,7 @@ class ChampionsCircle(commands.Cog):
                             await self._save_application_list(
                                 guild, "cancelled_applications", cancelled_apps
                             )
-        await self.config.guild(guild).challonge_link_last_reminder.set(reminder_map)
+                        await self.config.guild(guild).challonge_link_last_reminder.set(reminder_map)
                         if approved_changed or cancelled_changed:
                             await self.update_embed(guild)
             except Exception as e:
