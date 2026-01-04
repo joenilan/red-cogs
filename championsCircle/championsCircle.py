@@ -67,6 +67,10 @@ class ChampionsCircle(commands.Cog):
             "challonge_sync_roles_enabled": True,
             "challonge_sync_roles_interval": 15,
             "score_panel_message_ids": {},
+            # Draft system
+            "draft_assignments": {},  # {team_number: [user_id, user_id, ...]}
+            "draft_locked": False,
+            "teams_created_on_challonge": False,
         }
         self.config.register_guild(**default_guild)
         self.logger = logging.getLogger("red.championsCircle")
@@ -626,6 +630,10 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).challonge_link_last_reminder.set({})
         await self.config.guild(ctx.guild).challonge_team_map.set({})
         await self.config.guild(ctx.guild).score_panel_message_ids.set({})
+        # Reset draft system
+        await self.config.guild(ctx.guild).draft_assignments.set({})
+        await self.config.guild(ctx.guild).draft_locked.set(False)
+        await self.config.guild(ctx.guild).teams_created_on_challonge.set(False)
 
         # Reset cooldowns
         self.reset_cooldowns()
@@ -1788,17 +1796,55 @@ class ChampionsCircle(commands.Cog):
     async def _sync_roles_from_challonge(
         self, guild: discord.Guild
     ) -> Tuple[int, int, Optional[str]]:
-        api_key, slug = await self._get_challonge_credentials(guild)
-        if not api_key:
-            return 0, 0, "Challonge API key is not set."
-        if not slug:
-            return 0, 0, "Challonge tournament is not set."
-
+        """Sync team roles from draft assignments (primary) or legacy challonge links."""
         role_ids = await self.config.guild(guild).team_role_ids()
         team_roles = [guild.get_role(role_id) for role_id in role_ids or []]
         team_roles = [role for role in team_roles if role]
         if not team_roles:
             return 0, 0, "No team roles found."
+
+        # Try draft assignments first (new system)
+        draft_assignments = await self.config.guild(guild).draft_assignments()
+        if isinstance(draft_assignments, dict) and draft_assignments:
+            assigned = 0
+            missing = 0
+            for team_str, user_ids in draft_assignments.items():
+                try:
+                    team_index = int(team_str)
+                except ValueError:
+                    continue
+                if team_index <= 0 or team_index > len(team_roles):
+                    continue
+                if not isinstance(user_ids, list):
+                    continue
+
+                target_role = team_roles[team_index - 1]
+                for user_id in user_ids:
+                    member = guild.get_member(user_id)
+                    if not member:
+                        missing += 1
+                        continue
+                    # Remove other team roles
+                    remove_roles = [
+                        role for role in team_roles if role != target_role and role in member.roles
+                    ]
+                    try:
+                        if remove_roles:
+                            await member.remove_roles(*remove_roles)
+                        if target_role not in member.roles:
+                            await member.add_roles(target_role)
+                        assigned += 1
+                    except discord.HTTPException:
+                        missing += 1
+
+            return assigned, missing, None
+
+        # Fall back to legacy challonge links system
+        api_key, slug = await self._get_challonge_credentials(guild)
+        if not api_key:
+            return 0, 0, "Challonge API key is not set."
+        if not slug:
+            return 0, 0, "Challonge tournament is not set."
 
         ok, participants_payload = await self._challonge_request(
             guild, "GET", f"/tournaments/{slug}/participants.json"
@@ -2304,7 +2350,7 @@ class ChampionsCircle(commands.Cog):
 
     @ccchallonge.command(name="tournament", aliases=["slug"])
     async def ccchallonge_tournament(self, ctx, *, slug_or_url: Optional[str] = None):
-        """Set or clear the Challonge tournament slug."""
+        """Set or clear the Challonge tournament slug. Auto-creates team participants."""
         if not slug_or_url:
             current = await self.config.guild(ctx.guild).tourney_challonge_slug()
             if current:
@@ -2316,11 +2362,32 @@ class ChampionsCircle(commands.Cog):
         slug = self._parse_challonge_slug(slug_or_url)
         if not slug:
             await self.config.guild(ctx.guild).tourney_challonge_slug.set(None)
+            await self.config.guild(ctx.guild).teams_created_on_challonge.set(False)
+            await self.config.guild(ctx.guild).challonge_team_map.set({})
             await ctx.send("Challonge tournament cleared.")
             return
 
         await self.config.guild(ctx.guild).tourney_challonge_slug.set(slug)
-        await ctx.send(f"Challonge tournament set to `{slug}`.")
+
+        # Check if API key is set
+        api_key = await self.config.guild(ctx.guild).tourney_challonge_api_key()
+        team_count = await self.config.guild(ctx.guild).team_count()
+
+        if api_key and team_count > 0:
+            await ctx.send(f"Challonge tournament set to `{slug}`. Creating team participants...")
+            created, errors = await self._create_challonge_team_participants(ctx.guild)
+            if errors:
+                await ctx.send(f"Created {created} teams on Challonge ({errors} errors).")
+            elif created > 0:
+                await ctx.send(f"Created {created} teams on Challonge. Ready for draft!")
+            else:
+                await ctx.send("Teams already exist on Challonge. Mapped to local teams.")
+        else:
+            await ctx.send(f"Challonge tournament set to `{slug}`.")
+            if not api_key:
+                await ctx.send("Set API key with `ccchallonge key <token>` to auto-create teams.")
+            if team_count <= 0:
+                await ctx.send("Configure teams with `ccsetup` first.")
 
     @ccchallonge.command(name="refresh")
     async def ccchallonge_refresh(self, ctx):
@@ -2369,6 +2436,33 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).tourney_challonge_bracket_url.set(None)
         await self.update_embed(ctx.guild)
         await ctx.send("Challonge links cleared.")
+
+    @ccchallonge.command(name="createteams")
+    @commands.admin_or_permissions(administrator=True)
+    async def ccchallonge_createteams(self, ctx):
+        """Manually create team participants on Challonge."""
+        api_key, slug = await self._get_challonge_credentials(ctx.guild)
+        if not api_key:
+            await ctx.send("Challonge API key is not set. Use `ccchallonge key <token>`.")
+            return
+        if not slug:
+            await ctx.send("Challonge tournament is not set. Use `ccchallonge tournament <slug>`.")
+            return
+
+        team_count = await self.config.guild(ctx.guild).team_count()
+        if team_count <= 0:
+            await ctx.send("No teams configured. Use `ccsetup` first.")
+            return
+
+        await ctx.send("Creating team participants on Challonge...")
+        created, errors = await self._create_challonge_team_participants(ctx.guild)
+
+        if errors:
+            await ctx.send(f"Created {created} teams ({errors} errors).")
+        elif created > 0:
+            await ctx.send(f"Created {created} teams on Challonge. Ready for draft!")
+        else:
+            await ctx.send("Teams already exist on Challonge. Mapped to local teams.")
 
     @ccchallonge.command(name="key")
     async def ccchallonge_key(self, ctx, *, api_key: Optional[str] = None):
@@ -2943,6 +3037,493 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).champions_role_id.set(role.id)
         await ctx.send(f"Champions Circle role set to {role.name}")
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # DRAFT SYSTEM COMMANDS
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @commands.group(name="ccdraft")
+    @commands.guild_only()
+    @commands.admin_or_permissions(administrator=True)
+    async def ccdraft(self, ctx):
+        """Manage the tournament draft system."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+
+    @ccdraft.command(name="pool")
+    async def ccdraft_pool(self, ctx):
+        """Show all approved players available for drafting."""
+        approved = await self._load_application_list(ctx.guild, "approved_applications")
+        if not approved:
+            await ctx.send("No approved players in the pool.")
+            return
+
+        draft_assignments = await self.config.guild(ctx.guild).draft_assignments()
+        if not isinstance(draft_assignments, dict):
+            draft_assignments = {}
+
+        # Get all drafted user IDs
+        drafted_ids = set()
+        for team_users in draft_assignments.values():
+            if isinstance(team_users, list):
+                drafted_ids.update(team_users)
+
+        # Filter to undrafted players
+        undrafted = []
+        for app in approved:
+            user_id = app.get("user_id")
+            if user_id and user_id not in drafted_ids:
+                undrafted.append(app)
+
+        if not undrafted:
+            await ctx.send("All approved players have been drafted.")
+            return
+
+        game_mode = await self.config.guild(ctx.guild).game_mode()
+        team_size = self._team_size_from_mode(game_mode)
+
+        embed = discord.Embed(
+            title="Draft Pool",
+            description=f"**{len(undrafted)}** players available for drafting\nTeam size: **{team_size}** ({game_mode})",
+            color=discord.Color.blue(),
+        )
+
+        lines = []
+        for idx, app in enumerate(undrafted, start=1):
+            user_id = app.get("user_id")
+            member = ctx.guild.get_member(user_id)
+            display = member.mention if member else f"<@{user_id}>"
+            answers = app.get("answers") or {}
+            rank = self._extract_answer(answers, ["rank"]) or "Unranked"
+            lines.append(f"{idx}. {display} - **{rank}**")
+
+        # Chunk if needed
+        for idx, chunk in enumerate(self._chunk_lines(lines, limit=1000), start=1):
+            name = "Available Players" if idx == 1 else f"Available Players ({idx})"
+            embed.add_field(name=name, value="\n".join(chunk), inline=False)
+
+        await ctx.send(embed=embed)
+
+    @ccdraft.command(name="assign")
+    async def ccdraft_assign(self, ctx, team_number: int, *members: discord.Member):
+        """Assign players to a team. Usage: !ccdraft assign 1 @Player1 @Player2 @Player3"""
+        if not members:
+            await ctx.send("Please mention at least one player to assign.")
+            return
+
+        draft_locked = await self.config.guild(ctx.guild).draft_locked()
+        if draft_locked:
+            await ctx.send("The draft is locked. Use `!ccdraft unlock` to make changes.")
+            return
+
+        team_count = await self.config.guild(ctx.guild).team_count()
+        if team_number < 1 or team_number > team_count:
+            await ctx.send(f"Invalid team number. Must be between 1 and {team_count}.")
+            return
+
+        # Verify all members are approved
+        approved = await self._load_application_list(ctx.guild, "approved_applications")
+        approved_ids = {app.get("user_id") for app in approved}
+
+        not_approved = [m for m in members if m.id not in approved_ids]
+        if not_approved:
+            mentions = ", ".join(m.mention for m in not_approved)
+            await ctx.send(f"These players are not approved: {mentions}")
+            return
+
+        draft_assignments = await self.config.guild(ctx.guild).draft_assignments()
+        if not isinstance(draft_assignments, dict):
+            draft_assignments = {}
+
+        # Check if any member is already on another team
+        for team_str, team_users in draft_assignments.items():
+            if not isinstance(team_users, list):
+                continue
+            if int(team_str) == team_number:
+                continue
+            for member in members:
+                if member.id in team_users:
+                    await ctx.send(
+                        f"{member.mention} is already assigned to Team {team_str}. "
+                        f"Use `!ccdraft remove {team_str} @{member.name}` first."
+                    )
+                    return
+
+        # Get or create team list
+        team_key = str(team_number)
+        if team_key not in draft_assignments:
+            draft_assignments[team_key] = []
+
+        # Check team size limit
+        game_mode = await self.config.guild(ctx.guild).game_mode()
+        team_size = self._team_size_from_mode(game_mode)
+        current_size = len(draft_assignments[team_key])
+        new_members = [m for m in members if m.id not in draft_assignments[team_key]]
+
+        if current_size + len(new_members) > team_size:
+            await ctx.send(
+                f"Team {team_number} would exceed the team size limit of {team_size}. "
+                f"Current: {current_size}, trying to add: {len(new_members)}."
+            )
+            return
+
+        # Assign members
+        for member in new_members:
+            draft_assignments[team_key].append(member.id)
+
+        await self.config.guild(ctx.guild).draft_assignments.set(draft_assignments)
+
+        # Assign team roles and update channel access
+        await self._apply_draft_roles(ctx.guild, team_number, [m.id for m in new_members])
+
+        # Update Challonge misc field
+        await self._update_challonge_team_roster(ctx.guild, team_number)
+
+        mentions = ", ".join(m.mention for m in new_members)
+        await ctx.send(f"Assigned to Team {team_number}: {mentions}")
+
+    @ccdraft.command(name="remove")
+    async def ccdraft_remove(self, ctx, team_number: int, member: discord.Member):
+        """Remove a player from a team."""
+        draft_locked = await self.config.guild(ctx.guild).draft_locked()
+        if draft_locked:
+            await ctx.send("The draft is locked. Use `!ccdraft unlock` to make changes.")
+            return
+
+        draft_assignments = await self.config.guild(ctx.guild).draft_assignments()
+        if not isinstance(draft_assignments, dict):
+            draft_assignments = {}
+
+        team_key = str(team_number)
+        if team_key not in draft_assignments or member.id not in draft_assignments[team_key]:
+            await ctx.send(f"{member.mention} is not on Team {team_number}.")
+            return
+
+        draft_assignments[team_key].remove(member.id)
+        await self.config.guild(ctx.guild).draft_assignments.set(draft_assignments)
+
+        # Remove team role
+        await self._remove_draft_role(ctx.guild, team_number, member.id)
+
+        # Update Challonge misc field
+        await self._update_challonge_team_roster(ctx.guild, team_number)
+
+        await ctx.send(f"Removed {member.mention} from Team {team_number}. They're back in the draft pool.")
+
+    @ccdraft.command(name="show")
+    async def ccdraft_show(self, ctx, team_number: Optional[int] = None):
+        """Show team rosters. Optionally specify a team number."""
+        draft_assignments = await self.config.guild(ctx.guild).draft_assignments()
+        if not isinstance(draft_assignments, dict):
+            draft_assignments = {}
+
+        team_count = await self.config.guild(ctx.guild).team_count()
+        game_mode = await self.config.guild(ctx.guild).game_mode()
+        team_size = self._team_size_from_mode(game_mode)
+        draft_locked = await self.config.guild(ctx.guild).draft_locked()
+
+        if team_number is not None:
+            # Show specific team
+            if team_number < 1 or team_number > team_count:
+                await ctx.send(f"Invalid team number. Must be between 1 and {team_count}.")
+                return
+
+            team_key = str(team_number)
+            user_ids = draft_assignments.get(team_key, [])
+
+            embed = discord.Embed(
+                title=f"{self._team_emoji(team_number)} Team {team_number}",
+                description=f"**{len(user_ids)}/{team_size}** players",
+                color=self._random_role_color(),
+            )
+
+            if user_ids:
+                lines = []
+                for uid in user_ids:
+                    member = ctx.guild.get_member(uid)
+                    display = member.mention if member else f"<@{uid}>"
+                    lines.append(display)
+                embed.add_field(name="Roster", value="\n".join(lines), inline=False)
+            else:
+                embed.add_field(name="Roster", value="No players assigned", inline=False)
+
+            await ctx.send(embed=embed)
+            return
+
+        # Show all teams
+        embed = discord.Embed(
+            title="Draft Status",
+            description=f"Game mode: **{game_mode}** | Team size: **{team_size}**\nDraft locked: **{'Yes' if draft_locked else 'No'}**",
+            color=discord.Color.gold(),
+        )
+
+        for i in range(1, team_count + 1):
+            team_key = str(i)
+            user_ids = draft_assignments.get(team_key, [])
+            emoji = self._team_emoji(i)
+
+            if user_ids:
+                lines = []
+                for uid in user_ids:
+                    member = ctx.guild.get_member(uid)
+                    display = member.display_name if member else f"User {uid}"
+                    lines.append(display)
+                roster = "\n".join(lines)
+            else:
+                roster = "*Empty*"
+
+            embed.add_field(
+                name=f"{emoji} Team {i} ({len(user_ids)}/{team_size})",
+                value=roster,
+                inline=True,
+            )
+
+        # Add pool count
+        approved = await self._load_application_list(ctx.guild, "approved_applications")
+        drafted_ids = set()
+        for team_users in draft_assignments.values():
+            if isinstance(team_users, list):
+                drafted_ids.update(team_users)
+        undrafted_count = sum(1 for app in approved if app.get("user_id") not in drafted_ids)
+        embed.set_footer(text=f"{undrafted_count} players remaining in draft pool")
+
+        await ctx.send(embed=embed)
+
+    @ccdraft.command(name="lock")
+    async def ccdraft_lock(self, ctx):
+        """Lock the draft to prevent further changes."""
+        draft_assignments = await self.config.guild(ctx.guild).draft_assignments()
+        if not draft_assignments:
+            await ctx.send("No draft assignments yet. Assign players before locking.")
+            return
+
+        await self.config.guild(ctx.guild).draft_locked.set(True)
+        await ctx.send("Draft is now **locked**. Use `!ccdraft unlock` to make changes.")
+
+    @ccdraft.command(name="unlock")
+    async def ccdraft_unlock(self, ctx):
+        """Unlock the draft to allow changes."""
+        await self.config.guild(ctx.guild).draft_locked.set(False)
+        await ctx.send("Draft is now **unlocked**. You can make changes.")
+
+    @ccdraft.command(name="clear")
+    async def ccdraft_clear(self, ctx, team_number: Optional[int] = None):
+        """Clear draft assignments. Specify team number or leave blank for all."""
+        draft_locked = await self.config.guild(ctx.guild).draft_locked()
+        if draft_locked:
+            await ctx.send("The draft is locked. Use `!ccdraft unlock` first.")
+            return
+
+        draft_assignments = await self.config.guild(ctx.guild).draft_assignments()
+        if not isinstance(draft_assignments, dict):
+            draft_assignments = {}
+
+        if team_number is not None:
+            team_key = str(team_number)
+            if team_key in draft_assignments:
+                # Remove roles from all members
+                for user_id in draft_assignments[team_key]:
+                    await self._remove_draft_role(ctx.guild, team_number, user_id)
+                draft_assignments[team_key] = []
+                await self.config.guild(ctx.guild).draft_assignments.set(draft_assignments)
+                await self._update_challonge_team_roster(ctx.guild, team_number)
+                await ctx.send(f"Cleared Team {team_number}.")
+            else:
+                await ctx.send(f"Team {team_number} has no assignments.")
+            return
+
+        # Clear all
+        for team_str, user_ids in draft_assignments.items():
+            if isinstance(user_ids, list):
+                for user_id in user_ids:
+                    await self._remove_draft_role(ctx.guild, int(team_str), user_id)
+
+        await self.config.guild(ctx.guild).draft_assignments.set({})
+
+        # Update all Challonge teams
+        team_count = await self.config.guild(ctx.guild).team_count()
+        for i in range(1, team_count + 1):
+            await self._update_challonge_team_roster(ctx.guild, i)
+
+        await ctx.send("Cleared all draft assignments.")
+
+    @ccdraft.command(name="captain")
+    async def ccdraft_captain(self, ctx, team_number: int, member: discord.Member):
+        """Assign a team captain."""
+        draft_assignments = await self.config.guild(ctx.guild).draft_assignments()
+        if not isinstance(draft_assignments, dict):
+            draft_assignments = {}
+
+        team_key = str(team_number)
+        if team_key not in draft_assignments or member.id not in draft_assignments[team_key]:
+            await ctx.send(f"{member.mention} is not on Team {team_number}.")
+            return
+
+        captain_role_id = await self.config.guild(ctx.guild).team_captain_role_id()
+        if not captain_role_id:
+            await ctx.send("No captain role configured.")
+            return
+
+        captain_role = ctx.guild.get_role(captain_role_id)
+        if not captain_role:
+            await ctx.send("Captain role not found.")
+            return
+
+        # Remove captain role from other team members
+        for user_id in draft_assignments[team_key]:
+            other_member = ctx.guild.get_member(user_id)
+            if other_member and captain_role in other_member.roles:
+                try:
+                    await other_member.remove_roles(captain_role)
+                except discord.HTTPException:
+                    pass
+
+        # Add captain role to specified member
+        try:
+            await member.add_roles(captain_role)
+            await ctx.send(f"{member.mention} is now the captain of Team {team_number}.")
+        except discord.HTTPException:
+            await ctx.send("Failed to assign captain role.")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # DRAFT HELPER METHODS
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _apply_draft_roles(
+        self, guild: discord.Guild, team_number: int, user_ids: List[int]
+    ) -> None:
+        """Apply team role to drafted players and grant channel access."""
+        team_role = self._get_team_role_for_number(guild, team_number)
+        if not team_role:
+            return
+
+        for user_id in user_ids:
+            member = guild.get_member(user_id)
+            if member and team_role not in member.roles:
+                try:
+                    await member.add_roles(team_role)
+                except discord.HTTPException:
+                    self.logger.error(f"Failed to add team role to {user_id}")
+
+    async def _remove_draft_role(
+        self, guild: discord.Guild, team_number: int, user_id: int
+    ) -> None:
+        """Remove team role from a player."""
+        team_role = self._get_team_role_for_number(guild, team_number)
+        if not team_role:
+            return
+
+        member = guild.get_member(user_id)
+        if member and team_role in member.roles:
+            try:
+                await member.remove_roles(team_role)
+            except discord.HTTPException:
+                self.logger.error(f"Failed to remove team role from {user_id}")
+
+    async def _update_challonge_team_roster(
+        self, guild: discord.Guild, team_number: int
+    ) -> None:
+        """Update the Challonge participant misc field with team roster."""
+        api_key, slug = await self._get_challonge_credentials(guild)
+        if not api_key or not slug:
+            return
+
+        team_map = await self.config.guild(guild).challonge_team_map()
+        if not isinstance(team_map, dict):
+            return
+
+        participant_id = team_map.get(str(team_number))
+        if not participant_id:
+            return
+
+        draft_assignments = await self.config.guild(guild).draft_assignments()
+        if not isinstance(draft_assignments, dict):
+            draft_assignments = {}
+
+        team_key = str(team_number)
+        user_ids = draft_assignments.get(team_key, [])
+
+        # Build misc string with Discord user IDs
+        misc_value = ",".join(str(uid) for uid in user_ids) if user_ids else ""
+
+        # Update Challonge participant
+        await self._challonge_request(
+            guild,
+            "PUT",
+            f"/tournaments/{slug}/participants/{participant_id}.json",
+            data={"participant[misc]": misc_value},
+        )
+
+    async def _create_challonge_team_participants(self, guild: discord.Guild) -> Tuple[int, int]:
+        """Create team participants on Challonge. Returns (created, errors)."""
+        api_key, slug = await self._get_challonge_credentials(guild)
+        if not api_key or not slug:
+            return 0, 0
+
+        team_count = await self.config.guild(guild).team_count()
+        if not team_count or team_count <= 0:
+            return 0, 0
+
+        # Check existing participants
+        ok, payload = await self._challonge_request(
+            guild, "GET", f"/tournaments/{slug}/participants.json"
+        )
+        existing_names = set()
+        if ok and isinstance(payload, list):
+            for entry in payload:
+                participant = entry.get("participant", {})
+                name = participant.get("name", "")
+                existing_names.add(name.lower())
+
+        team_map = await self.config.guild(guild).challonge_team_map()
+        if not isinstance(team_map, dict):
+            team_map = {}
+
+        created = 0
+        errors = 0
+        prefix = await self.config.guild(guild).team_voice_channel_prefix() or "Team"
+
+        for i in range(1, team_count + 1):
+            team_name = f"{prefix} {i}"
+
+            # Skip if already exists
+            if team_name.lower() in existing_names:
+                # Try to find and map the existing participant
+                if ok and isinstance(payload, list):
+                    for entry in payload:
+                        participant = entry.get("participant", {})
+                        if participant.get("name", "").lower() == team_name.lower():
+                            team_map[str(i)] = participant.get("id")
+                            break
+                continue
+
+            # Create participant
+            result_ok, result_payload = await self._challonge_request(
+                guild,
+                "POST",
+                f"/tournaments/{slug}/participants.json",
+                data={
+                    "participant[name]": team_name,
+                    "participant[misc]": "",  # Will be filled during draft
+                },
+            )
+
+            if result_ok:
+                participant = (
+                    result_payload.get("participant")
+                    if isinstance(result_payload, dict)
+                    else None
+                )
+                if participant and participant.get("id"):
+                    team_map[str(i)] = participant.get("id")
+                    created += 1
+            else:
+                errors += 1
+
+        await self.config.guild(guild).challonge_team_map.set(team_map)
+        await self.config.guild(guild).teams_created_on_challonge.set(True)
+
+        return created, errors
+
     async def close_expired_applications(self):
         """Close applications that have expired."""
         while self == self.bot.get_cog("ChampionsCircle"):
@@ -3118,15 +3699,41 @@ class ChampionsCircle(commands.Cog):
             value=(
                 "Use the **Apply** button in the Champions Circle channel to apply.\n"
                 "`cancel_application` - cancel your application\n"
-                "`ccapplicants` - view applicant lists\n"
+                "`ccapplicants` - view applicant lists"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Draft System",
+            value=(
+                "`ccdraft pool` - show undrafted approved players\n"
+                "`ccdraft assign <team#> @player1 @player2...` - assign players to team\n"
+                "`ccdraft remove <team#> @player` - remove player from team\n"
+                "`ccdraft show [team#]` - show team rosters\n"
+                "`ccdraft captain <team#> @player` - assign team captain\n"
+                "`ccdraft lock/unlock` - lock/unlock draft changes\n"
+                "`ccdraft clear [team#]` - clear draft assignments"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Score Reporting",
+            value=(
                 "`ccscore report <match_id> <score>` - submit a score from team chat\n"
                 "`ccscore panel` - post a score report button"
             ),
             inline=False,
         )
         embed.add_field(
-            name="Questions",
-            value="`ccquestions add/remove/list` - manage questions (extras grouped into Additional info)",
+            name="Challonge",
+            value=(
+                "`ccchallonge key <token>` - set API key\n"
+                "`ccchallonge tournament <slug|url>` - set tournament (auto-creates teams)\n"
+                "`ccchallonge createteams` - manually create team participants\n"
+                "`ccchallonge info/participants/matches` - view Challonge data\n"
+                "`ccchallonge syncroles` - sync team roles from draft\n"
+                "`ccchallonge purgeall` - remove all Challonge participants"
+            ),
             inline=False,
         )
         embed.add_field(
@@ -3135,21 +3742,8 @@ class ChampionsCircle(commands.Cog):
                 "`cclist` - list current champions\n"
                 "`ccsettings` - view current configuration\n"
                 "`ccsettime` - set/clear tournament time\n"
-                "`ccchallonge set/clear` - manage Challonge links\n"
-                "`ccchallonge tournament <slug|url>` - set tournament slug\n"
-                "`ccchallonge key <token|clear>` - manage Challonge API key\n"
-                "`ccchallonge refresh` - pull links from Challonge\n"
-                "`ccchallonge info/participants/matches` - view Challonge data\n"
-                "`ccchallonge sync [purge]` - sync approved applicants\n"
-                "`ccchallonge link/unlink` - link a Discord user to a Challonge participant\n"
-                "`ccchallonge teammap set/clear` - map teams to Challonge participants\n"
-                "`ccchallonge syncroles` - assign team roles from Challonge\n"
-                "`ccchallonge purgeall` - remove all Challonge participants\n"
-                "`ccchallonge linksettings` - configure link enforcement\n"
-                "`ccchallonge syncrolesauto` - auto sync role settings\n"
                 "`ccmode <1v1|2v2|3v3|4v4>` - set game mode\n"
-                "`ccsetup` now includes game mode + advanced team/voice options\n"
-                "`setchampionschannel` / `setchampionsrole` / `setapplicationduration`"
+                "`ccquestions add/remove/list` - manage application questions"
             ),
             inline=False,
         )
