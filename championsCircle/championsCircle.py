@@ -730,11 +730,21 @@ class ChampionsCircle(commands.Cog):
         guild: discord.Guild,
         status_line: str,
         extra: Optional[str] = None,
+        application_url: Optional[str] = None,
+        command_hint: Optional[str] = None,
     ) -> None:
         info = await self._build_tournament_info(guild)
-        message = f"{status_line}\n\n{info}"
+        parts = [status_line, "", info]
+        if application_url:
+            parts.append("")
+            parts.append(f"Application: {application_url}")
         if extra:
-            message = f"{message}\n\n{extra}"
+            parts.append("")
+            parts.append(extra)
+        if command_hint:
+            parts.append("")
+            parts.append(f"Command: `{command_hint}`")
+        message = "\n".join(parts)
         try:
             await member.send(message)
         except discord.HTTPException:
@@ -1413,6 +1423,11 @@ class ChampionsCircle(commands.Cog):
             "linked_at": int(datetime.now(timezone.utc).timestamp()),
         }
         await self.config.guild(guild).challonge_links.set(links)
+        stored_map = await self.config.guild(guild).tourney_challonge_participant_map()
+        if not isinstance(stored_map, dict):
+            stored_map = {}
+        stored_map[str(user_id)] = int(participant_id)
+        await self.config.guild(guild).tourney_challonge_participant_map.set(stored_map)
 
     async def _remove_challonge_link(self, guild: discord.Guild, user_id: int) -> None:
         links = await self._get_challonge_links(guild)
@@ -1441,6 +1456,39 @@ class ChampionsCircle(commands.Cog):
                 return participant
             name = participant.get("name")
             if name and name.lower() == cleaned.lower():
+                return participant
+        return None
+
+    async def _try_autolink_challonge_member(
+        self, guild: discord.Guild, member: discord.Member
+    ) -> Optional[Dict[str, Any]]:
+        api_key, slug = await self._get_challonge_credentials(guild)
+        if not api_key or not slug:
+            return None
+        ok, payload = await self._challonge_request(
+            guild, "GET", f"/tournaments/{slug}/participants.json"
+        )
+        if not ok:
+            return None
+        participants = payload if isinstance(payload, list) else []
+        candidates = []
+        names = {member.display_name.lower(), member.name.lower()}
+        for entry in participants:
+            participant = entry.get("participant", {})
+            name = participant.get("name") or ""
+            if name.lower() in names:
+                candidates.append(participant)
+        if len(candidates) == 1:
+            participant = candidates[0]
+            pid = participant.get("id")
+            pname = participant.get("name") or str(pid)
+            if pid:
+                await self._set_challonge_link(
+                    guild,
+                    user_id=member.id,
+                    participant_id=int(pid),
+                    participant_name=pname,
+                )
                 return participant
         return None
 
@@ -3162,31 +3210,54 @@ class ApplicationReviewView(discord.ui.View):
         )
 
         if member:
-            await self.cog._send_status_dm(
-                member=member,
-                guild=interaction.guild,
-                status_line="Your tournament application has been approved!",
-            )
             link_required = await self.cog.config.guild(
                 interaction.guild
             ).challonge_link_required()
+            link_entry = None
+            auto_linked = None
             if link_required:
                 link_entry = await self.cog._get_challonge_link(
                     interaction.guild, self.applicant_id
                 )
                 if not link_entry:
-                    grace_hours = await self.cog.config.guild(
-                        interaction.guild
-                    ).challonge_link_grace_hours()
-                    await self.cog._send_status_dm(
-                        member=member,
-                        guild=interaction.guild,
-                        status_line="Action required: link your Challonge participant.",
-                        extra=(
-                            "Use `ccchallonge link me <participant name|id>` "
-                            f"within {grace_hours} hours to stay eligible."
-                        ),
+                    auto_linked = await self.cog._try_autolink_challonge_member(
+                        interaction.guild, member
                     )
+                    if auto_linked:
+                        link_entry = {
+                            "participant_id": auto_linked.get("id"),
+                            "participant_name": auto_linked.get("name"),
+                        }
+
+            extra_lines = []
+            command_hint = None
+            if link_required and not link_entry:
+                grace_hours = await self.cog.config.guild(
+                    interaction.guild
+                ).challonge_link_grace_hours()
+                extra_lines.append(
+                    f"Action required: link your Challonge participant within {grace_hours} hours."
+                )
+                command_hint = "ccchallonge link me <participant name|id>"
+            elif auto_linked:
+                extra_lines.append(
+                    f"Linked you to Challonge participant `{auto_linked.get('name')}`."
+                )
+                command_hint = "ccchallonge unlink"
+
+            thread_url = None
+            thread = interaction.guild.get_thread(entry.get("thread_id")) if entry else None
+            if isinstance(thread, discord.Thread):
+                thread_url = thread.jump_url
+
+            await self.cog._send_status_dm(
+                member=member,
+                guild=interaction.guild,
+                status_line="Your tournament application has been approved!",
+                extra="\n".join(extra_lines) if extra_lines else None,
+                application_url=thread_url,
+                command_hint=command_hint,
+            )
 
         await self.cog._sync_challonge_participant(
             interaction.guild, self.applicant_id, add=True
