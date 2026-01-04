@@ -44,6 +44,7 @@ class ChampionsCircle(commands.Cog):
             "tourney_time": None,  # We'll store this as a UTC timestamp
             "tourney_challonge_signup_url": None,
             "tourney_challonge_bracket_url": None,
+            "tourney_challonge_api_key": None,
         }
         self.config.register_guild(**default_guild)
         self.logger = logging.getLogger("red.championsCircle")
@@ -1065,11 +1066,15 @@ class ChampionsCircle(commands.Cog):
         if ctx.invoked_subcommand is None:
             signup_url = await self.config.guild(ctx.guild).tourney_challonge_signup_url()
             bracket_url = await self.config.guild(ctx.guild).tourney_challonge_bracket_url()
+            api_key = await self.config.guild(ctx.guild).tourney_challonge_api_key()
             lines = []
             if signup_url:
                 lines.append(f"Signup: {signup_url}")
             if bracket_url:
                 lines.append(f"Bracket: {bracket_url}")
+            if api_key:
+                masked = f"{api_key[:4]}***{api_key[-4:]}" if len(api_key) > 8 else "***"
+                lines.append(f"API key: set ({masked})")
             if not lines:
                 await ctx.send("No Challonge links set.")
             else:
@@ -1097,6 +1102,26 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).tourney_challonge_bracket_url.set(None)
         await self.update_embed(ctx.guild)
         await ctx.send("Challonge links cleared.")
+
+    @ccchallonge.command(name="key")
+    async def ccchallonge_key(self, ctx, *, api_key: Optional[str] = None):
+        """Set or clear the Challonge API key."""
+        if not api_key:
+            current = await self.config.guild(ctx.guild).tourney_challonge_api_key()
+            if current:
+                masked = f"{current[:4]}***{current[-4:]}" if len(current) > 8 else "***"
+                await ctx.send(f"Challonge API key is set ({masked}).")
+            else:
+                await ctx.send("Challonge API key is not set.")
+            return
+
+        if api_key.strip().lower() in {"clear", "none", "unset"}:
+            await self.config.guild(ctx.guild).tourney_challonge_api_key.set(None)
+            await ctx.send("Challonge API key cleared.")
+            return
+
+        await self.config.guild(ctx.guild).tourney_challonge_api_key.set(api_key.strip())
+        await ctx.send("Challonge API key saved.")
 
     @commands.command()
     @commands.admin_or_permissions(administrator=True)
@@ -1182,6 +1207,7 @@ class ChampionsCircle(commands.Cog):
                 "`ccsettings` - view current configuration\n"
                 "`ccsettime` - set/clear tournament time\n"
                 "`ccchallonge set/clear` - manage Challonge links\n"
+                "`ccchallonge key <token|clear>` - manage Challonge API key\n"
                 "`setchampionschannel` / `setchampionsrole` / `setapplicationduration`"
             ),
             inline=False,
