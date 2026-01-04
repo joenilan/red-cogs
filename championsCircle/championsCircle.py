@@ -58,6 +58,11 @@ class ChampionsCircle(commands.Cog):
             "team_captain_role_id": None,
             "team_role_ids": [],
             "team_text_channel_ids": [],
+            "challonge_links": {},
+            "challonge_link_last_reminder": {},
+            "challonge_link_required": True,
+            "challonge_link_grace_hours": 48,
+            "challonge_link_reminder_hours": 12,
         }
         self.config.register_guild(**default_guild)
         self.logger = logging.getLogger("red.championsCircle")
@@ -608,6 +613,8 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).team_voice_channel_ids.set([])
         await self.config.guild(ctx.guild).team_text_channel_ids.set([])
         await self.config.guild(ctx.guild).team_role_ids.set([])
+        await self.config.guild(ctx.guild).challonge_links.set({})
+        await self.config.guild(ctx.guild).challonge_link_last_reminder.set({})
 
         # Reset cooldowns
         self.reset_cooldowns()
@@ -1352,8 +1359,26 @@ class ChampionsCircle(commands.Cog):
             return
 
         participant_id = stored_map.get(user_id_str)
+        link_entry = await self._get_challonge_link(guild, user_id)
+        if link_entry and link_entry.get("participant_id"):
+            participant_id = link_entry.get("participant_id")
         if not participant_id:
             return
+        links = await self._get_challonge_links(guild)
+        if links and link_entry:
+            for other_user, other_link in links.items():
+                if other_user == user_id_str:
+                    continue
+                if other_link.get("participant_id") == participant_id:
+                    return
+        for other_user, other_pid in stored_map.items():
+            if other_user == user_id_str:
+                continue
+            try:
+                if int(other_pid) == int(participant_id):
+                    return
+            except (TypeError, ValueError):
+                continue
         ok, payload = await self._challonge_request(
             guild,
             "DELETE",
@@ -1362,6 +1387,62 @@ class ChampionsCircle(commands.Cog):
         if ok or "not found" in str(payload).lower():
             stored_map.pop(user_id_str, None)
             await self.config.guild(guild).tourney_challonge_participant_map.set(stored_map)
+
+    async def _get_challonge_links(self, guild: discord.Guild) -> Dict[str, Any]:
+        links = await self.config.guild(guild).challonge_links()
+        if not isinstance(links, dict):
+            links = {}
+        return links
+
+    async def _get_challonge_link(self, guild: discord.Guild, user_id: int) -> Optional[Dict[str, Any]]:
+        links = await self._get_challonge_links(guild)
+        return links.get(str(user_id))
+
+    async def _set_challonge_link(
+        self,
+        guild: discord.Guild,
+        *,
+        user_id: int,
+        participant_id: int,
+        participant_name: str,
+    ) -> None:
+        links = await self._get_challonge_links(guild)
+        links[str(user_id)] = {
+            "participant_id": int(participant_id),
+            "participant_name": participant_name,
+            "linked_at": int(datetime.now(timezone.utc).timestamp()),
+        }
+        await self.config.guild(guild).challonge_links.set(links)
+
+    async def _remove_challonge_link(self, guild: discord.Guild, user_id: int) -> None:
+        links = await self._get_challonge_links(guild)
+        links.pop(str(user_id), None)
+        await self.config.guild(guild).challonge_links.set(links)
+
+    async def _resolve_challonge_participant(
+        self, guild: discord.Guild, value: str
+    ) -> Optional[Dict[str, Any]]:
+        if not value:
+            return None
+        api_key, slug = await self._get_challonge_credentials(guild)
+        if not api_key or not slug:
+            return None
+        ok, payload = await self._challonge_request(
+            guild, "GET", f"/tournaments/{slug}/participants.json"
+        )
+        if not ok:
+            return None
+        participants = payload if isinstance(payload, list) else []
+        cleaned = value.strip()
+        participant_id = int(cleaned) if cleaned.isdigit() else None
+        for entry in participants:
+            participant = entry.get("participant", {})
+            if participant_id and int(participant.get("id", 0)) == participant_id:
+                return participant
+            name = participant.get("name")
+            if name and name.lower() == cleaned.lower():
+                return participant
+        return None
 
     async def _challonge_request(
         self,
@@ -1685,6 +1766,7 @@ class ChampionsCircle(commands.Cog):
 
         await self._move_application(ctx.guild, ctx.author.id, "cancelled_applications", entry=entry)
         await self._sync_challonge_participant(ctx.guild, ctx.author.id, add=False)
+        await self._remove_challonge_link(ctx.guild, ctx.author.id)
         await self.update_embed(ctx.guild)
         await ctx.send("Your Champions Circle application has been cancelled.")
 
@@ -2061,6 +2143,7 @@ class ChampionsCircle(commands.Cog):
         stored_map = await self.config.guild(ctx.guild).tourney_challonge_participant_map()
         if not isinstance(stored_map, dict):
             stored_map = {}
+        links = await self._get_challonge_links(ctx.guild)
 
         added = 0
         linked = 0
@@ -2068,8 +2151,16 @@ class ChampionsCircle(commands.Cog):
 
         for user_id in approved_ids:
             user_id_str = str(user_id)
+            link_entry = links.get(user_id_str) if links else None
             member = ctx.guild.get_member(user_id)
             display_name = member.display_name if member else f"User {user_id}"
+
+            if link_entry and link_entry.get("participant_id"):
+                participant_id = int(link_entry.get("participant_id"))
+                if participant_id in existing_ids:
+                    stored_map[user_id_str] = participant_id
+                    linked += 1
+                    continue
 
             existing_id = stored_map.get(user_id_str)
             if existing_id and int(existing_id) in existing_ids:
@@ -2128,6 +2219,162 @@ class ChampionsCircle(commands.Cog):
             f"Challonge sync complete. Added {added}, linked {linked}, errors {errors}."
         )
 
+    @ccchallonge.command(name="link")
+    async def ccchallonge_link(
+        self, ctx, member: Optional[discord.Member] = None, *, participant: Optional[str] = None
+    ):
+        """Link a Discord user to a Challonge participant."""
+        if member is None:
+            member = ctx.author
+        elif member != ctx.author and not (
+            ctx.author.guild_permissions.manage_guild or ctx.author.guild_permissions.administrator
+        ):
+            await ctx.send("You can only link yourself.")
+            return
+        if not participant:
+            await ctx.send("Usage: `ccchallonge link [@user] <participant name|id>`")
+            return
+
+        participant_data = await self._resolve_challonge_participant(ctx.guild, participant)
+        if not participant_data:
+            await ctx.send("Participant not found. Use `ccchallonge participants` to list names/ids.")
+            return
+
+        participant_id = participant_data.get("id")
+        participant_name = participant_data.get("name") or str(participant_id)
+        if not participant_id:
+            await ctx.send("Participant data missing an ID.")
+            return
+
+        await self._set_challonge_link(
+            ctx.guild,
+            user_id=member.id,
+            participant_id=int(participant_id),
+            participant_name=participant_name,
+        )
+        await ctx.send(
+            f"Linked {member.mention} to Challonge participant `{participant_name}`."
+        )
+
+    @ccchallonge.command(name="unlink")
+    async def ccchallonge_unlink(self, ctx, member: Optional[discord.Member] = None):
+        """Remove a Challonge link for a Discord user."""
+        if member is None:
+            member = ctx.author
+        elif member != ctx.author and not (
+            ctx.author.guild_permissions.manage_guild or ctx.author.guild_permissions.administrator
+        ):
+            await ctx.send("You can only unlink yourself.")
+            return
+        await self._remove_challonge_link(ctx.guild, member.id)
+        await ctx.send(f"Removed Challonge link for {member.mention}.")
+
+    @ccchallonge.command(name="syncroles")
+    @commands.admin_or_permissions(administrator=True)
+    async def ccchallonge_syncroles(self, ctx):
+        """Assign team roles from Challonge participant order."""
+        api_key, slug = await self._get_challonge_credentials(ctx.guild)
+        if not api_key:
+            await ctx.send("Challonge API key is not set. Use `ccchallonge key <token>`.")
+            return
+        if not slug:
+            await ctx.send("Challonge tournament is not set. Use `ccchallonge tournament <slug>`.")
+            return
+
+        role_ids = await self.config.guild(ctx.guild).team_role_ids()
+        team_roles = [ctx.guild.get_role(role_id) for role_id in role_ids or []]
+        team_roles = [role for role in team_roles if role]
+        if not team_roles:
+            await ctx.send("No team roles found. Run `ccstart` to create teams first.")
+            return
+
+        ok, participants_payload = await self._challonge_request(
+            ctx.guild, "GET", f"/tournaments/{slug}/participants.json"
+        )
+        if not ok:
+            await ctx.send(f"Challonge API error: {participants_payload}")
+            return
+
+        participants = participants_payload if isinstance(participants_payload, list) else []
+        ordered = []
+        for entry in participants:
+            participant = entry.get("participant", {})
+            seed = participant.get("seed") or 0
+            pid = participant.get("id") or 0
+            ordered.append((seed, pid, participant))
+        ordered.sort(key=lambda item: (item[0] or 0, item[1] or 0))
+
+        participant_to_team: Dict[int, int] = {}
+        for idx, (_, _, participant) in enumerate(ordered, start=1):
+            if idx > len(team_roles):
+                break
+            pid = participant.get("id")
+            if pid is not None:
+                participant_to_team[int(pid)] = idx
+
+        links = await self._get_challonge_links(ctx.guild)
+        assigned = 0
+        missing = 0
+        for user_id_str, link in links.items():
+            participant_id = link.get("participant_id")
+            team_index = participant_to_team.get(participant_id)
+            member = ctx.guild.get_member(int(user_id_str))
+            if not member or not team_index:
+                missing += 1
+                continue
+            target_role = team_roles[team_index - 1]
+            remove_roles = [role for role in team_roles if role != target_role and role in member.roles]
+            try:
+                if remove_roles:
+                    await member.remove_roles(*remove_roles)
+                if target_role not in member.roles:
+                    await member.add_roles(target_role)
+                assigned += 1
+            except discord.HTTPException:
+                missing += 1
+
+        await ctx.send(
+            f"Team sync complete. Assigned {assigned} members. {missing} missing links/participants."
+        )
+
+    @ccchallonge.command(name="linksettings")
+    @commands.admin_or_permissions(administrator=True)
+    async def ccchallonge_linksettings(
+        self, ctx, setting: Optional[str] = None, *, value: Optional[str] = None
+    ):
+        """Configure Challonge link enforcement."""
+        if not setting:
+            required = await self.config.guild(ctx.guild).challonge_link_required()
+            grace = await self.config.guild(ctx.guild).challonge_link_grace_hours()
+            reminder = await self.config.guild(ctx.guild).challonge_link_reminder_hours()
+            await ctx.send(
+                f"Link required: {required}\nGrace hours: {grace}\nReminder hours: {reminder}"
+            )
+            return
+        setting = setting.lower()
+        if setting in {"require", "required"}:
+            flag = (value or "").lower() in {"on", "true", "yes", "1"}
+            await self.config.guild(ctx.guild).challonge_link_required.set(flag)
+            await ctx.send(f"Link required set to {flag}.")
+            return
+        if setting == "grace":
+            hours = self._parse_int(value) if value else None
+            if hours is None:
+                await ctx.send("Provide hours: `ccchallonge linksettings grace 48`")
+                return
+            await self.config.guild(ctx.guild).challonge_link_grace_hours.set(hours)
+            await ctx.send(f"Grace period set to {hours} hours.")
+            return
+        if setting == "reminder":
+            hours = self._parse_int(value) if value else None
+            if hours is None:
+                await ctx.send("Provide hours: `ccchallonge linksettings reminder 12`")
+                return
+            await self.config.guild(ctx.guild).challonge_link_reminder_hours.set(hours)
+            await ctx.send(f"Reminder interval set to {hours} hours.")
+            return
+        await ctx.send("Unknown setting. Use `require`, `grace`, or `reminder`.")
+
     @commands.command()
     @commands.admin_or_permissions(administrator=True)
     @guild_only()
@@ -2150,6 +2397,7 @@ class ChampionsCircle(commands.Cog):
                     duration_days = int(guild_data.get("application_duration", 7))
                     active_apps = await self._load_application_list(guild, "active_applications")
                     cancelled_apps = await self._load_application_list(guild, "cancelled_applications")
+                    approved_apps = await self._load_application_list(guild, "approved_applications")
 
                     remaining: List[Dict[str, Any]] = []
                     updated = False
@@ -2172,6 +2420,81 @@ class ChampionsCircle(commands.Cog):
                         await self._save_application_list(guild, "active_applications", remaining)
                         await self._save_application_list(guild, "cancelled_applications", cancelled_apps)
                         await self.update_embed(guild)
+
+                    link_required = guild_data.get("challonge_link_required", True)
+                    if link_required and approved_apps:
+                        links = await self._get_challonge_links(guild)
+                        reminder_map = await self.config.guild(guild).challonge_link_last_reminder()
+                        if not isinstance(reminder_map, dict):
+                            reminder_map = {}
+                        grace_hours = int(guild_data.get("challonge_link_grace_hours", 48))
+                        reminder_hours = int(guild_data.get("challonge_link_reminder_hours", 12))
+
+                        still_approved: List[Dict[str, Any]] = []
+                        approved_changed = False
+                        cancelled_changed = False
+                        for app in approved_apps:
+                            user_id = app.get("user_id")
+                            if not user_id:
+                                still_approved.append(app)
+                                continue
+                            link_entry = links.get(str(user_id))
+                            if link_entry:
+                                reminder_map.pop(str(user_id), None)
+                                still_approved.append(app)
+                                continue
+
+                            approved_at = int(app.get("approved_at") or app.get("timestamp") or 0)
+                            if approved_at and now_ts - approved_at > grace_hours * 3600:
+                                cancelled_apps.append(app)
+                                cancelled_changed = True
+                                approved_changed = True
+                                member = guild.get_member(user_id)
+                                role_id = await self.config.guild(guild).champions_role_id()
+                                role = guild.get_role(role_id) if role_id else None
+                                if member and role and role in member.roles:
+                                    try:
+                                        await member.remove_roles(role)
+                                    except discord.HTTPException:
+                                        self.logger.error(
+                                            "Failed to remove Champions role from %s", member.name
+                                        )
+                                if member:
+                                    await self._send_status_dm(
+                                        member=member,
+                                        guild=guild,
+                                        status_line="Your approval expired due to missing Challonge link.",
+                                        extra="You can reapply if needed.",
+                                    )
+                                await self._sync_challonge_participant(guild, user_id, add=False)
+                                await self._remove_challonge_link(guild, user_id)
+                                reminder_map.pop(str(user_id), None)
+                                continue
+
+                            last_reminder = int(reminder_map.get(str(user_id), 0))
+                            if not last_reminder or now_ts - last_reminder >= reminder_hours * 3600:
+                                member = guild.get_member(user_id)
+                                if member:
+                                    await self._send_status_dm(
+                                        member=member,
+                                        guild=guild,
+                                        status_line="Reminder: link your Challonge participant.",
+                                        extra="Use `ccchallonge link me <participant name|id>` to stay eligible.",
+                                    )
+                                    reminder_map[str(user_id)] = now_ts
+                            still_approved.append(app)
+
+                        if approved_changed:
+                            await self._save_application_list(
+                                guild, "approved_applications", still_approved
+                            )
+                        if cancelled_changed:
+                            await self._save_application_list(
+                                guild, "cancelled_applications", cancelled_apps
+                            )
+                        await self.config.guild(guild).challonge_link_last_reminder.set(reminder_map)
+                        if approved_changed or cancelled_changed:
+                            await self.update_embed(guild)
             except Exception as e:
                 self.logger.error(f"Error in close_expired_applications: {str(e)}")
 
@@ -2217,6 +2540,9 @@ class ChampionsCircle(commands.Cog):
                 "`ccchallonge refresh` - pull links from Challonge\n"
                 "`ccchallonge info/participants/matches` - view Challonge data\n"
                 "`ccchallonge sync [purge]` - sync approved applicants\n"
+                "`ccchallonge link/unlink` - link a Discord user to a Challonge participant\n"
+                "`ccchallonge syncroles` - assign team roles from Challonge\n"
+                "`ccchallonge linksettings` - configure link enforcement\n"
                 "`ccmode <1v1|2v2|3v3|4v4>` - set game mode\n"
                 "`ccsetup` now includes game mode + advanced team/voice options\n"
                 "`setchampionschannel` / `setchampionsrole` / `setapplicationduration`"
@@ -2329,6 +2655,10 @@ class ChampionsCircle(commands.Cog):
         challonge_key = await self.config.guild(guild).tourney_challonge_api_key()
         challonge_slug = await self.config.guild(guild).tourney_challonge_slug()
         challonge_key = await self.config.guild(guild).tourney_challonge_api_key()
+        link_required = await self.config.guild(guild).challonge_link_required()
+        link_grace = await self.config.guild(guild).challonge_link_grace_hours()
+        link_reminder = await self.config.guild(guild).challonge_link_reminder_hours()
+        link_map = await self.config.guild(guild).challonge_links()
 
         active = await self._load_application_list(guild, "active_applications")
         approved = await self._load_application_list(guild, "approved_applications")
@@ -2390,6 +2720,16 @@ class ChampionsCircle(commands.Cog):
             if challonge_slug:
                 lines.append(f"Tournament: {challonge_slug}")
             embed.add_field(name="Challonge", value="\n".join(lines), inline=False)
+        embed.add_field(
+            name="Challonge links",
+            value=(
+                f"Required: {link_required}\n"
+                f"Grace: {link_grace}h\n"
+                f"Reminder: {link_reminder}h\n"
+                f"Linked users: {len(link_map or {})}"
+            ),
+            inline=False,
+        )
         embed.add_field(
             name="Challonge API key",
             value="Set" if challonge_key else "Not set",
@@ -2742,6 +3082,20 @@ class ApplicationReviewView(discord.ui.View):
         if not entry:
             await self._send_ephemeral(interaction, "No pending application found for that user.")
             return
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        entry["approved_at"] = now_ts
+        approved_apps = await self.cog._load_application_list(
+            interaction.guild, "approved_applications"
+        )
+        for idx, app in enumerate(approved_apps):
+            if app.get("user_id") == self.applicant_id:
+                approved_apps[idx] = entry
+                break
+        else:
+            approved_apps.append(entry)
+        await self.cog._save_application_list(
+            interaction.guild, "approved_applications", approved_apps
+        )
 
         thread = interaction.channel
         if isinstance(thread, discord.Thread) and thread.parent:
@@ -2770,6 +3124,26 @@ class ApplicationReviewView(discord.ui.View):
                 guild=interaction.guild,
                 status_line="Your tournament application has been approved!",
             )
+            link_required = await self.cog.config.guild(
+                interaction.guild
+            ).challonge_link_required()
+            if link_required:
+                link_entry = await self.cog._get_challonge_link(
+                    interaction.guild, self.applicant_id
+                )
+                if not link_entry:
+                    grace_hours = await self.cog.config.guild(
+                        interaction.guild
+                    ).challonge_link_grace_hours()
+                    await self.cog._send_status_dm(
+                        member=member,
+                        guild=interaction.guild,
+                        status_line="Action required: link your Challonge participant.",
+                        extra=(
+                            "Use `ccchallonge link me <participant name|id>` "
+                            f"within {grace_hours} hours to stay eligible."
+                        ),
+                    )
 
         await self.cog._sync_challonge_participant(
             interaction.guild, self.applicant_id, add=True
@@ -2911,6 +3285,7 @@ class CancelApplicationButton(discord.ui.Button):
 
         await self.cog._move_application(guild, user_id, "cancelled_applications", entry=entry)
         await self.cog._sync_challonge_participant(guild, user_id, add=False)
+        await self.cog._remove_challonge_link(guild, user_id)
         await self.cog.update_embed(guild)
         await interaction.response.send_message("Your application has been cancelled.", ephemeral=True)
 
@@ -3090,6 +3465,7 @@ class DenialReasonModal(discord.ui.Modal, title="Application Denial"):
         await self.cog._sync_challonge_participant(
             interaction.guild, self.applicant_id, add=False
         )
+        await self.cog._remove_challonge_link(interaction.guild, self.applicant_id)
         await self.cog.update_embed(interaction.guild)
         await interaction.response.send_message("Application denied.", ephemeral=True)
 
