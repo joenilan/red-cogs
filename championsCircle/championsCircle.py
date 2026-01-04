@@ -320,19 +320,21 @@ class ChampionsCircle(commands.Cog):
                     await interaction.response.send_message(
                         "Invalid duration. Please enter a number", ephemeral=True
                     )
-                    return
+                return
 
-            game_mode_input = ""
-            if hasattr(modal, "game_mode"):
-                game_mode_input = modal.game_mode.value
-            game_mode_value = self._normalize_game_mode(game_mode_input)
-            if game_mode_value:
-                await self.config.guild(interaction.guild).game_mode.set(game_mode_value)
-
+            view = SetupGameModeView(self, interaction.guild.id)
             if interaction.response.is_done():
-                await interaction.followup.send_modal(SetupAdvancedModal(self, interaction.guild.id))
+                await interaction.followup.send(
+                    "Setup step 2: choose the game mode, then click Continue.",
+                    view=view,
+                    ephemeral=True,
+                )
             else:
-                await interaction.response.send_modal(SetupAdvancedModal(self, interaction.guild.id))
+                await interaction.response.send_message(
+                    "Setup step 2: choose the game mode, then click Continue.",
+                    view=view,
+                    ephemeral=True,
+                )
 
         except Exception as e:
             self.logger.error(f"Error in setup process: {str(e)}")
@@ -377,15 +379,8 @@ class ChampionsCircle(commands.Cog):
                 )
             await self.config.guild(guild).team_captain_role_id.set(role.id)
 
-            if team_count > 0:
-                category = await self._ensure_voice_category(guild, category_name)
-                if category:
-                    await self._ensure_team_voice_channels(
-                        guild,
-                        category=category,
-                        team_count=team_count,
-                        prefix=prefix,
-                    )
+            await self.config.guild(guild).team_voice_category_id.set(None)
+            await self.config.guild(guild).team_voice_channel_ids.set([])
 
             await self.update_embed(guild)
 
@@ -486,6 +481,7 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).applications_opened_at.set(
             int(datetime.now(timezone.utc).timestamp())
         )
+        await self._create_team_voice_assets(ctx.guild)
         await self.update_embed(ctx.guild)
 
     @commands.command(name="ccend")
@@ -558,6 +554,8 @@ class ChampionsCircle(commands.Cog):
                 except discord.HTTPException:
                     self.logger.error("Failed to archive roster thread %s", roster_thread_id)
 
+        await self._cleanup_team_voice_assets(ctx.guild)
+
         # Clear messages
         channel = ctx.channel
         await ctx.send("Ending tournament and clearing channel...")
@@ -583,6 +581,8 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).roster_thread_id.set(None)
         await self.config.guild(ctx.guild).roster_anchor_message_id.set(None)
         await self.config.guild(ctx.guild).roster_message_ids.set({})
+        await self.config.guild(ctx.guild).team_voice_category_id.set(None)
+        await self.config.guild(ctx.guild).team_voice_channel_ids.set([])
 
         # Reset cooldowns
         self.reset_cooldowns()
@@ -962,6 +962,41 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(guild).team_voice_channel_ids.set(created_ids)
         await self.config.guild(guild).team_voice_category_id.set(category.id)
         return created_ids
+
+    async def _create_team_voice_assets(self, guild: discord.Guild) -> None:
+        team_count = await self.config.guild(guild).team_count()
+        if not team_count or team_count <= 0:
+            return
+        prefix = await self.config.guild(guild).team_voice_channel_prefix() or "Team"
+        category_name = f"Champions Circle - {team_count} Teams"
+        category = await self._ensure_voice_category(guild, category_name)
+        if not category:
+            return
+        await self._ensure_team_voice_channels(
+            guild,
+            category=category,
+            team_count=team_count,
+            prefix=prefix,
+        )
+
+    async def _cleanup_team_voice_assets(self, guild: discord.Guild) -> None:
+        channel_ids = await self.config.guild(guild).team_voice_channel_ids()
+        if channel_ids:
+            for channel_id in channel_ids:
+                channel = guild.get_channel(channel_id)
+                if isinstance(channel, discord.VoiceChannel):
+                    try:
+                        await channel.delete(reason="Champions Circle cleanup")
+                    except discord.HTTPException:
+                        continue
+
+        category_id = await self.config.guild(guild).team_voice_category_id()
+        category = guild.get_channel(category_id) if category_id else None
+        if isinstance(category, discord.CategoryChannel):
+            try:
+                await category.delete(reason="Champions Circle cleanup")
+            except discord.HTTPException:
+                pass
 
     def _parse_challonge_slug(self, value: Optional[str]) -> Optional[str]:
         if not value:
@@ -1842,7 +1877,7 @@ class ChampionsCircle(commands.Cog):
                 "`ccchallonge info/participants/matches` - view Challonge data\n"
                 "`ccchallonge sync [purge]` - sync approved applicants\n"
                 "`ccmode <1v1|2v2|3v3|4v4>` - set game mode\n"
-                "`ccsetup` now includes advanced team/voice options\n"
+                "`ccsetup` now includes game mode + advanced team/voice options\n"
                 "`setchampionschannel` / `setchampionsrole` / `setapplicationduration`"
             ),
             inline=False,
@@ -2558,16 +2593,46 @@ class SetupModal(discord.ui.Modal, title="Tournament Setup"):
         )
         self.add_item(self.duration)
 
-        self.game_mode = discord.ui.TextInput(
-            label="Game mode (1v1, 2v2, 3v3, 4v4)",
-            placeholder="Example: 3v3",
-            required=False,
-        )
-        self.add_item(self.game_mode)
-
     async def on_submit(self, interaction: discord.Interaction):
         await self.cog.process_setup(interaction, self)
 
+
+class SetupGameModeView(discord.ui.View):
+    def __init__(self, cog: ChampionsCircle, guild_id: int):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.selected_mode: Optional[str] = None
+
+        self.mode_select = discord.ui.Select(
+            placeholder="Select game mode",
+            options=[
+                discord.SelectOption(label="1v1", value="1v1"),
+                discord.SelectOption(label="2v2", value="2v2"),
+                discord.SelectOption(label="3v3", value="3v3"),
+                discord.SelectOption(label="4v4", value="4v4"),
+            ],
+        )
+        self.mode_select.callback = self._handle_select
+        self.add_item(self.mode_select)
+
+        self.continue_button = discord.ui.Button(
+            label="Continue setup",
+            style=discord.ButtonStyle.green,
+        )
+        self.continue_button.callback = self._handle_continue
+        self.add_item(self.continue_button)
+
+    async def _handle_select(self, interaction: discord.Interaction):
+        self.selected_mode = self.mode_select.values[0]
+        await self.cog.config.guild(interaction.guild).game_mode.set(self.selected_mode)
+        await interaction.response.send_message(
+            f"Game mode set to {self.selected_mode}.",
+            ephemeral=True,
+        )
+
+    async def _handle_continue(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(SetupAdvancedModal(self.cog, self.guild_id))
 
 class SetupAdvancedModal(discord.ui.Modal, title="Tournament Setup (Advanced)"):
     def __init__(self, cog: ChampionsCircle, guild_id: int):
