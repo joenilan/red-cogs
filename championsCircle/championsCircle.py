@@ -50,6 +50,11 @@ class ChampionsCircle(commands.Cog):
             "tourney_challonge_slug": None,
             "tourney_challonge_participant_map": {},
             "game_mode": "3v3",
+            "team_count": 0,
+            "team_voice_category_id": None,
+            "team_voice_channel_ids": [],
+            "team_voice_channel_prefix": "Team",
+            "team_captain_role_id": None,
         }
         self.config.register_guild(**default_guild)
         self.logger = logging.getLogger("red.championsCircle")
@@ -324,45 +329,10 @@ class ChampionsCircle(commands.Cog):
             if game_mode_value:
                 await self.config.guild(interaction.guild).game_mode.set(game_mode_value)
 
-            embed = discord.Embed(
-                title="Tournament Setup Complete",
-                color=discord.Color.green(),
-                description="Your tournament has been configured with the following settings:",
-            )
-            embed.add_field(name="Title", value=modal.tourney_title.value)
-            embed.add_field(name="Description", value=modal.description.value)
-            if time_value:
-                embed.add_field(name="Time", value=f"<t:{timestamp}:F>")
-            else:
-                embed.add_field(name="Time", value="Not set")
-            embed.add_field(name="Application Duration", value=f"{days} days")
-            embed.add_field(
-                name="Game mode",
-                value=game_mode_value or await self.config.guild(interaction.guild).game_mode(),
-            )
-
-            forum_id = await self.config.guild(interaction.guild).champions_forum()
-            channel_id = await self.config.guild(interaction.guild).champions_channel()
-            forum_channel = interaction.guild.get_channel(forum_id) if forum_id else None
-            announcement_channel = interaction.guild.get_channel(channel_id) if channel_id else None
-            embed.add_field(
-                name="Channels",
-                value=(
-                    f"Forum: {forum_channel.mention if forum_channel else 'Not found'}\n"
-                    f"Announcements: {announcement_channel.mention if announcement_channel else 'Not found'}"
-                ),
-                inline=False,
-            )
-
-            role = interaction.guild.get_role(
-                await self.config.guild(interaction.guild).champions_role_id()
-            )
-            embed.add_field(name="Champions Role", value=role.mention if role else "Not found")
-
             if interaction.response.is_done():
-                await interaction.followup.send(embed=embed)
+                await interaction.followup.send_modal(SetupAdvancedModal(self, interaction.guild.id))
             else:
-                await interaction.response.send_message(embed=embed)
+                await interaction.response.send_modal(SetupAdvancedModal(self, interaction.guild.id))
 
         except Exception as e:
             self.logger.error(f"Error in setup process: {str(e)}")
@@ -377,6 +347,124 @@ class ChampionsCircle(commands.Cog):
                     ephemeral=True,
                 )
 
+    async def process_advanced_setup(
+        self, interaction: discord.Interaction, modal: "SetupAdvancedModal"
+    ) -> None:
+        try:
+            guild = interaction.guild
+            team_count = self._parse_int(modal.team_count.value)
+            if team_count is not None and team_count < 0:
+                team_count = 0
+
+            category_name = modal.voice_category.value.strip() if modal.voice_category.value else ""
+            if not category_name:
+                category_name = "Champions Circle - Teams"
+
+            prefix = modal.voice_prefix.value.strip() if modal.voice_prefix.value else "Team"
+            captain_role_text = modal.captain_role.value.strip() if modal.captain_role.value else ""
+
+            if team_count is not None:
+                await self.config.guild(guild).team_count.set(team_count)
+            await self.config.guild(guild).team_voice_channel_prefix.set(prefix)
+
+            if captain_role_text:
+                role = self._resolve_role_from_text(guild, captain_role_text)
+                if role is None:
+                    role = await guild.create_role(
+                        name=captain_role_text,
+                        reason="Champions Circle setup",
+                        mentionable=True,
+                    )
+                await self.config.guild(guild).team_captain_role_id.set(role.id)
+
+            if team_count and team_count > 0:
+                category = await self._ensure_voice_category(guild, category_name)
+                if category:
+                    await self._ensure_team_voice_channels(
+                        guild,
+                        category=category,
+                        team_count=team_count,
+                        prefix=prefix,
+                    )
+
+            await self.update_embed(guild)
+
+            embed = discord.Embed(
+                title="Tournament Setup Complete",
+                color=discord.Color.green(),
+                description="Your tournament has been configured with the following settings:",
+            )
+
+            tourney_title = await self.config.guild(guild).tourney_title()
+            tourney_description = await self.config.guild(guild).tourney_description()
+            tourney_time = await self.config.guild(guild).tourney_time()
+            duration = await self.config.guild(guild).application_duration()
+            game_mode = await self.config.guild(guild).game_mode()
+
+            embed.add_field(name="Title", value=tourney_title)
+            embed.add_field(name="Description", value=tourney_description)
+            embed.add_field(name="Time", value=self._format_time_display(tourney_time))
+            embed.add_field(name="Application Duration", value=f"{duration} days")
+            embed.add_field(name="Game mode", value=game_mode)
+            embed.add_field(
+                name="Team size",
+                value=str(self._team_size_from_mode(game_mode)),
+            )
+
+            forum_id = await self.config.guild(guild).champions_forum()
+            channel_id = await self.config.guild(guild).champions_channel()
+            forum_channel = guild.get_channel(forum_id) if forum_id else None
+            announcement_channel = guild.get_channel(channel_id) if channel_id else None
+            embed.add_field(
+                name="Channels",
+                value=(
+                    f"Forum: {forum_channel.mention if forum_channel else 'Not found'}\n"
+                    f"Announcements: {announcement_channel.mention if announcement_channel else 'Not found'}"
+                ),
+                inline=False,
+            )
+
+            role = guild.get_role(await self.config.guild(guild).champions_role_id())
+            embed.add_field(name="Champions Role", value=role.mention if role else "Not found")
+
+            team_voice_category_id = await self.config.guild(guild).team_voice_category_id()
+            team_voice_category = (
+                guild.get_channel(team_voice_category_id) if team_voice_category_id else None
+            )
+            embed.add_field(
+                name="Team voice category",
+                value=team_voice_category.mention if team_voice_category else "Not set",
+                inline=True,
+            )
+            embed.add_field(
+                name="Team channels",
+                value=str(len(await self.config.guild(guild).team_voice_channel_ids())),
+                inline=True,
+            )
+            captain_role_id = await self.config.guild(guild).team_captain_role_id()
+            captain_role = guild.get_role(captain_role_id) if captain_role_id else None
+            embed.add_field(
+                name="Captain role",
+                value=captain_role.mention if captain_role else "Not set",
+                inline=True,
+            )
+
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed)
+            else:
+                await interaction.response.send_message(embed=embed)
+        except Exception as exc:
+            self.logger.error("Error in advanced setup: %s", exc)
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "An error occurred during advanced setup. Please try again.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "An error occurred during advanced setup. Please try again.",
+                    ephemeral=True,
+                )
     @commands.command(name="ccstart")
     @commands.admin_or_permissions(administrator=True)
     async def ccstart(self, ctx):
@@ -799,6 +887,76 @@ class ChampionsCircle(commands.Cog):
             return int(normalized.split("v")[0])
         except (ValueError, IndexError):
             return 3
+
+    def _parse_int(self, value: Optional[str]) -> Optional[int]:
+        if not value:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if cleaned.lower() in {"none", "unset", "clear"}:
+            return None
+        try:
+            return int(cleaned)
+        except ValueError:
+            return None
+
+    def _resolve_role_from_text(self, guild: discord.Guild, value: str) -> Optional[discord.Role]:
+        if not value:
+            return None
+        cleaned = value.strip()
+        match = re.match(r"<@&(\d+)>", cleaned)
+        if match:
+            role_id = int(match.group(1))
+            return guild.get_role(role_id)
+        if cleaned.isdigit():
+            role = guild.get_role(int(cleaned))
+            if role:
+                return role
+        return next((role for role in guild.roles if role.name.lower() == cleaned.lower()), None)
+
+    async def _ensure_voice_category(
+        self, guild: discord.Guild, name: str
+    ) -> Optional[discord.CategoryChannel]:
+        category = next((c for c in guild.categories if c.name.lower() == name.lower()), None)
+        if category:
+            return category
+        try:
+            return await guild.create_category(name=name, reason="Champions Circle setup")
+        except discord.HTTPException:
+            return None
+
+    async def _ensure_team_voice_channels(
+        self,
+        guild: discord.Guild,
+        *,
+        category: discord.CategoryChannel,
+        team_count: int,
+        prefix: str,
+    ) -> List[int]:
+        existing_ids = await self.config.guild(guild).team_voice_channel_ids()
+        existing_channels: List[discord.VoiceChannel] = []
+        for channel_id in existing_ids or []:
+            channel = guild.get_channel(channel_id)
+            if isinstance(channel, discord.VoiceChannel):
+                existing_channels.append(channel)
+
+        created_ids: List[int] = [ch.id for ch in existing_channels]
+        needed = max(team_count - len(existing_channels), 0)
+        for index in range(1, needed + 1):
+            name = f"{prefix} {len(existing_channels) + index}"
+            try:
+                channel = await guild.create_voice_channel(
+                    name=name,
+                    category=category,
+                    reason="Champions Circle setup",
+                )
+                created_ids.append(channel.id)
+            except discord.HTTPException:
+                continue
+        await self.config.guild(guild).team_voice_channel_ids.set(created_ids)
+        await self.config.guild(guild).team_voice_category_id.set(category.id)
+        return created_ids
 
     def _parse_challonge_slug(self, value: Optional[str]) -> Optional[str]:
         if not value:
@@ -1679,6 +1837,7 @@ class ChampionsCircle(commands.Cog):
                 "`ccchallonge info/participants/matches` - view Challonge data\n"
                 "`ccchallonge sync [purge]` - sync approved applicants\n"
                 "`ccmode <1v1|2v2|3v3|4v4>` - set game mode\n"
+                "`ccsetup` now includes advanced team/voice options\n"
                 "`setchampionschannel` / `setchampionsrole` / `setapplicationduration`"
             ),
             inline=False,
@@ -2404,6 +2563,43 @@ class SetupModal(discord.ui.Modal, title="Tournament Setup"):
     async def on_submit(self, interaction: discord.Interaction):
         await self.cog.process_setup(interaction, self)
 
+
+class SetupAdvancedModal(discord.ui.Modal, title="Tournament Setup (Advanced)"):
+    def __init__(self, cog: ChampionsCircle, guild_id: int):
+        super().__init__()
+        self.cog = cog
+        self.guild_id = guild_id
+
+        self.team_count = discord.ui.TextInput(
+            label="Team count (optional)",
+            placeholder="Leave blank to skip voice channels",
+            required=False,
+        )
+        self.add_item(self.team_count)
+
+        self.voice_category = discord.ui.TextInput(
+            label="Voice category name",
+            placeholder="Champions Circle - Teams",
+            required=False,
+        )
+        self.add_item(self.voice_category)
+
+        self.voice_prefix = discord.ui.TextInput(
+            label="Voice channel prefix",
+            placeholder="Team",
+            required=False,
+        )
+        self.add_item(self.voice_prefix)
+
+        self.captain_role = discord.ui.TextInput(
+            label="Captain role (name or ID)",
+            placeholder="Team Captain",
+            required=False,
+        )
+        self.add_item(self.captain_role)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.process_advanced_setup(interaction, self)
 
 class DenialReasonModal(discord.ui.Modal, title="Application Denial"):
     def __init__(self, cog, applicant_id):
