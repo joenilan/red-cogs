@@ -2282,7 +2282,15 @@ class ChampionsCircle(commands.Cog):
             await ctx.send("You can only link yourself.")
             return
         if not participant:
-            await ctx.send("Usage: `ccchallonge link [@user] <participant name|id>`")
+            auto_linked = await self._try_autolink_challonge_member(ctx.guild, member)
+            if auto_linked:
+                await ctx.send(
+                    f"Linked {member.mention} to Challonge participant `{auto_linked.get('name')}`."
+                )
+                return
+            await ctx.send(
+                "No unique match found. Use `ccchallonge link [@user] <participant name|id>`."
+            )
             return
 
         participant_data = await self._resolve_challonge_participant(ctx.guild, participant)
