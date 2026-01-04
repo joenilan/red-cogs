@@ -746,13 +746,8 @@ class ChampionsCircle(commands.Cog):
             embed.add_field(name="Review", value=f"Applications live in {forum.mention}.", inline=False)
         if roster_url:
             embed.add_field(name="Roster", value=f"[Open roster]({roster_url})", inline=False)
-        if signup_url or bracket_url:
-            lines = []
-            if signup_url:
-                lines.append(f"[Signup]({signup_url})")
-            if bracket_url:
-                lines.append(f"[Bracket]({bracket_url})")
-            embed.add_field(name="Challonge", value=" | ".join(lines), inline=False)
+        if bracket_url:
+            embed.add_field(name="Challonge", value=f"[Bracket]({bracket_url})", inline=False)
         embed.add_field(
             name="How to apply",
             value="Use the buttons below to submit or cancel your application.",
@@ -832,8 +827,6 @@ class ChampionsCircle(commands.Cog):
         row.add_item(CancelApplicationButton(self))
         if roster_url:
             row.add_item(discord.ui.Button(label="Roster", style=discord.ButtonStyle.link, url=roster_url))
-        if signup_url:
-            row.add_item(discord.ui.Button(label="Challonge Signup", style=discord.ButtonStyle.link, url=signup_url))
         if bracket_url:
             row.add_item(discord.ui.Button(label="Challonge Bracket", style=discord.ButtonStyle.link, url=bracket_url))
         view.add_item(row)
