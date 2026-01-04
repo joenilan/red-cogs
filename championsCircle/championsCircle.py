@@ -1771,13 +1771,18 @@ class ChampionsCircle(commands.Cog):
         participants = payload if isinstance(payload, list) else []
         cleaned = value.strip()
         participant_id = int(cleaned) if cleaned.isdigit() else None
+        name_matches: List[Dict[str, Any]] = []
         for entry in participants:
             participant = entry.get("participant", {})
             if participant_id and int(participant.get("id", 0)) == participant_id:
                 return participant
             name = participant.get("name")
             if name and name.lower() == cleaned.lower():
-                return participant
+                name_matches.append(participant)
+        if participant_id:
+            return None
+        if len(name_matches) == 1:
+            return name_matches[0]
         return None
 
     async def _sync_roles_from_challonge(
@@ -2683,16 +2688,32 @@ class ChampionsCircle(commands.Cog):
         if participant and participant.strip().lower() in {"me", "self"}:
             participant = None
         if not participant:
-            auto_linked = await self._try_autolink_challonge_member(ctx.guild, member)
-            if auto_linked:
+            api_key, slug = await self._get_challonge_credentials(ctx.guild)
+            if not api_key or not slug:
+                await ctx.send("Challonge API key or tournament is not set.")
+                return
+            ok, payload = await self._challonge_request(
+                ctx.guild, "GET", f"/tournaments/{slug}/participants.json"
+            )
+            if not ok:
+                await ctx.send(f"Challonge API error: {payload}")
+                return
+            participants = payload if isinstance(payload, list) else []
+            if not participants:
+                await ctx.send("No participants found in Challonge.")
+                return
+            if len(participants) <= 25:
                 await ctx.send(
-                    f"Linked {member.mention} to Challonge participant `{auto_linked.get('name')}`."
+                    "Select your Challonge participant:",
+                    view=ChallongeLinkSelectView(
+                        self, ctx.guild.id, member.id, participants
+                    ),
                 )
-                await self._sync_roles_from_challonge(ctx.guild)
                 return
             prefix = await self._get_preferred_prefix(ctx.guild)
             await ctx.send(
-                f"No unique match found. Use `{prefix}ccchallonge link [@user] <participant name|id>`."
+                "Too many participants to list. "
+                f"Use `{prefix}ccchallonge link [@user] <participant id>`."
             )
             return
 
@@ -3716,20 +3737,10 @@ class ApplicationReviewView(discord.ui.View):
                 interaction.guild
             ).challonge_link_required()
             link_entry = None
-            auto_linked = None
             if link_required:
                 link_entry = await self.cog._get_challonge_link(
                     interaction.guild, self.applicant_id
                 )
-                if not link_entry:
-                    auto_linked = await self.cog._try_autolink_challonge_member(
-                        interaction.guild, member
-                    )
-                    if auto_linked:
-                        link_entry = {
-                            "participant_id": auto_linked.get("id"),
-                            "participant_name": auto_linked.get("name"),
-                        }
 
             extra_lines = []
             command_hint = None
@@ -3741,14 +3752,8 @@ class ApplicationReviewView(discord.ui.View):
                     f"Action required: link your Challonge participant within {grace_hours} hours."
                 )
                 prefix = await self.cog._get_preferred_prefix(interaction.guild)
-                command_hint = f"{prefix}ccchallonge link me <participant name|id>"
+                command_hint = f"{prefix}ccchallonge link me"
                 extra_lines.append("Run this command in the server (DMs do not work).")
-            elif auto_linked:
-                extra_lines.append(
-                    f"Linked you to Challonge participant `{auto_linked.get('name')}`."
-                )
-                prefix = await self.cog._get_preferred_prefix(interaction.guild)
-                command_hint = f"{prefix}ccchallonge unlink"
 
             thread_url = None
             thread = interaction.guild.get_thread(entry.get("thread_id")) if entry else None
@@ -4238,6 +4243,72 @@ class ScoreReportView(discord.ui.View):
     @discord.ui.button(label="Report Score", style=discord.ButtonStyle.primary)
     async def report_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog._start_score_report(interaction)
+
+
+class ChallongeLinkSelectView(discord.ui.View):
+    def __init__(
+        self,
+        cog: ChampionsCircle,
+        guild_id: int,
+        member_id: int,
+        participants: List[Dict[str, Any]],
+    ):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.member_id = member_id
+
+        options = []
+        for entry in participants[:25]:
+            participant = entry.get("participant", {})
+            pid = participant.get("id")
+            name = participant.get("name") or f"Participant {pid}"
+            label = f"{name}"
+            description = f"ID: {pid}" if pid else None
+            if pid is None:
+                continue
+            options.append(
+                discord.SelectOption(
+                    label=label[:100],
+                    value=str(pid),
+                    description=description[:100] if description else None,
+                )
+            )
+
+        select = discord.ui.Select(
+            placeholder="Select your Challonge participant",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        if not interaction.guild or interaction.guild.id != self.guild_id:
+            await interaction.response.send_message("Guild mismatch.", ephemeral=True)
+            return
+        if interaction.user.id != self.member_id:
+            await interaction.response.send_message("You can only link yourself.", ephemeral=True)
+            return
+        participant_id = int(self.children[0].values[0])
+        participant_data = await self.cog._resolve_challonge_participant(
+            interaction.guild, str(participant_id)
+        )
+        participant_name = (
+            participant_data.get("name") if participant_data else str(participant_id)
+        )
+        await self.cog._set_challonge_link(
+            interaction.guild,
+            user_id=interaction.user.id,
+            participant_id=participant_id,
+            participant_name=participant_name,
+        )
+        await self.cog._sync_roles_from_challonge(interaction.guild)
+        await interaction.response.send_message(
+            f"Linked to `{participant_name}`.",
+            ephemeral=True,
+        )
 
 async def setup(bot):
     cog = ChampionsCircle(bot)
