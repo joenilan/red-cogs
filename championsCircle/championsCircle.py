@@ -66,6 +66,7 @@ class ChampionsCircle(commands.Cog):
             "challonge_team_map": {},
             "challonge_sync_roles_enabled": True,
             "challonge_sync_roles_interval": 15,
+            "score_panel_message_ids": {},
         }
         self.config.register_guild(**default_guild)
         self.logger = logging.getLogger("red.championsCircle")
@@ -624,6 +625,7 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).challonge_links.set({})
         await self.config.guild(ctx.guild).challonge_link_last_reminder.set({})
         await self.config.guild(ctx.guild).challonge_team_map.set({})
+        await self.config.guild(ctx.guild).score_panel_message_ids.set({})
 
         # Reset cooldowns
         self.reset_cooldowns()
@@ -1192,6 +1194,46 @@ class ChampionsCircle(commands.Cog):
             return None
         return left, right
 
+    async def _post_score_panels(self, guild: discord.Guild) -> None:
+        text_channel_ids = await self.config.guild(guild).team_text_channel_ids()
+        if not text_channel_ids:
+            return
+        panel_map = await self.config.guild(guild).score_panel_message_ids()
+        if not isinstance(panel_map, dict):
+            panel_map = {}
+
+        updated_map: Dict[str, int] = {}
+        for channel_id in text_channel_ids:
+            channel = guild.get_channel(channel_id)
+            if not isinstance(channel, discord.TextChannel):
+                continue
+            existing_id = panel_map.get(str(channel_id))
+            message = None
+            if existing_id:
+                try:
+                    message = await channel.fetch_message(existing_id)
+                except discord.HTTPException:
+                    message = None
+            if message:
+                try:
+                    await message.edit(
+                        content="Use the button below to report your match score:",
+                        view=ScoreReportView(self),
+                    )
+                    updated_map[str(channel_id)] = message.id
+                    continue
+                except discord.HTTPException:
+                    message = None
+            try:
+                message = await channel.send(
+                    "Use the button below to report your match score:",
+                    view=ScoreReportView(self),
+                )
+                updated_map[str(channel_id)] = message.id
+            except discord.HTTPException:
+                continue
+        await self.config.guild(guild).score_panel_message_ids.set(updated_map)
+
     async def _get_participant_name_map(self, guild: discord.Guild) -> Dict[int, str]:
         api_key, slug = await self._get_challonge_credentials(guild)
         if not api_key or not slug:
@@ -1510,6 +1552,7 @@ class ChampionsCircle(commands.Cog):
             prefix=prefix,
             team_roles=team_roles,
         )
+        await self._post_score_panels(guild)
 
     async def _cleanup_team_voice_assets(self, guild: discord.Guild) -> None:
         text_channel_ids = await self.config.guild(guild).team_text_channel_ids()
@@ -1549,6 +1592,7 @@ class ChampionsCircle(commands.Cog):
                         await role.delete(reason="Champions Circle cleanup")
                     except discord.HTTPException:
                         continue
+        await self.config.guild(guild).score_panel_message_ids.set({})
 
     def _parse_challonge_slug(self, value: Optional[str]) -> Optional[str]:
         if not value:
