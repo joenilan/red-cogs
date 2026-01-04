@@ -1,4 +1,5 @@
 import discord
+import aiohttp
 from redbot.core import commands, Config
 from discord.ext.commands import guild_only
 import asyncio
@@ -6,6 +7,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 import re
 from typing import Optional, List, Dict, Any, Tuple
+from urllib.parse import urlparse
 
 class ChampionsCircle(commands.Cog):
     """Champions Circle tournament management system"""  # This description will show in [p]help
@@ -45,6 +47,8 @@ class ChampionsCircle(commands.Cog):
             "tourney_challonge_signup_url": None,
             "tourney_challonge_bracket_url": None,
             "tourney_challonge_api_key": None,
+            "tourney_challonge_slug": None,
+            "tourney_challonge_participant_map": {},
         }
         self.config.register_guild(**default_guild)
         self.logger = logging.getLogger("red.championsCircle")
@@ -741,6 +745,76 @@ class ChampionsCircle(commands.Cog):
             return text
         return text[: max(limit - 3, 0)].rstrip() + "..."
 
+    def _parse_challonge_slug(self, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        cleaned = value.strip()
+        if cleaned.lower() in {"clear", "none", "unset"}:
+            return None
+        if cleaned.startswith("http"):
+            parsed = urlparse(cleaned)
+            path = parsed.path.strip("/")
+            if not path:
+                return None
+            parts = [part for part in path.split("/") if part]
+            if "tournaments" in parts and "signup" in parts:
+                try:
+                    idx = parts.index("signup")
+                    if idx + 1 < len(parts):
+                        return parts[idx + 1]
+                except ValueError:
+                    pass
+            return parts[-1]
+        return cleaned
+
+    async def _get_challonge_credentials(self, guild: discord.Guild) -> Tuple[Optional[str], Optional[str]]:
+        api_key = await self.config.guild(guild).tourney_challonge_api_key()
+        slug = await self.config.guild(guild).tourney_challonge_slug()
+        return api_key, slug
+
+    async def _challonge_request(
+        self,
+        guild: discord.Guild,
+        method: str,
+        endpoint: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, Any]:
+        api_key, _ = await self._get_challonge_credentials(guild)
+        if not api_key:
+            return False, "Challonge API key not set."
+        merged_params = dict(params or {})
+        merged_params["api_key"] = api_key
+        url = f"https://api.challonge.com/v1{endpoint}"
+        timeout = aiohttp.ClientTimeout(total=20)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.request(
+                    method.upper(),
+                    url,
+                    params=merged_params,
+                    data=data,
+                ) as resp:
+                    text = await resp.text()
+                    if resp.status >= 400:
+                        return False, f"{resp.status}: {text}"
+                    try:
+                        return True, await resp.json()
+                    except Exception:
+                        return True, text
+        except Exception as exc:
+            return False, str(exc)
+
+    def _format_challonge_time(self, value: Optional[str]) -> str:
+        if not value:
+            return "Not set"
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return f"<t:{int(dt.timestamp())}:F>"
+        except Exception:
+            return str(value)
+
     def _build_panel_embed(
         self,
         *,
@@ -1067,11 +1141,14 @@ class ChampionsCircle(commands.Cog):
             signup_url = await self.config.guild(ctx.guild).tourney_challonge_signup_url()
             bracket_url = await self.config.guild(ctx.guild).tourney_challonge_bracket_url()
             api_key = await self.config.guild(ctx.guild).tourney_challonge_api_key()
+            slug = await self.config.guild(ctx.guild).tourney_challonge_slug()
             lines = []
             if signup_url:
                 lines.append(f"Signup: {signup_url}")
             if bracket_url:
                 lines.append(f"Bracket: {bracket_url}")
+            if slug:
+                lines.append(f"Tournament: {slug}")
             if api_key:
                 masked = f"{api_key[:4]}***{api_key[-4:]}" if len(api_key) > 8 else "***"
                 lines.append(f"API key: set ({masked})")
@@ -1094,6 +1171,26 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).tourney_challonge_bracket_url.set(bracket_value)
         await self.update_embed(ctx.guild)
         await ctx.send("Challonge links updated.")
+
+    @ccchallonge.command(name="tournament", aliases=["slug"])
+    async def ccchallonge_tournament(self, ctx, *, slug_or_url: Optional[str] = None):
+        """Set or clear the Challonge tournament slug."""
+        if not slug_or_url:
+            current = await self.config.guild(ctx.guild).tourney_challonge_slug()
+            if current:
+                await ctx.send(f"Challonge tournament: {current}")
+            else:
+                await ctx.send("No Challonge tournament set.")
+            return
+
+        slug = self._parse_challonge_slug(slug_or_url)
+        if not slug:
+            await self.config.guild(ctx.guild).tourney_challonge_slug.set(None)
+            await ctx.send("Challonge tournament cleared.")
+            return
+
+        await self.config.guild(ctx.guild).tourney_challonge_slug.set(slug)
+        await ctx.send(f"Challonge tournament set to `{slug}`.")
 
     @ccchallonge.command(name="clear")
     async def ccchallonge_clear(self, ctx):
@@ -1121,7 +1218,281 @@ class ChampionsCircle(commands.Cog):
             return
 
         await self.config.guild(ctx.guild).tourney_challonge_api_key.set(api_key.strip())
+        try:
+            await ctx.message.delete()
+        except discord.Forbidden:
+            await ctx.send(
+                "Challonge API key saved. I couldn't delete your message (missing permissions)."
+            )
+            return
+        except discord.HTTPException:
+            pass
         await ctx.send("Challonge API key saved.")
+
+    @ccchallonge.command(name="info")
+    async def ccchallonge_info(self, ctx):
+        """Show Challonge tournament info (v1)."""
+        api_key, slug = await self._get_challonge_credentials(ctx.guild)
+        if not api_key:
+            await ctx.send("Challonge API key is not set. Use `ccchallonge key <token>`.")
+            return
+        if not slug:
+            await ctx.send("Challonge tournament is not set. Use `ccchallonge tournament <slug>`.")
+            return
+
+        ok, payload = await self._challonge_request(
+            ctx.guild, "GET", f"/tournaments/{slug}.json"
+        )
+        if not ok:
+            await ctx.send(f"Challonge API error: {payload}")
+            return
+
+        tournament = payload.get("tournament") if isinstance(payload, dict) else None
+        if not tournament:
+            await ctx.send("Unexpected Challonge response.")
+            return
+
+        embed = discord.Embed(
+            title=tournament.get("name") or slug,
+            color=discord.Color.orange(),
+        )
+        embed.add_field(name="State", value=tournament.get("state") or "Unknown", inline=True)
+        embed.add_field(
+            name="Type", value=tournament.get("tournament_type") or "Unknown", inline=True
+        )
+        embed.add_field(
+            name="Participants",
+            value=str(tournament.get("participants_count") or 0),
+            inline=True,
+        )
+        embed.add_field(
+            name="Matches",
+            value=str(tournament.get("matches_count") or 0),
+            inline=True,
+        )
+        embed.add_field(
+            name="Start time",
+            value=self._format_challonge_time(tournament.get("started_at")),
+            inline=True,
+        )
+        embed.add_field(
+            name="Completed",
+            value=self._format_challonge_time(tournament.get("completed_at")),
+            inline=True,
+        )
+        if tournament.get("full_challonge_url"):
+            embed.add_field(
+                name="Bracket",
+                value=f"[Open]({tournament.get('full_challonge_url')})",
+                inline=False,
+            )
+        await ctx.send(embed=embed)
+
+    @ccchallonge.command(name="participants", aliases=["players"])
+    async def ccchallonge_participants(self, ctx, limit: int = 40):
+        """List Challonge participants (v1)."""
+        api_key, slug = await self._get_challonge_credentials(ctx.guild)
+        if not api_key:
+            await ctx.send("Challonge API key is not set. Use `ccchallonge key <token>`.")
+            return
+        if not slug:
+            await ctx.send("Challonge tournament is not set. Use `ccchallonge tournament <slug>`.")
+            return
+
+        ok, payload = await self._challonge_request(
+            ctx.guild, "GET", f"/tournaments/{slug}/participants.json"
+        )
+        if not ok:
+            await ctx.send(f"Challonge API error: {payload}")
+            return
+
+        participants = payload if isinstance(payload, list) else []
+        names = []
+        for entry in participants:
+            participant = entry.get("participant", {})
+            name = participant.get("name") or "Unknown"
+            seed = participant.get("seed")
+            if seed:
+                names.append(f"{seed}. {name}")
+            else:
+                names.append(name)
+
+        if not names:
+            await ctx.send("No participants found.")
+            return
+
+        embed = discord.Embed(
+            title="Challonge participants",
+            color=discord.Color.orange(),
+        )
+        for idx, chunk in enumerate(self._chunk_lines(names, limit=900), start=1):
+            label = "Participants" if idx == 1 else f"Participants ({idx})"
+            embed.add_field(name=label, value="\n".join(chunk), inline=False)
+            if idx * 30 >= limit:
+                break
+        await ctx.send(embed=embed)
+
+    @ccchallonge.command(name="matches")
+    async def ccchallonge_matches(self, ctx, state: Optional[str] = None, limit: int = 10):
+        """Show Challonge matches (v1)."""
+        api_key, slug = await self._get_challonge_credentials(ctx.guild)
+        if not api_key:
+            await ctx.send("Challonge API key is not set. Use `ccchallonge key <token>`.")
+            return
+        if not slug:
+            await ctx.send("Challonge tournament is not set. Use `ccchallonge tournament <slug>`.")
+            return
+
+        ok, participants_payload = await self._challonge_request(
+            ctx.guild, "GET", f"/tournaments/{slug}/participants.json"
+        )
+        if not ok:
+            await ctx.send(f"Challonge API error: {participants_payload}")
+            return
+
+        id_to_name: Dict[int, str] = {}
+        for entry in participants_payload if isinstance(participants_payload, list) else []:
+            participant = entry.get("participant", {})
+            pid = participant.get("id")
+            if pid is not None:
+                id_to_name[int(pid)] = participant.get("name") or f"Participant {pid}"
+
+        params: Dict[str, Any] = {}
+        if state:
+            params["state"] = state
+        ok, matches_payload = await self._challonge_request(
+            ctx.guild, "GET", f"/tournaments/{slug}/matches.json", params=params
+        )
+        if not ok:
+            await ctx.send(f"Challonge API error: {matches_payload}")
+            return
+
+        matches = matches_payload if isinstance(matches_payload, list) else []
+        if not matches:
+            await ctx.send("No matches found.")
+            return
+
+        lines: List[str] = []
+        for entry in matches[: max(1, min(limit, 25))]:
+            match = entry.get("match", {})
+            p1 = id_to_name.get(match.get("player1_id"), "TBD")
+            p2 = id_to_name.get(match.get("player2_id"), "TBD")
+            score = match.get("scores_csv") or "–"
+            match_state = match.get("state") or "unknown"
+            lines.append(f"{p1} vs {p2} | {score} | {match_state}")
+
+        embed = discord.Embed(
+            title="Challonge matches",
+            description="\n".join(lines),
+            color=discord.Color.orange(),
+        )
+        await ctx.send(embed=embed)
+
+    @ccchallonge.command(name="sync")
+    async def ccchallonge_sync(self, ctx, purge: Optional[str] = None):
+        """Sync approved applicants to Challonge participants (v1)."""
+        api_key, slug = await self._get_challonge_credentials(ctx.guild)
+        if not api_key:
+            await ctx.send("Challonge API key is not set. Use `ccchallonge key <token>`.")
+            return
+        if not slug:
+            await ctx.send("Challonge tournament is not set. Use `ccchallonge tournament <slug>`.")
+            return
+
+        approved = await self._load_application_list(ctx.guild, "approved_applications")
+        approved_ids = [entry.get("user_id") for entry in approved if entry.get("user_id")]
+        if not approved_ids:
+            await ctx.send("No approved applicants to sync.")
+            return
+
+        ok, participants_payload = await self._challonge_request(
+            ctx.guild, "GET", f"/tournaments/{slug}/participants.json"
+        )
+        if not ok:
+            await ctx.send(f"Challonge API error: {participants_payload}")
+            return
+
+        participants = participants_payload if isinstance(participants_payload, list) else []
+        existing_by_name = {}
+        existing_ids = set()
+        for entry in participants:
+            participant = entry.get("participant", {})
+            pid = participant.get("id")
+            name = participant.get("name")
+            if pid is not None:
+                existing_ids.add(int(pid))
+            if name:
+                existing_by_name[name.lower()] = int(pid) if pid is not None else None
+
+        stored_map = await self.config.guild(ctx.guild).tourney_challonge_participant_map()
+        if not isinstance(stored_map, dict):
+            stored_map = {}
+
+        added = 0
+        linked = 0
+        errors = 0
+
+        for user_id in approved_ids:
+            user_id_str = str(user_id)
+            member = ctx.guild.get_member(user_id)
+            display_name = member.display_name if member else f"User {user_id}"
+
+            existing_id = stored_map.get(user_id_str)
+            if existing_id and int(existing_id) in existing_ids:
+                linked += 1
+                continue
+
+            name_key = display_name.lower()
+            if name_key in existing_by_name and existing_by_name[name_key]:
+                stored_map[user_id_str] = existing_by_name[name_key]
+                linked += 1
+                continue
+
+            candidate_name = display_name
+            if name_key in existing_by_name:
+                candidate_name = f"{display_name} ({str(user_id)[-4:]})"
+
+            ok, create_payload = await self._challonge_request(
+                ctx.guild,
+                "POST",
+                f"/tournaments/{slug}/participants.json",
+                data={"participant[name]": candidate_name},
+            )
+            if not ok:
+                errors += 1
+                continue
+            participant = (
+                create_payload.get("participant")
+                if isinstance(create_payload, dict)
+                else None
+            )
+            if participant and participant.get("id"):
+                stored_map[user_id_str] = participant.get("id")
+                added += 1
+            else:
+                errors += 1
+
+        purge_flag = purge is not None and purge.lower() in {"purge", "remove", "delete"}
+        if purge_flag:
+            approved_set = {str(uid) for uid in approved_ids}
+            to_remove = [
+                (uid, pid)
+                for uid, pid in stored_map.items()
+                if uid not in approved_set
+            ]
+            for uid, pid in to_remove:
+                ok, _ = await self._challonge_request(
+                    ctx.guild,
+                    "DELETE",
+                    f"/tournaments/{slug}/participants/{pid}.json",
+                )
+                if ok:
+                    stored_map.pop(uid, None)
+
+        await self.config.guild(ctx.guild).tourney_challonge_participant_map.set(stored_map)
+        await ctx.send(
+            f"Challonge sync complete. Added {added}, linked {linked}, errors {errors}."
+        )
 
     @commands.command()
     @commands.admin_or_permissions(administrator=True)
@@ -1207,7 +1578,10 @@ class ChampionsCircle(commands.Cog):
                 "`ccsettings` - view current configuration\n"
                 "`ccsettime` - set/clear tournament time\n"
                 "`ccchallonge set/clear` - manage Challonge links\n"
+                "`ccchallonge tournament <slug|url>` - set tournament slug\n"
                 "`ccchallonge key <token|clear>` - manage Challonge API key\n"
+                "`ccchallonge info/participants/matches` - view Challonge data\n"
+                "`ccchallonge sync [purge]` - sync approved applicants\n"
                 "`setchampionschannel` / `setchampionsrole` / `setapplicationduration`"
             ),
             inline=False,
@@ -1310,6 +1684,8 @@ class ChampionsCircle(commands.Cog):
         opened_at = await self.config.guild(guild).applications_opened_at()
         signup_url = await self.config.guild(guild).tourney_challonge_signup_url()
         bracket_url = await self.config.guild(guild).tourney_challonge_bracket_url()
+        challonge_slug = await self.config.guild(guild).tourney_challonge_slug()
+        challonge_key = await self.config.guild(guild).tourney_challonge_api_key()
 
         active = await self._load_application_list(guild, "active_applications")
         approved = await self._load_application_list(guild, "approved_applications")
@@ -1333,13 +1709,20 @@ class ChampionsCircle(commands.Cog):
         embed.add_field(name="Announcements", value=channel.mention if channel else "Not set", inline=True)
         embed.add_field(name="Champions role", value=role.mention if role else "Not set", inline=True)
         embed.add_field(name="Application duration", value=f"{duration} days", inline=True)
-        if signup_url or bracket_url:
+        if signup_url or bracket_url or challonge_slug:
             lines = []
             if signup_url:
                 lines.append(f"Signup: {signup_url}")
             if bracket_url:
                 lines.append(f"Bracket: {bracket_url}")
+            if challonge_slug:
+                lines.append(f"Tournament: {challonge_slug}")
             embed.add_field(name="Challonge", value="\n".join(lines), inline=False)
+        embed.add_field(
+            name="Challonge API key",
+            value="Set" if challonge_key else "Not set",
+            inline=True,
+        )
         embed.add_field(
             name="Applications",
             value=(
