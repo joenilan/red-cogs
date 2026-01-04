@@ -1303,15 +1303,17 @@ class ChampionsCircle(commands.Cog):
             updated_ts=updated_ts,
         )
 
-        channel = self.bot.get_channel(await self.config.guild(guild).champions_channel())
+        message_id = await self.config.guild(guild).champions_message_id()
+        if not applications_open and not message_id:
+            return
+
+        channel_id = await self.config.guild(guild).champions_channel()
+        channel = self.bot.get_channel(channel_id)
         if not channel:
-            self.logger.error(
-                f"Error: Channel with ID {await self.config.guild(guild).champions_channel()} not found."
-            )
+            self.logger.error(f"Error: Channel with ID {channel_id} not found.")
             return
 
         try:
-            message_id = await self.config.guild(guild).champions_message_id()
             if message_id:
                 message = await channel.fetch_message(message_id)
                 await message.edit(content=None, embed=None, view=panel_view)
