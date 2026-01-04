@@ -130,6 +130,38 @@ class ChampionsCircle(commands.Cog):
         await self._save_application_list(guild, list_name, entries)
         return entry
 
+    async def _remove_application_from_all(
+        self, guild: discord.Guild, user_id: int
+    ) -> Optional[Dict[str, Any]]:
+        best_entry: Optional[Dict[str, Any]] = None
+        best_timestamp = -1
+        for list_name in self._application_lists:
+            entries = await self._load_application_list(guild, list_name)
+            removed_entries = [item for item in entries if item.get("user_id") == user_id]
+            if removed_entries:
+                entries = [item for item in entries if item.get("user_id") != user_id]
+                await self._save_application_list(guild, list_name, entries)
+                for entry in removed_entries:
+                    timestamp = int(entry.get("timestamp") or 0)
+                    if timestamp > best_timestamp:
+                        best_timestamp = timestamp
+                        best_entry = entry
+        return best_entry
+
+    def _merge_application_entries(
+        self, base: Dict[str, Any], other: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        if not other:
+            return base
+        merged = dict(base)
+        if not merged.get("timestamp") and other.get("timestamp"):
+            merged["timestamp"] = other.get("timestamp")
+        if not merged.get("answers") and other.get("answers"):
+            merged["answers"] = other.get("answers")
+        if not merged.get("thread_id") and other.get("thread_id"):
+            merged["thread_id"] = other.get("thread_id")
+        return merged
+
     async def _move_application(
         self,
         guild: discord.Guild,
@@ -138,8 +170,11 @@ class ChampionsCircle(commands.Cog):
         *,
         entry: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        if not entry:
-            entry = await self._remove_application(guild, user_id)
+        removed_entry = await self._remove_application_from_all(guild, user_id)
+        if entry:
+            entry = self._merge_application_entries(entry, removed_entry)
+        else:
+            entry = removed_entry
         if not entry:
             return None
         entries = await self._load_application_list(guild, target_list)
@@ -1496,7 +1531,7 @@ class ApplicationModal(discord.ui.Modal):
         view = ApplicationReviewView(self.cog, interaction.user.id)
         await thread.send(embed=embed, view=view)
 
-        await self.cog._remove_application(guild, interaction.user.id)
+        await self.cog._remove_application_from_all(guild, interaction.user.id)
         entry = {
             "user_id": interaction.user.id,
             "timestamp": int(datetime.now(timezone.utc).timestamp()),
@@ -1733,7 +1768,9 @@ class CancelApplicationButton(discord.ui.Button):
             await interaction.response.send_message("Your application is already cancelled.", ephemeral=True)
             return
 
-        if list_name == "approved_applications":
+        approved_entries = await self.cog._load_application_list(guild, "approved_applications")
+        was_approved = any(app.get("user_id") == user_id for app in approved_entries)
+        if was_approved:
             role_id = await self.cog.config.guild(guild).champions_role_id()
             role = guild.get_role(role_id) if role_id else None
             if role and role in interaction.user.roles:
