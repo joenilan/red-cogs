@@ -322,19 +322,28 @@ class ChampionsCircle(commands.Cog):
                     )
                 return
 
-            view = SetupGameModeView(self, interaction.guild.id)
+            raw_mode = None
+            if hasattr(modal, "game_mode"):
+                raw_mode = getattr(modal.game_mode, "values", None)
+                if isinstance(raw_mode, list):
+                    raw_mode = raw_mode[0] if raw_mode else None
+            if not raw_mode:
+                raw_mode = self._extract_component_value(interaction.data, "ccsetup_game_mode")
+            game_mode_value = self._normalize_game_mode(raw_mode)
+            if raw_mode and not game_mode_value:
+                message = "Invalid game mode. Use 1v1, 2v2, 3v3, or 4v4."
+                if interaction.response.is_done():
+                    await interaction.followup.send(message, ephemeral=True)
+                else:
+                    await interaction.response.send_message(message, ephemeral=True)
+                return
+            if game_mode_value:
+                await self.config.guild(interaction.guild).game_mode.set(game_mode_value)
+
             if interaction.response.is_done():
-                await interaction.followup.send(
-                    "Setup step 2: choose the game mode, then click Continue.",
-                    view=view,
-                    ephemeral=True,
-                )
+                await interaction.followup.send_modal(SetupAdvancedModal(self, interaction.guild.id))
             else:
-                await interaction.response.send_message(
-                    "Setup step 2: choose the game mode, then click Continue.",
-                    view=view,
-                    ephemeral=True,
-                )
+                await interaction.response.send_modal(SetupAdvancedModal(self, interaction.guild.id))
 
         except Exception as e:
             self.logger.error(f"Error in setup process: {str(e)}")
@@ -656,6 +665,21 @@ class ChampionsCircle(commands.Cog):
         if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(/|$)", cleaned, re.IGNORECASE):
             return f"https://{cleaned}"
         return cleaned
+
+    def _extract_component_value(self, data: Any, custom_id: str) -> Optional[str]:
+        if not isinstance(data, dict):
+            return None
+        for row in data.get("components", []):
+            for component in row.get("components", []):
+                if component.get("custom_id") != custom_id:
+                    continue
+                values = component.get("values")
+                if isinstance(values, list) and values:
+                    return str(values[0])
+                value = component.get("value")
+                if value is not None:
+                    return str(value)
+        return None
 
     async def _build_tournament_info(self, guild: discord.Guild) -> str:
         title = await self.config.guild(guild).tourney_title()
@@ -2563,6 +2587,7 @@ class SetupModal(discord.ui.Modal, title="Tournament Setup"):
     def __init__(self, cog):
         super().__init__()
         self.cog = cog
+        self.game_mode: Optional[discord.ui.Select] = None
 
         self.tourney_title = discord.ui.TextInput(
             label="Tournament Title",
@@ -2593,19 +2618,10 @@ class SetupModal(discord.ui.Modal, title="Tournament Setup"):
         )
         self.add_item(self.duration)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.process_setup(interaction, self)
-
-
-class SetupGameModeView(discord.ui.View):
-    def __init__(self, cog: ChampionsCircle, guild_id: int):
-        super().__init__(timeout=600)
-        self.cog = cog
-        self.guild_id = guild_id
-        self.selected_mode: Optional[str] = None
-
-        self.mode_select = discord.ui.Select(
-            placeholder="Select game mode",
+        game_mode = discord.ui.Select(
+            placeholder="Game mode",
+            min_values=1,
+            max_values=1,
             options=[
                 discord.SelectOption(label="1v1", value="1v1"),
                 discord.SelectOption(label="2v2", value="2v2"),
@@ -2613,26 +2629,34 @@ class SetupGameModeView(discord.ui.View):
                 discord.SelectOption(label="4v4", value="4v4"),
             ],
         )
-        self.mode_select.callback = self._handle_select
-        self.add_item(self.mode_select)
+        game_mode.custom_id = "ccsetup_game_mode"
+        self.game_mode = game_mode
+        self._force_add_item(game_mode)
 
-        self.continue_button = discord.ui.Button(
-            label="Continue setup",
-            style=discord.ButtonStyle.green,
-        )
-        self.continue_button.callback = self._handle_continue
-        self.add_item(self.continue_button)
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.process_setup(interaction, self)
 
-    async def _handle_select(self, interaction: discord.Interaction):
-        self.selected_mode = self.mode_select.values[0]
-        await self.cog.config.guild(interaction.guild).game_mode.set(self.selected_mode)
-        await interaction.response.send_message(
-            f"Game mode set to {self.selected_mode}.",
-            ephemeral=True,
-        )
+    def _force_add_item(self, item: discord.ui.Item) -> None:
+        item._view = self
+        self.children.append(item)
 
-    async def _handle_continue(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(SetupAdvancedModal(self.cog, self.guild_id))
+    def to_dict(self) -> Dict[str, Any]:
+        components = []
+        for item in self.children:
+            components.append(
+                {
+                    "type": 1,
+                    "components": [item.to_component_dict()],
+                }
+            )
+        payload = {
+            "title": self.title,
+            "components": components,
+        }
+        if getattr(self, "custom_id", None):
+            payload["custom_id"] = self.custom_id
+        return payload
+
 
 class SetupAdvancedModal(discord.ui.Modal, title="Tournament Setup (Advanced)"):
     def __init__(self, cog: ChampionsCircle, guild_id: int):
