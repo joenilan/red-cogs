@@ -63,6 +63,7 @@ class ChampionsCircle(commands.Cog):
             "challonge_link_required": True,
             "challonge_link_grace_hours": 48,
             "challonge_link_reminder_hours": 12,
+            "challonge_team_map": {},
         }
         self.config.register_guild(**default_guild)
         self.logger = logging.getLogger("red.championsCircle")
@@ -615,6 +616,7 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).team_role_ids.set([])
         await self.config.guild(ctx.guild).challonge_links.set({})
         await self.config.guild(ctx.guild).challonge_link_last_reminder.set({})
+        await self.config.guild(ctx.guild).challonge_team_map.set({})
 
         # Reset cooldowns
         self.reset_cooldowns()
@@ -2317,6 +2319,60 @@ class ChampionsCircle(commands.Cog):
         await self._remove_challonge_link(ctx.guild, member.id)
         await ctx.send(f"Removed Challonge link for {member.mention}.")
 
+    @ccchallonge.group(name="teammap")
+    @commands.admin_or_permissions(administrator=True)
+    async def ccchallonge_teammap(self, ctx):
+        """Map team numbers to Challonge participants."""
+        if ctx.invoked_subcommand is None:
+            team_map = await self.config.guild(ctx.guild).challonge_team_map()
+            if not team_map:
+                await ctx.send("No team mappings set.")
+                return
+            lines = [f"Team {team}: {pid}" for team, pid in sorted(team_map.items())]
+            await ctx.send("Team map:\n" + "\n".join(lines))
+
+    @ccchallonge_teammap.command(name="set")
+    async def ccchallonge_teammap_set(
+        self, ctx, team_number: int, *, participant: str
+    ):
+        """Set a team mapping to a Challonge participant."""
+        if team_number <= 0:
+            await ctx.send("Team number must be 1 or higher.")
+            return
+        participant_data = await self._resolve_challonge_participant(ctx.guild, participant)
+        if not participant_data:
+            await ctx.send("Participant not found. Use `ccchallonge participants` to list names/ids.")
+            return
+        participant_id = participant_data.get("id")
+        participant_name = participant_data.get("name") or str(participant_id)
+        if not participant_id:
+            await ctx.send("Participant data missing an ID.")
+            return
+        team_map = await self.config.guild(ctx.guild).challonge_team_map()
+        if not isinstance(team_map, dict):
+            team_map = {}
+        team_map[str(team_number)] = int(participant_id)
+        await self.config.guild(ctx.guild).challonge_team_map.set(team_map)
+        await ctx.send(f"Mapped Team {team_number} -> `{participant_name}`.")
+
+    @ccchallonge_teammap.command(name="clear")
+    async def ccchallonge_teammap_clear(self, ctx, team_number: Optional[int] = None):
+        """Clear team mappings."""
+        team_map = await self.config.guild(ctx.guild).challonge_team_map()
+        if not isinstance(team_map, dict):
+            team_map = {}
+        if team_number is None:
+            team_map = {}
+            await self.config.guild(ctx.guild).challonge_team_map.set(team_map)
+            await ctx.send("Cleared all team mappings.")
+            return
+        removed = team_map.pop(str(team_number), None)
+        await self.config.guild(ctx.guild).challonge_team_map.set(team_map)
+        if removed is None:
+            await ctx.send(f"No mapping found for Team {team_number}.")
+        else:
+            await ctx.send(f"Cleared mapping for Team {team_number}.")
+
     @ccchallonge.command(name="syncroles")
     @commands.admin_or_permissions(administrator=True)
     async def ccchallonge_syncroles(self, ctx):
@@ -2343,22 +2399,39 @@ class ChampionsCircle(commands.Cog):
             await ctx.send(f"Challonge API error: {participants_payload}")
             return
 
-        participants = participants_payload if isinstance(participants_payload, list) else []
-        ordered = []
-        for entry in participants:
-            participant = entry.get("participant", {})
-            seed = participant.get("seed") or 0
-            pid = participant.get("id") or 0
-            ordered.append((seed, pid, participant))
-        ordered.sort(key=lambda item: (item[0] or 0, item[1] or 0))
-
         participant_to_team: Dict[int, int] = {}
-        for idx, (_, _, participant) in enumerate(ordered, start=1):
-            if idx > len(team_roles):
-                break
-            pid = participant.get("id")
-            if pid is not None:
-                participant_to_team[int(pid)] = idx
+        team_map = await self.config.guild(ctx.guild).challonge_team_map()
+        if not isinstance(team_map, dict):
+            team_map = {}
+
+        participants = participants_payload if isinstance(participants_payload, list) else []
+        if team_map:
+            for team_str, participant_id in team_map.items():
+                try:
+                    team_index = int(team_str)
+                except ValueError:
+                    continue
+                if team_index <= 0 or team_index > len(team_roles):
+                    continue
+                try:
+                    participant_to_team[int(participant_id)] = team_index
+                except (TypeError, ValueError):
+                    continue
+        else:
+            ordered = []
+            for entry in participants:
+                participant = entry.get("participant", {})
+                seed = participant.get("seed") or 0
+                pid = participant.get("id") or 0
+                ordered.append((seed, pid, participant))
+            ordered.sort(key=lambda item: (item[0] or 0, item[1] or 0))
+
+            for idx, (_, _, participant) in enumerate(ordered, start=1):
+                if idx > len(team_roles):
+                    break
+                pid = participant.get("id")
+                if pid is not None:
+                    participant_to_team[int(pid)] = idx
 
         links = await self._get_challonge_links(ctx.guild)
         assigned = 0
@@ -2425,6 +2498,7 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).tourney_challonge_participant_map.set({})
         await self.config.guild(ctx.guild).challonge_links.set({})
         await self.config.guild(ctx.guild).challonge_link_last_reminder.set({})
+        await self.config.guild(ctx.guild).challonge_team_map.set({})
         await ctx.send(f"Purge complete. Removed {removed}, failed {failed}.")
 
     @ccchallonge.command(name="linksettings")
@@ -2631,6 +2705,7 @@ class ChampionsCircle(commands.Cog):
                 "`ccchallonge info/participants/matches` - view Challonge data\n"
                 "`ccchallonge sync [purge]` - sync approved applicants\n"
                 "`ccchallonge link/unlink` - link a Discord user to a Challonge participant\n"
+                "`ccchallonge teammap set/clear` - map teams to Challonge participants\n"
                 "`ccchallonge syncroles` - assign team roles from Challonge\n"
                 "`ccchallonge purgeall` - remove all Challonge participants\n"
                 "`ccchallonge linksettings` - configure link enforcement\n"
@@ -2750,6 +2825,7 @@ class ChampionsCircle(commands.Cog):
         link_grace = await self.config.guild(guild).challonge_link_grace_hours()
         link_reminder = await self.config.guild(guild).challonge_link_reminder_hours()
         link_map = await self.config.guild(guild).challonge_links()
+        team_map = await self.config.guild(guild).challonge_team_map()
 
         active = await self._load_application_list(guild, "active_applications")
         approved = await self._load_application_list(guild, "approved_applications")
@@ -2821,6 +2897,12 @@ class ChampionsCircle(commands.Cog):
             ),
             inline=False,
         )
+        if team_map:
+            embed.add_field(
+                name="Challonge team map",
+                value=f"Mapped teams: {len(team_map)}",
+                inline=True,
+            )
         embed.add_field(
             name="Challonge API key",
             value="Set" if challonge_key else "Not set",
