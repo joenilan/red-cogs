@@ -323,8 +323,8 @@ class ChampionsCircle(commands.Cog):
                 return
 
             raw_mode = None
-            if hasattr(modal, "game_mode"):
-                raw_mode = getattr(modal.game_mode, "values", None)
+            if hasattr(modal, "game_mode_select"):
+                raw_mode = getattr(modal.game_mode_select, "values", None)
                 if isinstance(raw_mode, list):
                     raw_mode = raw_mode[0] if raw_mode else None
             if not raw_mode:
@@ -2587,7 +2587,7 @@ class SetupModal(discord.ui.Modal, title="Tournament Setup"):
     def __init__(self, cog):
         super().__init__()
         self.cog = cog
-        self.game_mode: Optional[discord.ui.Select] = None
+        self.game_mode_select: Optional[discord.ui.Select] = None
 
         self.tourney_title = discord.ui.TextInput(
             label="Tournament Title",
@@ -2630,32 +2630,16 @@ class SetupModal(discord.ui.Modal, title="Tournament Setup"):
             ],
         )
         game_mode.custom_id = "ccsetup_game_mode"
-        self.game_mode = game_mode
-        self._force_add_item(game_mode)
+        self.game_mode_select = game_mode
+        label = discord.ui.Label(
+            text="Game mode",
+            description="Choose 1v1, 2v2, 3v3, or 4v4.",
+            component=game_mode,
+        )
+        self.add_item(label)
 
     async def on_submit(self, interaction: discord.Interaction):
         await self.cog.process_setup(interaction, self)
-
-    def _force_add_item(self, item: discord.ui.Item) -> None:
-        item._view = self
-        self.children.append(item)
-
-    def to_dict(self) -> Dict[str, Any]:
-        components = []
-        for item in self.children:
-            components.append(
-                {
-                    "type": 1,
-                    "components": [item.to_component_dict()],
-                }
-            )
-        payload = {
-            "title": self.title,
-            "components": components,
-        }
-        if getattr(self, "custom_id", None):
-            payload["custom_id"] = self.custom_id
-        return payload
 
 
 class SetupAdvancedModal(discord.ui.Modal, title="Tournament Setup (Advanced)"):
