@@ -1192,6 +1192,46 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).tourney_challonge_slug.set(slug)
         await ctx.send(f"Challonge tournament set to `{slug}`.")
 
+    @ccchallonge.command(name="refresh")
+    async def ccchallonge_refresh(self, ctx):
+        """Pull bracket/signup links from Challonge (v1) if available."""
+        api_key, slug = await self._get_challonge_credentials(ctx.guild)
+        if not api_key:
+            await ctx.send("Challonge API key is not set. Use `ccchallonge key <token>`.")
+            return
+        if not slug:
+            await ctx.send("Challonge tournament is not set. Use `ccchallonge tournament <slug>`.")
+            return
+
+        ok, payload = await self._challonge_request(
+            ctx.guild, "GET", f"/tournaments/{slug}.json"
+        )
+        if not ok:
+            await ctx.send(f"Challonge API error: {payload}")
+            return
+
+        tournament = payload.get("tournament") if isinstance(payload, dict) else None
+        if not tournament:
+            await ctx.send("Unexpected Challonge response.")
+            return
+
+        bracket_url = tournament.get("full_challonge_url")
+        signup_url = tournament.get("sign_up_url") or tournament.get("signup_url")
+
+        if bracket_url:
+            await self.config.guild(ctx.guild).tourney_challonge_bracket_url.set(bracket_url)
+        if signup_url:
+            await self.config.guild(ctx.guild).tourney_challonge_signup_url.set(signup_url)
+
+        await self.update_embed(ctx.guild)
+
+        if signup_url:
+            await ctx.send("Challonge links refreshed from API.")
+        else:
+            await ctx.send(
+                "Bracket link refreshed. Signup link was not provided by the API; set it manually if needed."
+            )
+
     @ccchallonge.command(name="clear")
     async def ccchallonge_clear(self, ctx):
         """Clear Challonge links."""
@@ -1580,6 +1620,7 @@ class ChampionsCircle(commands.Cog):
                 "`ccchallonge set/clear` - manage Challonge links\n"
                 "`ccchallonge tournament <slug|url>` - set tournament slug\n"
                 "`ccchallonge key <token|clear>` - manage Challonge API key\n"
+                "`ccchallonge refresh` - pull links from Challonge\n"
                 "`ccchallonge info/participants/matches` - view Challonge data\n"
                 "`ccchallonge sync [purge]` - sync approved applicants\n"
                 "`setchampionschannel` / `setchampionsrole` / `setapplicationduration`"
