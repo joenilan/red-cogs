@@ -42,6 +42,8 @@ class ChampionsCircle(commands.Cog):
             "tourney_title": "Champions Circle Tournament",
             "tourney_description": "Join our exciting tournament!",
             "tourney_time": None,  # We'll store this as a UTC timestamp
+            "tourney_challonge_signup_url": None,
+            "tourney_challonge_bracket_url": None,
         }
         self.config.register_guild(**default_guild)
         self.logger = logging.getLogger("red.championsCircle")
@@ -496,6 +498,56 @@ class ChampionsCircle(commands.Cog):
             return "Not set"
         return f"<t:{tourney_time}:F> (<t:{tourney_time}:R>)"
 
+    def _normalize_url(self, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if cleaned.startswith(("http://", "https://")):
+            return cleaned
+        if cleaned.startswith("www."):
+            return f"https://{cleaned}"
+        if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(/|$)", cleaned, re.IGNORECASE):
+            return f"https://{cleaned}"
+        return cleaned
+
+    async def _build_tournament_info(self, guild: discord.Guild) -> str:
+        title = await self.config.guild(guild).tourney_title()
+        tourney_time = await self.config.guild(guild).tourney_time()
+        signup_url = self._normalize_url(
+            await self.config.guild(guild).tourney_challonge_signup_url()
+        )
+        bracket_url = self._normalize_url(
+            await self.config.guild(guild).tourney_challonge_bracket_url()
+        )
+
+        lines = [f"**{title}**"]
+        if tourney_time:
+            lines.append(f"Time: <t:{tourney_time}:F> (<t:{tourney_time}:R>)")
+        if signup_url:
+            lines.append(f"Signup: {signup_url}")
+        if bracket_url:
+            lines.append(f"Bracket: {bracket_url}")
+        return "\n".join(lines)
+
+    async def _send_status_dm(
+        self,
+        *,
+        member: discord.abc.User,
+        guild: discord.Guild,
+        status_line: str,
+        extra: Optional[str] = None,
+    ) -> None:
+        info = await self._build_tournament_info(guild)
+        message = f"{status_line}\n\n{info}"
+        if extra:
+            message = f"{message}\n\n{extra}"
+        try:
+            await member.send(message)
+        except discord.HTTPException:
+            self.logger.error("Failed to DM status update to user %s", member.id)
+
     def _extract_answer(self, answers: Dict[str, Any], tokens: List[str]) -> Optional[str]:
         for key, value in answers.items():
             key_text = str(key).lower()
@@ -666,6 +718,8 @@ class ChampionsCircle(commands.Cog):
         counts: Dict[str, int],
         forum: Optional[discord.abc.GuildChannel],
         roster_url: Optional[str],
+        signup_url: Optional[str],
+        bracket_url: Optional[str],
         updated_ts: int,
     ) -> discord.Embed:
         trimmed_description = self._truncate_text(description or "No description set.", 1200)
@@ -692,6 +746,13 @@ class ChampionsCircle(commands.Cog):
             embed.add_field(name="Review", value=f"Applications live in {forum.mention}.", inline=False)
         if roster_url:
             embed.add_field(name="Roster", value=f"[Open roster]({roster_url})", inline=False)
+        if signup_url or bracket_url:
+            lines = []
+            if signup_url:
+                lines.append(f"[Signup]({signup_url})")
+            if bracket_url:
+                lines.append(f"[Bracket]({bracket_url})")
+            embed.add_field(name="Challonge", value=" | ".join(lines), inline=False)
         embed.add_field(
             name="How to apply",
             value="Use the buttons below to submit or cancel your application.",
@@ -714,6 +775,8 @@ class ChampionsCircle(commands.Cog):
         counts: Dict[str, int],
         forum: Optional[discord.abc.GuildChannel],
         roster_url: Optional[str],
+        signup_url: Optional[str],
+        bracket_url: Optional[str],
         updated_ts: int,
     ) -> discord.ui.LayoutView:
         view = discord.ui.LayoutView(timeout=None)
@@ -769,6 +832,10 @@ class ChampionsCircle(commands.Cog):
         row.add_item(CancelApplicationButton(self))
         if roster_url:
             row.add_item(discord.ui.Button(label="Roster", style=discord.ButtonStyle.link, url=roster_url))
+        if signup_url:
+            row.add_item(discord.ui.Button(label="Challonge Signup", style=discord.ButtonStyle.link, url=signup_url))
+        if bracket_url:
+            row.add_item(discord.ui.Button(label="Challonge Bracket", style=discord.ButtonStyle.link, url=bracket_url))
         view.add_item(row)
 
         return view
@@ -806,6 +873,12 @@ class ChampionsCircle(commands.Cog):
 
         forum_id = await self.config.guild(guild).champions_forum()
         forum = guild.get_channel(forum_id) if forum_id else None
+        signup_url = self._normalize_url(
+            await self.config.guild(guild).tourney_challonge_signup_url()
+        )
+        bracket_url = self._normalize_url(
+            await self.config.guild(guild).tourney_challonge_bracket_url()
+        )
         roster_url = None
         if applications_open:
             roster_url = await self._update_roster_board(guild)
@@ -821,6 +894,8 @@ class ChampionsCircle(commands.Cog):
             counts=counts,
             forum=forum,
             roster_url=roster_url,
+            signup_url=signup_url,
+            bracket_url=bracket_url,
             updated_ts=updated_ts,
         )
         fallback_embed = self._build_panel_embed(
@@ -834,6 +909,8 @@ class ChampionsCircle(commands.Cog):
             counts=counts,
             forum=forum,
             roster_url=roster_url,
+            signup_url=signup_url,
+            bracket_url=bracket_url,
             updated_ts=updated_ts,
         )
 
@@ -952,6 +1029,47 @@ class ChampionsCircle(commands.Cog):
         await self.update_embed(ctx.guild)
         await ctx.send(f"Tournament time updated: <t:{timestamp}:F>")
 
+    @commands.group(name="ccchallonge")
+    @commands.admin_or_permissions(administrator=True)
+    @guild_only()
+    async def ccchallonge(self, ctx):
+        """Manage Challonge links for the tournament."""
+        if ctx.invoked_subcommand is None:
+            signup_url = await self.config.guild(ctx.guild).tourney_challonge_signup_url()
+            bracket_url = await self.config.guild(ctx.guild).tourney_challonge_bracket_url()
+            lines = []
+            if signup_url:
+                lines.append(f"Signup: {signup_url}")
+            if bracket_url:
+                lines.append(f"Bracket: {bracket_url}")
+            if not lines:
+                await ctx.send("No Challonge links set.")
+            else:
+                await ctx.send("\n".join(lines))
+
+    @ccchallonge.command(name="set")
+    async def ccchallonge_set(
+        self,
+        ctx,
+        signup_url: str,
+        bracket_url: Optional[str] = None,
+    ):
+        """Set Challonge signup and optional bracket links."""
+        signup_value = self._normalize_url(signup_url)
+        bracket_value = self._normalize_url(bracket_url) if bracket_url else None
+        await self.config.guild(ctx.guild).tourney_challonge_signup_url.set(signup_value)
+        await self.config.guild(ctx.guild).tourney_challonge_bracket_url.set(bracket_value)
+        await self.update_embed(ctx.guild)
+        await ctx.send("Challonge links updated.")
+
+    @ccchallonge.command(name="clear")
+    async def ccchallonge_clear(self, ctx):
+        """Clear Challonge links."""
+        await self.config.guild(ctx.guild).tourney_challonge_signup_url.set(None)
+        await self.config.guild(ctx.guild).tourney_challonge_bracket_url.set(None)
+        await self.update_embed(ctx.guild)
+        await ctx.send("Challonge links cleared.")
+
     @commands.command()
     @commands.admin_or_permissions(administrator=True)
     @guild_only()
@@ -984,14 +1102,11 @@ class ChampionsCircle(commands.Cog):
                             updated = True
                             user = guild.get_member(app.get("user_id"))
                             if user:
-                                try:
-                                    await user.send(
-                                        "Your Champions Circle application has expired."
-                                    )
-                                except discord.HTTPException:
-                                    self.logger.error(
-                                        "Failed to send expiration message to user %s", user.id
-                                    )
+                                await self._send_status_dm(
+                                    member=user,
+                                    guild=guild,
+                                    status_line="Your Champions Circle application has expired.",
+                                )
                         else:
                             remaining.append(app)
 
@@ -1038,6 +1153,7 @@ class ChampionsCircle(commands.Cog):
                 "`cclist` - list current champions\n"
                 "`ccsettings` - view current configuration\n"
                 "`ccsettime` - set/clear tournament time\n"
+                "`ccchallonge set/clear` - manage Challonge links\n"
                 "`setchampionschannel` / `setchampionsrole` / `setapplicationduration`"
             ),
             inline=False,
@@ -1138,6 +1254,8 @@ class ChampionsCircle(commands.Cog):
         questions = await self.config.guild(guild).custom_questions()
         applications_open = await self.config.guild(guild).applications_open()
         opened_at = await self.config.guild(guild).applications_opened_at()
+        signup_url = await self.config.guild(guild).tourney_challonge_signup_url()
+        bracket_url = await self.config.guild(guild).tourney_challonge_bracket_url()
 
         active = await self._load_application_list(guild, "active_applications")
         approved = await self._load_application_list(guild, "approved_applications")
@@ -1161,6 +1279,13 @@ class ChampionsCircle(commands.Cog):
         embed.add_field(name="Announcements", value=channel.mention if channel else "Not set", inline=True)
         embed.add_field(name="Champions role", value=role.mention if role else "Not set", inline=True)
         embed.add_field(name="Application duration", value=f"{duration} days", inline=True)
+        if signup_url or bracket_url:
+            lines = []
+            if signup_url:
+                lines.append(f"Signup: {signup_url}")
+            if bracket_url:
+                lines.append(f"Bracket: {bracket_url}")
+            embed.add_field(name="Challonge", value="\n".join(lines), inline=False)
         embed.add_field(
             name="Applications",
             value=(
@@ -1509,10 +1634,11 @@ class ApplicationReviewView(discord.ui.View):
         )
 
         if member:
-            try:
-                await member.send("Congratulations! Your tournament application has been approved!")
-            except discord.HTTPException:
-                pass
+            await self.cog._send_status_dm(
+                member=member,
+                guild=interaction.guild,
+                status_line="Your tournament application has been approved!",
+            )
 
         await self.cog.update_embed(interaction.guild)
         await self._send_ephemeral(interaction, "Application approved.")
@@ -1527,12 +1653,12 @@ class ApplicationReviewView(discord.ui.View):
             discord.Color.orange(),
         )
         if member:
-            try:
-                await member.send(
-                    f"Your application needs more info. Please reply in the application thread: {thread.jump_url}"
-                )
-            except discord.HTTPException:
-                pass
+            await self.cog._send_status_dm(
+                member=member,
+                guild=interaction.guild,
+                status_line="More information is needed for your application.",
+                extra=f"Please reply in the application thread: {thread.jump_url}",
+            )
         await self._send_ephemeral(interaction, "Request sent to applicant.")
 
 
@@ -1760,13 +1886,12 @@ class DenialReasonModal(discord.ui.Modal, title="Application Denial"):
 
         member = interaction.guild.get_member(self.applicant_id)
         if member:
-            try:
-                await member.send(
-                    f"Your tournament application has been denied.\n"
-                    f"Reason: {self.reason.value}"
-                )
-            except discord.HTTPException:
-                pass
+            await self.cog._send_status_dm(
+                member=member,
+                guild=interaction.guild,
+                status_line="Your tournament application has been denied.",
+                extra=f"Reason: {self.reason.value}",
+            )
 
         await self.cog.update_embed(interaction.guild)
         await interaction.response.send_message("Application denied.", ephemeral=True)
