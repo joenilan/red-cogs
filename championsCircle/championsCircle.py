@@ -49,6 +49,7 @@ class ChampionsCircle(commands.Cog):
             "tourney_challonge_api_key": None,
             "tourney_challonge_slug": None,
             "tourney_challonge_participant_map": {},
+            "game_mode": "3v3",
         }
         self.config.register_guild(**default_guild)
         self.logger = logging.getLogger("red.championsCircle")
@@ -314,7 +315,14 @@ class ChampionsCircle(commands.Cog):
                     await interaction.response.send_message(
                         "Invalid duration. Please enter a number", ephemeral=True
                     )
-                return
+                    return
+
+            game_mode_input = ""
+            if hasattr(modal, "game_mode"):
+                game_mode_input = modal.game_mode.value
+            game_mode_value = self._normalize_game_mode(game_mode_input)
+            if game_mode_value:
+                await self.config.guild(interaction.guild).game_mode.set(game_mode_value)
 
             embed = discord.Embed(
                 title="Tournament Setup Complete",
@@ -328,6 +336,10 @@ class ChampionsCircle(commands.Cog):
             else:
                 embed.add_field(name="Time", value="Not set")
             embed.add_field(name="Application Duration", value=f"{days} days")
+            embed.add_field(
+                name="Game mode",
+                value=game_mode_value or await self.config.guild(interaction.guild).game_mode(),
+            )
 
             forum_id = await self.config.guild(interaction.guild).champions_forum()
             channel_id = await self.config.guild(interaction.guild).champions_channel()
@@ -744,6 +756,49 @@ class ChampionsCircle(commands.Cog):
         if len(text) <= limit:
             return text
         return text[: max(limit - 3, 0)].rstrip() + "..."
+
+    def _normalize_game_mode(self, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        cleaned = value.strip().lower()
+        if not cleaned:
+            return None
+        aliases = {
+            "1v1": "1v1",
+            "2v2": "2v2",
+            "3v3": "3v3",
+            "4v4": "4v4",
+            "1s": "1v1",
+            "2s": "2v2",
+            "3s": "3v3",
+            "4s": "4v4",
+            "solo": "1v1",
+            "duo": "2v2",
+            "duos": "2v2",
+            "doubles": "2v2",
+            "trio": "3v3",
+            "trios": "3v3",
+            "standard": "3v3",
+            "squad": "4v4",
+            "squads": "4v4",
+        }
+        if cleaned in aliases:
+            return aliases[cleaned]
+        if cleaned.isdigit():
+            return f"{cleaned}v{cleaned}"
+        match = re.search(r"(\d)\s*v\s*(\d)", cleaned)
+        if match and match.group(1) == match.group(2):
+            return f"{match.group(1)}v{match.group(2)}"
+        return None
+
+    def _team_size_from_mode(self, mode: Optional[str]) -> int:
+        normalized = self._normalize_game_mode(mode or "")
+        if not normalized:
+            return 3
+        try:
+            return int(normalized.split("v")[0])
+        except (ValueError, IndexError):
+            return 3
 
     def _parse_challonge_slug(self, value: Optional[str]) -> Optional[str]:
         if not value:
@@ -1623,6 +1678,7 @@ class ChampionsCircle(commands.Cog):
                 "`ccchallonge refresh` - pull links from Challonge\n"
                 "`ccchallonge info/participants/matches` - view Challonge data\n"
                 "`ccchallonge sync [purge]` - sync approved applicants\n"
+                "`ccmode <1v1|2v2|3v3|4v4>` - set game mode\n"
                 "`setchampionschannel` / `setchampionsrole` / `setapplicationduration`"
             ),
             inline=False,
@@ -1720,11 +1776,14 @@ class ChampionsCircle(commands.Cog):
         channel_id = await self.config.guild(guild).champions_channel()
         role_id = await self.config.guild(guild).champions_role_id()
         duration = await self.config.guild(guild).application_duration()
+        game_mode = await self.config.guild(guild).game_mode()
         questions = await self.config.guild(guild).custom_questions()
         applications_open = await self.config.guild(guild).applications_open()
         opened_at = await self.config.guild(guild).applications_opened_at()
         signup_url = await self.config.guild(guild).tourney_challonge_signup_url()
         bracket_url = await self.config.guild(guild).tourney_challonge_bracket_url()
+        challonge_slug = await self.config.guild(guild).tourney_challonge_slug()
+        challonge_key = await self.config.guild(guild).tourney_challonge_api_key()
         challonge_slug = await self.config.guild(guild).tourney_challonge_slug()
         challonge_key = await self.config.guild(guild).tourney_challonge_api_key()
 
@@ -1750,6 +1809,12 @@ class ChampionsCircle(commands.Cog):
         embed.add_field(name="Announcements", value=channel.mention if channel else "Not set", inline=True)
         embed.add_field(name="Champions role", value=role.mention if role else "Not set", inline=True)
         embed.add_field(name="Application duration", value=f"{duration} days", inline=True)
+        embed.add_field(name="Game mode", value=game_mode or "Not set", inline=True)
+        embed.add_field(
+            name="Team size",
+            value=str(self._team_size_from_mode(game_mode)),
+            inline=True,
+        )
         if signup_url or bracket_url or challonge_slug:
             lines = []
             if signup_url:
@@ -1759,6 +1824,11 @@ class ChampionsCircle(commands.Cog):
             if challonge_slug:
                 lines.append(f"Tournament: {challonge_slug}")
             embed.add_field(name="Challonge", value="\n".join(lines), inline=False)
+        embed.add_field(
+            name="Challonge API key",
+            value="Set" if challonge_key else "Not set",
+            inline=True,
+        )
         embed.add_field(
             name="Challonge API key",
             value="Set" if challonge_key else "Not set",
@@ -1779,6 +1849,18 @@ class ChampionsCircle(commands.Cog):
             embed.add_field(name="Questions", value=question_list, inline=False)
 
         await ctx.send(embed=embed)
+
+    @commands.command(name="ccmode")
+    @commands.admin_or_permissions(administrator=True)
+    async def ccmode(self, ctx, *, mode: str):
+        """Set the tournament game mode (1v1, 2v2, 3v3, 4v4)."""
+        normalized = self._normalize_game_mode(mode)
+        if not normalized:
+            await ctx.send("Invalid game mode. Use 1v1, 2v2, 3v3, or 4v4.")
+            return
+        await self.config.guild(ctx.guild).game_mode.set(normalized)
+        await self.update_embed(ctx.guild)
+        await ctx.send(f"Game mode set to {normalized}.")
 
 class ApplicationModal(discord.ui.Modal):
     def __init__(self, cog, questions: List[str]):
@@ -2311,6 +2393,13 @@ class SetupModal(discord.ui.Modal, title="Tournament Setup"):
             required=True,
         )
         self.add_item(self.duration)
+
+        self.game_mode = discord.ui.TextInput(
+            label="Game mode (1v1, 2v2, 3v3, 4v4)",
+            placeholder="Example: 3v3",
+            required=False,
+        )
+        self.add_item(self.game_mode)
 
     async def on_submit(self, interaction: discord.Interaction):
         await self.cog.process_setup(interaction, self)
