@@ -6,6 +6,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 import re
+import random
 from typing import Optional, List, Dict, Any, Tuple
 from urllib.parse import urlparse
 
@@ -397,6 +398,7 @@ class ChampionsCircle(commands.Cog):
                     name="Team Captain",
                     reason="Champions Circle setup",
                     mentionable=True,
+                    color=self._random_role_color(),
                 )
             await self.config.guild(guild).team_captain_role_id.set(role.id)
 
@@ -971,6 +973,23 @@ class ChampionsCircle(commands.Cog):
         except ValueError:
             return None
 
+    def _team_emoji(self, index: int) -> str:
+        emojis = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "🟤", "⚫", "⚪"]
+        return emojis[(index - 1) % len(emojis)]
+
+    def _random_role_color(self) -> discord.Color:
+        palette = [
+            discord.Color.red(),
+            discord.Color.orange(),
+            discord.Color.gold(),
+            discord.Color.green(),
+            discord.Color.blue(),
+            discord.Color.purple(),
+            discord.Color.magenta(),
+            discord.Color.teal(),
+        ]
+        return random.choice(palette)
+
     async def _ensure_voice_category(
         self, guild: discord.Guild, name: str
     ) -> Optional[discord.CategoryChannel]:
@@ -1002,6 +1021,7 @@ class ChampionsCircle(commands.Cog):
                         name=role_name,
                         reason="Champions Circle team role",
                         mentionable=True,
+                        color=self._random_role_color(),
                     )
                 except discord.HTTPException:
                     continue
@@ -1057,7 +1077,8 @@ class ChampionsCircle(commands.Cog):
 
         created_ids: List[int] = []
         for index in range(1, team_count + 1):
-            name = f"{prefix} {index}"
+            emoji = self._team_emoji(index)
+            name = f"{emoji} {prefix} {index}"
             channel = existing_channels.get(index)
             if channel is None:
                 try:
@@ -1076,6 +1097,11 @@ class ChampionsCircle(commands.Cog):
                 except discord.HTTPException:
                     continue
             else:
+                if channel.name != name:
+                    try:
+                        await channel.edit(name=name)
+                    except discord.HTTPException:
+                        pass
                 team_role = team_roles.get(index) if team_roles else None
                 if team_role:
                     overwrites = dict(channel.overwrites)
@@ -1110,7 +1136,8 @@ class ChampionsCircle(commands.Cog):
 
         created_ids: List[int] = []
         for index in range(1, team_count + 1):
-            name = self._slugify_channel_name(f"{prefix} {index}")
+            emoji = self._team_emoji(index)
+            name = f"{emoji}-{self._slugify_channel_name(f'{prefix} {index}')}"
             channel = existing_channels.get(index)
             team_role = team_roles.get(index)
             if team_role is None:
@@ -1129,6 +1156,11 @@ class ChampionsCircle(commands.Cog):
                 except discord.HTTPException:
                     continue
             else:
+                if channel.name != name:
+                    try:
+                        await channel.edit(name=name)
+                    except discord.HTTPException:
+                        pass
                 overwrites = dict(channel.overwrites)
                 overwrites.update(
                     self._build_team_overwrites(
