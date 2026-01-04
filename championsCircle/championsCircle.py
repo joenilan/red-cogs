@@ -55,6 +55,8 @@ class ChampionsCircle(commands.Cog):
             "team_voice_channel_ids": [],
             "team_voice_channel_prefix": "Team",
             "team_captain_role_id": None,
+            "team_role_ids": [],
+            "team_text_channel_ids": [],
         }
         self.config.register_guild(**default_guild)
         self.logger = logging.getLogger("red.championsCircle")
@@ -602,6 +604,8 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).roster_message_ids.set({})
         await self.config.guild(ctx.guild).team_voice_category_id.set(None)
         await self.config.guild(ctx.guild).team_voice_channel_ids.set([])
+        await self.config.guild(ctx.guild).team_text_channel_ids.set([])
+        await self.config.guild(ctx.guild).team_role_ids.set([])
 
         # Reset cooldowns
         self.reset_cooldowns()
@@ -954,6 +958,19 @@ class ChampionsCircle(commands.Cog):
                 return role
         return next((role for role in guild.roles if role.name.lower() == cleaned.lower()), None)
 
+    def _slugify_channel_name(self, value: str) -> str:
+        cleaned = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+        return cleaned or "team"
+
+    def _extract_team_number(self, name: str) -> Optional[int]:
+        match = re.search(r"(\\d+)(?!.*\\d)", name)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+
     async def _ensure_voice_category(
         self, guild: discord.Guild, name: str
     ) -> Optional[discord.CategoryChannel]:
@@ -965,6 +982,64 @@ class ChampionsCircle(commands.Cog):
         except discord.HTTPException:
             return None
 
+    async def _ensure_team_roles(
+        self,
+        guild: discord.Guild,
+        *,
+        team_count: int,
+        prefix: str,
+    ) -> Dict[int, discord.Role]:
+        roles_by_num: Dict[int, discord.Role] = {}
+        role_ids: List[int] = []
+        for index in range(1, team_count + 1):
+            role_name = f"{prefix} {index}"
+            role = next(
+                (r for r in guild.roles if r.name.lower() == role_name.lower()), None
+            )
+            if role is None:
+                try:
+                    role = await guild.create_role(
+                        name=role_name,
+                        reason="Champions Circle team role",
+                        mentionable=True,
+                    )
+                except discord.HTTPException:
+                    continue
+            roles_by_num[index] = role
+            role_ids.append(role.id)
+        await self.config.guild(guild).team_role_ids.set(role_ids)
+        return roles_by_num
+
+    def _build_team_overwrites(
+        self,
+        guild: discord.Guild,
+        *,
+        team_role: discord.Role,
+        is_voice: bool,
+    ) -> Dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
+        overwrites: Dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            team_role: discord.PermissionOverwrite(
+                view_channel=True,
+                connect=True if is_voice else None,
+                speak=True if is_voice else None,
+                send_messages=None if is_voice else True,
+                read_message_history=None if is_voice else True,
+            ),
+        }
+        bot_member = guild.me or guild.get_member(self.bot.user.id)
+        if bot_member:
+            overwrites[bot_member] = discord.PermissionOverwrite(
+                view_channel=True,
+                manage_channels=True,
+                manage_permissions=True,
+                connect=True,
+                speak=True,
+                send_messages=True,
+                read_message_history=True,
+            )
+        return overwrites
+
     async def _ensure_team_voice_channels(
         self,
         guild: discord.Guild,
@@ -972,29 +1047,100 @@ class ChampionsCircle(commands.Cog):
         category: discord.CategoryChannel,
         team_count: int,
         prefix: str,
+        team_roles: Optional[Dict[int, discord.Role]] = None,
     ) -> List[int]:
-        existing_ids = await self.config.guild(guild).team_voice_channel_ids()
-        existing_channels: List[discord.VoiceChannel] = []
-        for channel_id in existing_ids or []:
-            channel = guild.get_channel(channel_id)
-            if isinstance(channel, discord.VoiceChannel):
-                existing_channels.append(channel)
+        existing_channels: Dict[int, discord.VoiceChannel] = {}
+        for channel in category.voice_channels:
+            team_number = self._extract_team_number(channel.name or "")
+            if team_number:
+                existing_channels[team_number] = channel
 
-        created_ids: List[int] = [ch.id for ch in existing_channels]
-        needed = max(team_count - len(existing_channels), 0)
-        for index in range(1, needed + 1):
-            name = f"{prefix} {len(existing_channels) + index}"
-            try:
-                channel = await guild.create_voice_channel(
-                    name=name,
-                    category=category,
-                    reason="Champions Circle setup",
-                )
-                created_ids.append(channel.id)
-            except discord.HTTPException:
-                continue
+        created_ids: List[int] = []
+        for index in range(1, team_count + 1):
+            name = f"{prefix} {index}"
+            channel = existing_channels.get(index)
+            if channel is None:
+                try:
+                    overwrites = None
+                    team_role = team_roles.get(index) if team_roles else None
+                    if team_role:
+                        overwrites = self._build_team_overwrites(
+                            guild, team_role=team_role, is_voice=True
+                        )
+                    channel = await guild.create_voice_channel(
+                        name=name,
+                        category=category,
+                        overwrites=overwrites,
+                        reason="Champions Circle setup",
+                    )
+                except discord.HTTPException:
+                    continue
+            else:
+                team_role = team_roles.get(index) if team_roles else None
+                if team_role:
+                    overwrites = dict(channel.overwrites)
+                    overwrites.update(
+                        self._build_team_overwrites(
+                            guild, team_role=team_role, is_voice=True
+                        )
+                    )
+                    try:
+                        await channel.edit(overwrites=overwrites)
+                    except discord.HTTPException:
+                        pass
+            created_ids.append(channel.id)
         await self.config.guild(guild).team_voice_channel_ids.set(created_ids)
         await self.config.guild(guild).team_voice_category_id.set(category.id)
+        return created_ids
+
+    async def _ensure_team_text_channels(
+        self,
+        guild: discord.Guild,
+        *,
+        category: discord.CategoryChannel,
+        team_count: int,
+        prefix: str,
+        team_roles: Dict[int, discord.Role],
+    ) -> List[int]:
+        existing_channels: Dict[int, discord.TextChannel] = {}
+        for channel in category.text_channels:
+            team_number = self._extract_team_number(channel.name or "")
+            if team_number:
+                existing_channels[team_number] = channel
+
+        created_ids: List[int] = []
+        for index in range(1, team_count + 1):
+            name = self._slugify_channel_name(f"{prefix} {index}")
+            channel = existing_channels.get(index)
+            team_role = team_roles.get(index)
+            if team_role is None:
+                continue
+            if channel is None:
+                try:
+                    overwrites = self._build_team_overwrites(
+                        guild, team_role=team_role, is_voice=False
+                    )
+                    channel = await guild.create_text_channel(
+                        name=name,
+                        category=category,
+                        overwrites=overwrites,
+                        reason="Champions Circle setup",
+                    )
+                except discord.HTTPException:
+                    continue
+            else:
+                overwrites = dict(channel.overwrites)
+                overwrites.update(
+                    self._build_team_overwrites(
+                        guild, team_role=team_role, is_voice=False
+                    )
+                )
+                try:
+                    await channel.edit(overwrites=overwrites)
+                except discord.HTTPException:
+                    pass
+            created_ids.append(channel.id)
+        await self.config.guild(guild).team_text_channel_ids.set(created_ids)
         return created_ids
 
     async def _create_team_voice_assets(self, guild: discord.Guild) -> None:
@@ -1006,14 +1152,50 @@ class ChampionsCircle(commands.Cog):
         category = await self._ensure_voice_category(guild, category_name)
         if not category:
             return
+        overwrites = dict(category.overwrites)
+        overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
+        bot_member = guild.me or guild.get_member(self.bot.user.id)
+        if bot_member:
+            overwrites[bot_member] = discord.PermissionOverwrite(
+                view_channel=True,
+                manage_channels=True,
+                manage_permissions=True,
+                connect=True,
+                speak=True,
+                send_messages=True,
+                read_message_history=True,
+            )
+        try:
+            await category.edit(overwrites=overwrites)
+        except discord.HTTPException:
+            pass
+        team_roles = await self._ensure_team_roles(guild, team_count=team_count, prefix=prefix)
         await self._ensure_team_voice_channels(
             guild,
             category=category,
             team_count=team_count,
             prefix=prefix,
+            team_roles=team_roles,
+        )
+        await self._ensure_team_text_channels(
+            guild,
+            category=category,
+            team_count=team_count,
+            prefix=prefix,
+            team_roles=team_roles,
         )
 
     async def _cleanup_team_voice_assets(self, guild: discord.Guild) -> None:
+        text_channel_ids = await self.config.guild(guild).team_text_channel_ids()
+        if text_channel_ids:
+            for channel_id in text_channel_ids:
+                channel = guild.get_channel(channel_id)
+                if isinstance(channel, discord.TextChannel):
+                    try:
+                        await channel.delete(reason="Champions Circle cleanup")
+                    except discord.HTTPException:
+                        continue
+
         channel_ids = await self.config.guild(guild).team_voice_channel_ids()
         if channel_ids:
             for channel_id in channel_ids:
@@ -1031,6 +1213,16 @@ class ChampionsCircle(commands.Cog):
                 await category.delete(reason="Champions Circle cleanup")
             except discord.HTTPException:
                 pass
+
+        role_ids = await self.config.guild(guild).team_role_ids()
+        if role_ids:
+            for role_id in role_ids:
+                role = guild.get_role(role_id)
+                if role:
+                    try:
+                        await role.delete(reason="Champions Circle cleanup")
+                    except discord.HTTPException:
+                        continue
 
     def _parse_challonge_slug(self, value: Optional[str]) -> Optional[str]:
         if not value:
@@ -1058,6 +1250,86 @@ class ChampionsCircle(commands.Cog):
         api_key = await self.config.guild(guild).tourney_challonge_api_key()
         slug = await self.config.guild(guild).tourney_challonge_slug()
         return api_key, slug
+
+    async def _sync_challonge_participant(
+        self, guild: discord.Guild, user_id: int, *, add: bool
+    ) -> None:
+        api_key, slug = await self._get_challonge_credentials(guild)
+        if not api_key or not slug:
+            return
+
+        stored_map = await self.config.guild(guild).tourney_challonge_participant_map()
+        if not isinstance(stored_map, dict):
+            stored_map = {}
+
+        user_id_str = str(user_id)
+        member = guild.get_member(user_id)
+        display_name = member.display_name if member else f"User {user_id}"
+
+        if add:
+            ok, participants_payload = await self._challonge_request(
+                guild, "GET", f"/tournaments/{slug}/participants.json"
+            )
+            if not ok:
+                self.logger.error("Challonge sync failed for %s: %s", user_id, participants_payload)
+                return
+
+            participants = participants_payload if isinstance(participants_payload, list) else []
+            existing_by_name: Dict[str, int] = {}
+            existing_ids = set()
+            for entry in participants:
+                participant = entry.get("participant", {})
+                pid = participant.get("id")
+                name = participant.get("name")
+                if pid is not None:
+                    existing_ids.add(int(pid))
+                if name:
+                    existing_by_name[name.lower()] = int(pid) if pid is not None else None
+
+            existing_id = stored_map.get(user_id_str)
+            if existing_id and int(existing_id) in existing_ids:
+                return
+
+            name_key = display_name.lower()
+            if name_key in existing_by_name and existing_by_name[name_key]:
+                stored_map[user_id_str] = existing_by_name[name_key]
+                await self.config.guild(guild).tourney_challonge_participant_map.set(stored_map)
+                return
+
+            candidate_name = display_name
+            if name_key in existing_by_name:
+                candidate_name = f"{display_name} ({str(user_id)[-4:]})"
+
+            ok, create_payload = await self._challonge_request(
+                guild,
+                "POST",
+                f"/tournaments/{slug}/participants.json",
+                data={"participant[name]": candidate_name},
+            )
+            if not ok:
+                self.logger.error("Challonge add failed for %s: %s", user_id, create_payload)
+                return
+            participant = (
+                create_payload.get("participant")
+                if isinstance(create_payload, dict)
+                else None
+            )
+            if participant and participant.get("id"):
+                stored_map[user_id_str] = participant.get("id")
+                await self.config.guild(guild).tourney_challonge_participant_map.set(stored_map)
+            return
+
+        participant_id = stored_map.get(user_id_str)
+        if not participant_id:
+            return
+        ok, payload = await self._challonge_request(
+            guild,
+            "DELETE",
+            f"/tournaments/{slug}/participants/{participant_id}.json",
+        )
+        if ok or "not found" in str(payload).lower():
+            stored_map.pop(user_id_str, None)
+            await self.config.guild(guild).tourney_challonge_participant_map.set(stored_map)
 
     async def _challonge_request(
         self,
@@ -1380,6 +1652,7 @@ class ChampionsCircle(commands.Cog):
                 await thread.send(embed=embed)
 
         await self._move_application(ctx.guild, ctx.author.id, "cancelled_applications", entry=entry)
+        await self._sync_challonge_participant(ctx.guild, ctx.author.id, add=False)
         await self.update_embed(ctx.guild)
         await ctx.send("Your Champions Circle application has been cancelled.")
 
@@ -2012,6 +2285,9 @@ class ChampionsCircle(commands.Cog):
         role_id = await self.config.guild(guild).champions_role_id()
         duration = await self.config.guild(guild).application_duration()
         game_mode = await self.config.guild(guild).game_mode()
+        team_count = await self.config.guild(guild).team_count()
+        team_roles = await self.config.guild(guild).team_role_ids()
+        team_text_channels = await self.config.guild(guild).team_text_channel_ids()
         questions = await self.config.guild(guild).custom_questions()
         applications_open = await self.config.guild(guild).applications_open()
         opened_at = await self.config.guild(guild).applications_opened_at()
@@ -2050,6 +2326,29 @@ class ChampionsCircle(commands.Cog):
             value=str(self._team_size_from_mode(game_mode)),
             inline=True,
         )
+        embed.add_field(
+            name="Teams",
+            value=str(team_count or 0),
+            inline=True,
+        )
+        if team_roles:
+            role_mentions = [
+                role.mention
+                for role_id in team_roles
+                if (role := guild.get_role(role_id))
+            ]
+            if role_mentions:
+                embed.add_field(
+                    name="Team roles",
+                    value=", ".join(role_mentions),
+                    inline=False,
+                )
+        if team_text_channels:
+            embed.add_field(
+                name="Team text channels",
+                value=str(len(team_text_channels)),
+                inline=True,
+            )
         if signup_url or bracket_url or challonge_slug:
             lines = []
             if signup_url:
@@ -2440,6 +2739,9 @@ class ApplicationReviewView(discord.ui.View):
                 status_line="Your tournament application has been approved!",
             )
 
+        await self.cog._sync_challonge_participant(
+            interaction.guild, self.applicant_id, add=True
+        )
         await self.cog.update_embed(interaction.guild)
         await self._send_ephemeral(interaction, "Application approved.")
 
@@ -2576,6 +2878,7 @@ class CancelApplicationButton(discord.ui.Button):
                 await thread.send(embed=embed)
 
         await self.cog._move_application(guild, user_id, "cancelled_applications", entry=entry)
+        await self.cog._sync_challonge_participant(guild, user_id, add=False)
         await self.cog.update_embed(guild)
         await interaction.response.send_message("Your application has been cancelled.", ephemeral=True)
 
@@ -2752,6 +3055,9 @@ class DenialReasonModal(discord.ui.Modal, title="Application Denial"):
                 extra=f"Reason: {self.reason.value}",
             )
 
+        await self.cog._sync_challonge_participant(
+            interaction.guild, self.applicant_id, add=False
+        )
         await self.cog.update_embed(interaction.guild)
         await interaction.response.send_message("Application denied.", ephemeral=True)
 
