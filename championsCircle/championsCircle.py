@@ -264,6 +264,7 @@ class ChampionsCircle(commands.Cog):
 
         await self.config.guild(guild).champions_role_id.set(role.id)
         await self.config.guild(guild).applications_open.set(False)
+        await self.config.guild(guild).champions_message_id.set(None)
 
         class SetupButton(discord.ui.Button):
             def __init__(self, cog):
@@ -2199,6 +2200,7 @@ class ApplicationModal(discord.ui.Modal):
 
     def _build_select(self, question: str, *, required: bool) -> Optional[discord.ui.Select]:
         question_lower = question.lower()
+        select_cls = getattr(discord.ui, "StringSelect", discord.ui.Select)
         if "rank" in question_lower:
             options = [
                 "Unranked",
@@ -2212,32 +2214,29 @@ class ApplicationModal(discord.ui.Modal):
                 "Supersonic Legend",
             ]
             min_values = 1 if required else 0
-            return discord.ui.Select(
+            return select_cls(
                 placeholder="Select your rank",
                 options=[discord.SelectOption(label=opt, value=opt) for opt in options],
                 min_values=min_values,
                 max_values=1,
-                required=required,
             )
         if "region" in question_lower:
             options = ["NA East", "NA West", "EU", "OCE", "SAM", "ME", "Asia"]
             min_values = 1 if required else 0
-            return discord.ui.Select(
+            return select_cls(
                 placeholder="Select your region",
                 options=[discord.SelectOption(label=opt, value=opt) for opt in options],
                 min_values=min_values,
                 max_values=1,
-                required=required,
             )
         if "platform" in question_lower:
             options = ["PC", "Xbox", "PlayStation", "Switch"]
             min_values = 1 if required else 0
-            return discord.ui.Select(
+            return select_cls(
                 placeholder="Select your platform",
                 options=[discord.SelectOption(label=opt, value=opt) for opt in options],
                 min_values=min_values,
                 max_values=1,
-                required=required,
             )
         return None
 
@@ -2340,10 +2339,13 @@ class ApplicationReviewView(discord.ui.View):
         self.applicant_id = applicant_id
 
     async def _send_ephemeral(self, interaction: discord.Interaction, message: str) -> None:
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.NotFound:
+            return
 
     async def _ensure_reviewer(self, interaction: discord.Interaction) -> bool:
         member = interaction.user
@@ -2391,11 +2393,15 @@ class ApplicationReviewView(discord.ui.View):
     async def review_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         if not await self._ensure_reviewer(interaction):
             return
-        if select.values[0] == "approve":
-            await self.approve_application(interaction)
-        elif select.values[0] == "deny":
+        action = select.values[0]
+        if action == "deny":
             await interaction.response.send_modal(DenialReasonModal(self.cog, self.applicant_id))
-        elif select.values[0] == "more_info":
+            return
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        if action == "approve":
+            await self.approve_application(interaction)
+        elif action == "more_info":
             await self.request_more_info(interaction)
 
     async def approve_application(self, interaction: discord.Interaction):
@@ -2648,7 +2654,8 @@ class SetupModal(discord.ui.Modal, title="Tournament Setup"):
         )
         self.add_item(self.duration)
 
-        game_mode = discord.ui.Select(
+        select_cls = getattr(discord.ui, "StringSelect", discord.ui.Select)
+        game_mode = select_cls(
             placeholder="Game mode",
             min_values=1,
             max_values=1,
@@ -2658,8 +2665,8 @@ class SetupModal(discord.ui.Modal, title="Tournament Setup"):
                 discord.SelectOption(label="3v3", value="3v3"),
                 discord.SelectOption(label="4v4", value="4v4"),
             ],
+            custom_id="ccsetup_game_mode",
         )
-        game_mode.custom_id = "ccsetup_game_mode"
         self.game_mode_select = game_mode
         label = discord.ui.Label(
             text="Game mode",
