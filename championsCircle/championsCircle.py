@@ -2337,6 +2337,48 @@ class ChampionsCircle(commands.Cog):
             f"Team sync complete. Assigned {assigned} members. {missing} missing links/participants."
         )
 
+    @ccchallonge.command(name="purgeall")
+    @commands.admin_or_permissions(administrator=True)
+    async def ccchallonge_purgeall(self, ctx):
+        """Remove all Challonge participants and clear local links."""
+        api_key, slug = await self._get_challonge_credentials(ctx.guild)
+        if not api_key:
+            await ctx.send("Challonge API key is not set. Use `ccchallonge key <token>`.")
+            return
+        if not slug:
+            await ctx.send("Challonge tournament is not set. Use `ccchallonge tournament <slug>`.")
+            return
+
+        ok, participants_payload = await self._challonge_request(
+            ctx.guild, "GET", f"/tournaments/{slug}/participants.json"
+        )
+        if not ok:
+            await ctx.send(f"Challonge API error: {participants_payload}")
+            return
+
+        participants = participants_payload if isinstance(participants_payload, list) else []
+        removed = 0
+        failed = 0
+        for entry in participants:
+            participant = entry.get("participant", {})
+            pid = participant.get("id")
+            if not pid:
+                continue
+            ok, _ = await self._challonge_request(
+                ctx.guild,
+                "DELETE",
+                f"/tournaments/{slug}/participants/{pid}.json",
+            )
+            if ok:
+                removed += 1
+            else:
+                failed += 1
+
+        await self.config.guild(ctx.guild).tourney_challonge_participant_map.set({})
+        await self.config.guild(ctx.guild).challonge_links.set({})
+        await self.config.guild(ctx.guild).challonge_link_last_reminder.set({})
+        await ctx.send(f"Purge complete. Removed {removed}, failed {failed}.")
+
     @ccchallonge.command(name="linksettings")
     @commands.admin_or_permissions(administrator=True)
     async def ccchallonge_linksettings(
@@ -2542,6 +2584,7 @@ class ChampionsCircle(commands.Cog):
                 "`ccchallonge sync [purge]` - sync approved applicants\n"
                 "`ccchallonge link/unlink` - link a Discord user to a Challonge participant\n"
                 "`ccchallonge syncroles` - assign team roles from Challonge\n"
+                "`ccchallonge purgeall` - remove all Challonge participants\n"
                 "`ccchallonge linksettings` - configure link enforcement\n"
                 "`ccmode <1v1|2v2|3v3|4v4>` - set game mode\n"
                 "`ccsetup` now includes game mode + advanced team/voice options\n"
