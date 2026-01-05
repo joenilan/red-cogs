@@ -102,7 +102,7 @@ class Bingo(commands.Cog):
         embed.add_field(
             name="Card Generation",
             value=(
-                "`bingo setup` - open the interactive generator\n"
+                "`bingo setup` - post a single card\n"
                 "`bingo generate <count> [seed]` - generate a batch of cards\n"
                 "`bingo tasks` - list current task pool"
             ),
@@ -226,7 +226,7 @@ class Bingo(commands.Cog):
 
     @bingo.command(name="setup")
     async def bingo_setup(self, ctx: commands.Context) -> None:
-        """Open the interactive generator modal."""
+        """Post a single bingo card via the setup modal."""
         view = BingoSetupView(self, ctx.author.id)
         await ctx.send("Click to post a bingo card:", view=view)
 
@@ -409,6 +409,49 @@ class Bingo(commands.Cog):
 
         font_path = await self.config.font_path()
         return tasks, font_path
+
+    async def _post_single_card(
+        self,
+        guild: discord.Guild,
+        channel: discord.TextChannel,
+        *,
+        tasks: List[str],
+        font_path: Optional[str],
+        seed: Optional[int],
+        editor_role: Optional[discord.Role],
+        editor_user_id: Optional[int],
+    ) -> None:
+        card_seed = seed or random.SystemRandom().randint(1, 2**32 - 1)
+        rng = random.Random(card_seed)
+        card_tasks = rng.sample(tasks, k=24)
+
+        timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = cog_data_path(self) / "generated" / timestamp
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output_path = out_dir / "bingo_card_01.png"
+        self._render_card(card_tasks, output_path, font_path, marked=set())
+
+        stored_role_id = editor_role.id if editor_role and editor_user_id is None else None
+        card_entry = {
+            "tasks": card_tasks,
+            "marked": [],
+            "seed": card_seed,
+            "message_id": None,
+            "editor_role_id": stored_role_id,
+            "editor_user_id": editor_user_id,
+        }
+
+        await self._send_or_update_card(
+            channel,
+            card_entry,
+            output_path,
+            mention_role=editor_role if editor_user_id is None else None,
+            mention_user_id=editor_user_id,
+        )
+
+        cards = await self.config.guild(guild).cards()
+        cards[str(channel.id)] = card_entry
+        await self.config.guild(guild).cards.set(cards)
 
     def _generate_cards(
         self,
@@ -618,7 +661,7 @@ class BingoPostModal(discord.ui.Modal, title="Post Bingo Card"):
             required=False,
         )
         self.editor_user = discord.ui.TextInput(
-            label="Editor @mention or user ID (optional)",
+            label="Editor @mention or ID (optional override)",
             required=False,
         )
         self.add_item(self.seed)
@@ -637,7 +680,7 @@ class BingoPostModal(discord.ui.Modal, title="Post Bingo Card"):
         if self.editor_role_select:
             label = discord.ui.Label(
                 text="Editor role (optional)",
-                description="Role that can edit the card (also pinged).",
+                description="Pick a role, then choose an editor from it.",
                 component=self.editor_role_select,
             )
             self.add_item(label)
@@ -713,7 +756,7 @@ class BingoPostModal(discord.ui.Modal, title="Post Bingo Card"):
         editor_user_id = None
         editor_user_raw = (self.editor_user.value or "").strip()
         if editor_user_raw:
-            match = re.match(r"<@!?(\\d+)>", editor_user_raw)
+            match = re.match(r"<@!?(\d+)>", editor_user_raw)
             if match:
                 editor_user_id = int(match.group(1))
             elif editor_user_raw.isdigit():
@@ -723,11 +766,11 @@ class BingoPostModal(discord.ui.Modal, title="Post Bingo Card"):
                     "Editor user must be a user ID or @mention.", ephemeral=True
                 )
                 return
-        if not interaction.guild.get_member(editor_user_id):
-            await interaction.response.send_message(
-                "Editor user not found in this server.", ephemeral=True
-            )
-            return
+            if not interaction.guild.get_member(editor_user_id):
+                await interaction.response.send_message(
+                    "Editor user not found in this server.", ephemeral=True
+                )
+                return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -742,48 +785,140 @@ class BingoPostModal(discord.ui.Modal, title="Post Bingo Card"):
                 "Template image not found (card.jpg).", ephemeral=True
             )
             return
-        if editor_user_id is None and editor_role is None:
-            default_editor_role = await self.cog.config.guild(interaction.guild).editor_role_id()
-            if not default_editor_role:
-                await interaction.followup.send(
-                    "Pick an editor user/role, or set a default with `!bingo editrole`.",
-                    ephemeral=True,
-                )
-                return
 
         font_path = await self.cog.config.font_path()
-        card_seed = seed or random.SystemRandom().randint(1, 2**32 - 1)
-        rng = random.Random(card_seed)
-        card_tasks = rng.sample(tasks, k=24)
 
-        timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_dir = cog_data_path(self.cog) / "generated" / timestamp
-        out_dir.mkdir(parents=True, exist_ok=True)
-        output_path = out_dir / "bingo_card_01.png"
-        self.cog._render_card(card_tasks, output_path, font_path, marked=set())
+        if editor_user_id is not None:
+            await self.cog._post_single_card(
+                interaction.guild,
+                channel,
+                tasks=tasks,
+                font_path=font_path,
+                seed=seed,
+                editor_role=None,
+                editor_user_id=editor_user_id,
+            )
+            await interaction.followup.send(
+                f"Posted the card to {channel.mention}.",
+                ephemeral=True,
+            )
+            return
 
-        card_entry = {
-            "tasks": card_tasks,
-            "marked": [],
-            "seed": card_seed,
-            "message_id": None,
-            "editor_role_id": editor_role.id if editor_role else None,
-            "editor_user_id": editor_user_id,
-        }
+        if editor_role is None:
+            default_role_id = await self.cog.config.guild(interaction.guild).editor_role_id()
+            if default_role_id:
+                editor_role = interaction.guild.get_role(default_role_id)
 
-        await self.cog._send_or_update_card(
-            channel,
-            card_entry,
-            output_path,
-            mention_role=editor_role,
-            mention_user_id=editor_user_id,
+        if editor_role is None:
+            await interaction.followup.send(
+                "Pick an editor user or role, or set a default with `!bingo editrole`.",
+                ephemeral=True,
+            )
+            return
+
+        members = sorted(
+            list(editor_role.members),
+            key=lambda m: (m.display_name or m.name).lower(),
+        )
+        if not members:
+            await interaction.followup.send("That role has no members.", ephemeral=True)
+            return
+        if len(members) == 1:
+            editor_user_id = members[0].id
+            await self.cog._post_single_card(
+                interaction.guild,
+                channel,
+                tasks=tasks,
+                font_path=font_path,
+                seed=seed,
+                editor_role=None,
+                editor_user_id=editor_user_id,
+            )
+            await interaction.followup.send(
+                f"Posted the card to {channel.mention}.",
+                ephemeral=True,
+            )
+            return
+        if len(members) > 25:
+            await interaction.followup.send(
+                f"Role {editor_role.mention} has {len(members)} members. "
+                "Use the editor @mention field instead.",
+                ephemeral=True,
+            )
+            return
+
+        view = BingoEditorSelectView(
+            self.cog,
+            author_id=interaction.user.id,
+            channel=channel,
+            tasks=tasks,
+            font_path=font_path,
+            seed=seed,
+            members=members,
+        )
+        await interaction.followup.send(
+            f"Select the editor from {editor_role.mention}:",
+            view=view,
+            ephemeral=True,
         )
 
-        cards = await self.cog.config.guild(interaction.guild).cards()
-        cards[str(channel.id)] = card_entry
-        await self.cog.config.guild(interaction.guild).cards.set(cards)
+class BingoEditorSelectView(discord.ui.View):
+    def __init__(
+        self,
+        cog: Bingo,
+        *,
+        author_id: int,
+        channel: discord.TextChannel,
+        tasks: List[str],
+        font_path: Optional[str],
+        seed: Optional[int],
+        members: List[discord.Member],
+    ):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.author_id = author_id
+        self.channel = channel
+        self.tasks = tasks
+        self.font_path = font_path
+        self.seed = seed
 
+        options = [
+            discord.SelectOption(label=m.display_name[:100], value=str(m.id))
+            for m in members
+        ]
+        self.member_select = discord.ui.Select(
+            placeholder="Select the editor",
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+        self.member_select.callback = self._select_editor
+        self.add_item(self.member_select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "Only the command invoker can use this setup.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def _select_editor(self, interaction: discord.Interaction) -> None:
+        editor_user_id = int(self.member_select.values[0])
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await self.cog._post_single_card(
+            interaction.guild,
+            self.channel,
+            tasks=self.tasks,
+            font_path=self.font_path,
+            seed=self.seed,
+            editor_role=None,
+            editor_user_id=editor_user_id,
+        )
+        for item in self.children:
+            item.disabled = True
+        await interaction.message.edit(view=self)
         await interaction.followup.send(
-            f"Posted the card to {channel.mention}.",
+            f"Posted the card to {self.channel.mention}.",
             ephemeral=True,
         )
