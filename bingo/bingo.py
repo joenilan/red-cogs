@@ -496,6 +496,16 @@ class Bingo(commands.Cog):
     async def _require_captain(self, ctx: commands.Context) -> bool:
         if ctx.author.guild_permissions.administrator:
             return True
+        champions = self._get_champions_cog()
+        if champions:
+            allowed, message = await self._champions_can_edit(ctx, champions)
+            if allowed:
+                return True
+            if message:
+                await ctx.send(message)
+                return False
+            await ctx.send("ChampionsCircle is loaded but team data is not available.")
+            return False
         role_id = await self.config.guild(ctx.guild).captain_role_id()
         if not role_id:
             await ctx.send("Captain role is not configured. Use `!bingo setcaptainrole`.")
@@ -505,6 +515,60 @@ class Bingo(commands.Cog):
             return True
         await ctx.send("Only captains can edit this card.")
         return False
+
+    def _get_champions_cog(self) -> Optional[commands.Cog]:
+        return self.bot.get_cog("ChampionsCircle") or self.bot.get_cog("championsCircle")
+
+    async def _champions_can_edit(
+        self,
+        ctx: commands.Context,
+        champions: commands.Cog,
+    ) -> Tuple[bool, Optional[str]]:
+        guild = ctx.guild
+        try:
+            team_channels = await champions.config.guild(guild).team_text_channel_ids()
+        except Exception:
+            return False, None
+
+        if not team_channels or ctx.channel.id not in team_channels:
+            return False, "This command only works inside a ChampionsCircle team channel."
+
+        team_number = None
+        if hasattr(champions, "_extract_team_number"):
+            try:
+                team_number = champions._extract_team_number(ctx.channel.name or "")
+            except Exception:
+                team_number = None
+        if not team_number:
+            try:
+                team_number = team_channels.index(ctx.channel.id) + 1
+            except ValueError:
+                team_number = None
+        if not team_number:
+            return False, "Unable to determine team number for this channel."
+
+        draft_captains = await champions.config.guild(guild).draft_captains()
+        if isinstance(draft_captains, dict):
+            captain_id = draft_captains.get(str(team_number))
+            if captain_id == ctx.author.id:
+                return True, None
+
+        captain_role_id = await champions.config.guild(guild).team_captain_role_id()
+        captain_role = guild.get_role(captain_role_id) if captain_role_id else None
+        if not captain_role:
+            return False, "ChampionsCircle captains are not configured yet."
+        if captain_role not in ctx.author.roles:
+            return False, "Only the captain for this team can edit this card."
+
+        team_role_ids = await champions.config.guild(guild).team_role_ids()
+        team_role = None
+        if isinstance(team_role_ids, list) and len(team_role_ids) >= team_number:
+            team_role = guild.get_role(team_role_ids[team_number - 1])
+        if not team_role:
+            return False, "Team role for this channel is missing."
+        if team_role in ctx.author.roles:
+            return True, None
+        return False, "You can only edit the card for your own team."
 
     async def _send_or_update_card(
         self,
