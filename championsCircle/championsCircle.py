@@ -688,7 +688,10 @@ class ChampionsCircle(commands.Cog):
 
     @ccscore.command(name="panel")
     async def ccscore_panel(self, ctx):
-        """Post a score report button in the current channel."""
+        """Post a score report button in the current voice channel chat."""
+        if not isinstance(ctx.channel, (discord.VoiceChannel, discord.StageChannel)):
+            await ctx.send("Use this in your team voice channel chat.")
+            return
         team_number = await self._get_team_number_for_channel(ctx.guild, ctx.channel)
         if not team_number:
             team_number = await self._get_team_number_for_member(ctx.guild, ctx.author)
@@ -729,6 +732,14 @@ class ChampionsCircle(commands.Cog):
             participant_id=int(participant_id),
             score_input=score,
         )
+        if ok:
+            await self._notify_score_submission(
+                ctx.guild,
+                reporter=ctx.author,
+                match_id=match_id,
+                participant_id=int(participant_id),
+                score_input=score,
+            )
         await ctx.send(message)
 
     @commands.group(name="ccquestions")
@@ -1279,23 +1290,24 @@ class ChampionsCircle(commands.Cog):
         return left, right
 
     async def _post_score_panels(self, guild: discord.Guild) -> None:
-        text_channel_ids = await self.config.guild(guild).team_text_channel_ids()
-        if not text_channel_ids:
+        voice_channel_ids = await self.config.guild(guild).team_voice_channel_ids()
+        if not voice_channel_ids:
             return
         panel_map = await self.config.guild(guild).score_panel_message_ids()
         if not isinstance(panel_map, dict):
             panel_map = {}
 
         updated_map: Dict[str, int] = {}
-        for channel_id in text_channel_ids:
+        for channel_id in voice_channel_ids:
             channel = guild.get_channel(channel_id)
-            if not isinstance(channel, discord.TextChannel):
+            if not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
                 continue
             existing_id = panel_map.get(str(channel_id))
             message = None
             if existing_id:
                 try:
-                    message = await channel.fetch_message(existing_id)
+                    if hasattr(channel, "fetch_message"):
+                        message = await channel.fetch_message(existing_id)
                 except discord.HTTPException:
                     message = None
             if message:
@@ -1411,6 +1423,62 @@ class ChampionsCircle(commands.Cog):
             return False, f"Challonge update failed: {result}"
         return True, "Score submitted."
 
+    async def _notify_score_submission(
+        self,
+        guild: discord.Guild,
+        *,
+        reporter: discord.abc.User,
+        match_id: int,
+        participant_id: int,
+        score_input: str,
+    ) -> None:
+        channel_id = await self.config.guild(guild).champions_channel()
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        api_key, slug = await self._get_challonge_credentials(guild)
+        if not api_key or not slug:
+            return
+
+        match = None
+        ok, payload = await self._challonge_request(
+            guild, "GET", f"/tournaments/{slug}/matches/{match_id}.json"
+        )
+        if ok and isinstance(payload, dict):
+            match = payload.get("match")
+
+        p1 = match.get("player1_id") or match.get("participant1_id") if match else None
+        p2 = match.get("player2_id") or match.get("participant2_id") if match else None
+        round_num = match.get("round") if match else None
+
+        team_line = "Unknown"
+        if p1 and p2:
+            name_map = await self._get_participant_name_map(guild)
+            left = name_map.get(int(p1), f"Participant {p1}")
+            right = name_map.get(int(p2), f"Participant {p2}")
+            team_line = f"{left} vs {right}"
+
+        bracket_url = await self.config.guild(guild).tourney_challonge_bracket_url()
+        embed = discord.Embed(
+            title="Score Submitted (Auto)",
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Reported by", value=reporter.mention, inline=True)
+        embed.add_field(name="Match", value=f"#{match_id}", inline=True)
+        if round_num is not None:
+            embed.add_field(name="Round", value=str(round_num), inline=True)
+        embed.add_field(name="Teams", value=team_line, inline=False)
+        embed.add_field(name="Score", value=score_input, inline=True)
+        embed.add_field(name="Status", value="Submitted to Challonge", inline=True)
+        if bracket_url:
+            embed.add_field(name="Bracket", value=bracket_url, inline=False)
+
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException:
+            return
+
     async def _start_score_report(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
         channel = interaction.channel
@@ -1420,8 +1488,14 @@ class ChampionsCircle(commands.Cog):
             )
             return
 
+        if not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
+            await interaction.response.send_message(
+                "Use the score button in your team voice channel chat.", ephemeral=True
+            )
+            return
+
         team_number = None
-        if isinstance(channel, discord.TextChannel):
+        if isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
             team_number = await self._get_team_number_for_channel(guild, channel)
         if not team_number and isinstance(interaction.user, discord.Member):
             team_number = await self._get_team_number_for_member(guild, interaction.user)
@@ -4404,7 +4478,7 @@ class ChampionsCircle(commands.Cog):
             name="Score Reporting",
             value=(
                 "`ccscore report <match_id> <score>` - submit a score (requires team role)\n"
-                "`ccscore panel` - post a score report button"
+                "`ccscore panel` - post a score report button in team voice chat"
             ),
             inline=False,
         )
@@ -5413,6 +5487,14 @@ class ScoreReportModal(discord.ui.Modal, title="Report Match Score"):
             participant_id=self.participant_id,
             score_input=self.score.value,
         )
+        if ok:
+            await self.cog._notify_score_submission(
+                guild,
+                reporter=interaction.user,
+                match_id=self.match_id,
+                participant_id=self.participant_id,
+                score_input=self.score.value,
+            )
         await interaction.response.send_message(message, ephemeral=True)
 
 class ScoreMatchSelectView(discord.ui.View):
