@@ -774,9 +774,6 @@ class ChampionsCircle(commands.Cog):
     async def _build_tournament_info(self, guild: discord.Guild) -> str:
         title = await self.config.guild(guild).tourney_title()
         tourney_time = await self.config.guild(guild).tourney_time()
-        signup_url = self._normalize_url(
-            await self.config.guild(guild).tourney_challonge_signup_url()
-        )
         bracket_url = self._normalize_url(
             await self.config.guild(guild).tourney_challonge_bracket_url()
         )
@@ -784,8 +781,6 @@ class ChampionsCircle(commands.Cog):
         lines = [f"**{title}**"]
         if tourney_time:
             lines.append(f"Time: <t:{tourney_time}:F> (<t:{tourney_time}:R>)")
-        if signup_url:
-            lines.append(f"Signup: {signup_url}")
         if bracket_url:
             lines.append(f"Bracket: {bracket_url}")
         return "\n".join(lines)
@@ -2000,7 +1995,6 @@ class ChampionsCircle(commands.Cog):
         counts: Dict[str, int],
         forum: Optional[discord.abc.GuildChannel],
         roster_url: Optional[str],
-        signup_url: Optional[str],
         bracket_url: Optional[str],
         updated_ts: int,
     ) -> discord.Embed:
@@ -2052,7 +2046,6 @@ class ChampionsCircle(commands.Cog):
         counts: Dict[str, int],
         forum: Optional[discord.abc.GuildChannel],
         roster_url: Optional[str],
-        signup_url: Optional[str],
         bracket_url: Optional[str],
         updated_ts: int,
     ) -> discord.ui.LayoutView:
@@ -2148,9 +2141,6 @@ class ChampionsCircle(commands.Cog):
 
         forum_id = await self.config.guild(guild).champions_forum()
         forum = guild.get_channel(forum_id) if forum_id else None
-        signup_url = self._normalize_url(
-            await self.config.guild(guild).tourney_challonge_signup_url()
-        )
         bracket_url = self._normalize_url(
             await self.config.guild(guild).tourney_challonge_bracket_url()
         )
@@ -2169,7 +2159,6 @@ class ChampionsCircle(commands.Cog):
             counts=counts,
             forum=forum,
             roster_url=roster_url,
-            signup_url=signup_url,
             bracket_url=bracket_url,
             updated_ts=updated_ts,
         )
@@ -2184,7 +2173,6 @@ class ChampionsCircle(commands.Cog):
             counts=counts,
             forum=forum,
             roster_url=roster_url,
-            signup_url=signup_url,
             bracket_url=bracket_url,
             updated_ts=updated_ts,
         )
@@ -2312,24 +2300,24 @@ class ChampionsCircle(commands.Cog):
     @commands.admin_or_permissions(administrator=True)
     @guild_only()
     async def ccchallonge(self, ctx):
-        """Manage Challonge links for the tournament."""
+        """Manage Challonge settings for the tournament."""
         if ctx.invoked_subcommand is None:
-            signup_url = await self.config.guild(ctx.guild).tourney_challonge_signup_url()
             bracket_url = await self.config.guild(ctx.guild).tourney_challonge_bracket_url()
             api_key = await self.config.guild(ctx.guild).tourney_challonge_api_key()
             slug = await self.config.guild(ctx.guild).tourney_challonge_slug()
+            team_map = await self.config.guild(ctx.guild).challonge_team_map()
             lines = []
-            if signup_url:
-                lines.append(f"Signup: {signup_url}")
+            if slug:
+                lines.append(f"Tournament: `{slug}`")
             if bracket_url:
                 lines.append(f"Bracket: {bracket_url}")
-            if slug:
-                lines.append(f"Tournament: {slug}")
             if api_key:
                 masked = f"{api_key[:4]}***{api_key[-4:]}" if len(api_key) > 8 else "***"
                 lines.append(f"API key: set ({masked})")
+            if team_map:
+                lines.append(f"Teams mapped: {len(team_map)}")
             if not lines:
-                await ctx.send("No Challonge links set.")
+                await ctx.send("No Challonge configuration set.")
             else:
                 await ctx.send("\n".join(lines))
 
@@ -2337,16 +2325,13 @@ class ChampionsCircle(commands.Cog):
     async def ccchallonge_set(
         self,
         ctx,
-        signup_url: str,
-        bracket_url: Optional[str] = None,
+        bracket_url: str,
     ):
-        """Set Challonge signup and optional bracket links."""
-        signup_value = self._normalize_url(signup_url)
-        bracket_value = self._normalize_url(bracket_url) if bracket_url else None
-        await self.config.guild(ctx.guild).tourney_challonge_signup_url.set(signup_value)
+        """Set the Challonge bracket URL."""
+        bracket_value = self._normalize_url(bracket_url)
         await self.config.guild(ctx.guild).tourney_challonge_bracket_url.set(bracket_value)
         await self.update_embed(ctx.guild)
-        await ctx.send("Challonge links updated.")
+        await ctx.send(f"Bracket URL set: {bracket_value}")
 
     @ccchallonge.command(name="tournament", aliases=["slug"])
     async def ccchallonge_tournament(self, ctx, *, slug_or_url: Optional[str] = None):
@@ -2391,7 +2376,7 @@ class ChampionsCircle(commands.Cog):
 
     @ccchallonge.command(name="refresh")
     async def ccchallonge_refresh(self, ctx):
-        """Pull bracket/signup links from Challonge (v1) if available."""
+        """Pull bracket link from Challonge API."""
         api_key, slug = await self._get_challonge_credentials(ctx.guild)
         if not api_key:
             await ctx.send("Challonge API key is not set. Use `ccchallonge key <token>`.")
@@ -2413,29 +2398,19 @@ class ChampionsCircle(commands.Cog):
             return
 
         bracket_url = tournament.get("full_challonge_url")
-        signup_url = tournament.get("sign_up_url") or tournament.get("signup_url")
-
         if bracket_url:
             await self.config.guild(ctx.guild).tourney_challonge_bracket_url.set(bracket_url)
-        if signup_url:
-            await self.config.guild(ctx.guild).tourney_challonge_signup_url.set(signup_url)
-
-        await self.update_embed(ctx.guild)
-
-        if signup_url:
-            await ctx.send("Challonge links refreshed from API.")
+            await self.update_embed(ctx.guild)
+            await ctx.send(f"Bracket URL refreshed: {bracket_url}")
         else:
-            await ctx.send(
-                "Bracket link refreshed. Signup link was not provided by the API; set it manually if needed."
-            )
+            await ctx.send("No bracket URL found in Challonge response.")
 
     @ccchallonge.command(name="clear")
     async def ccchallonge_clear(self, ctx):
-        """Clear Challonge links."""
-        await self.config.guild(ctx.guild).tourney_challonge_signup_url.set(None)
+        """Clear Challonge bracket URL."""
         await self.config.guild(ctx.guild).tourney_challonge_bracket_url.set(None)
         await self.update_embed(ctx.guild)
-        await ctx.send("Challonge links cleared.")
+        await ctx.send("Bracket URL cleared.")
 
     @ccchallonge.command(name="createteams")
     @commands.admin_or_permissions(administrator=True)
@@ -3768,19 +3743,10 @@ class ChampionsCircle(commands.Cog):
         questions = await self.config.guild(guild).custom_questions()
         applications_open = await self.config.guild(guild).applications_open()
         opened_at = await self.config.guild(guild).applications_opened_at()
-        signup_url = await self.config.guild(guild).tourney_challonge_signup_url()
         bracket_url = await self.config.guild(guild).tourney_challonge_bracket_url()
         challonge_slug = await self.config.guild(guild).tourney_challonge_slug()
         challonge_key = await self.config.guild(guild).tourney_challonge_api_key()
-        challonge_slug = await self.config.guild(guild).tourney_challonge_slug()
-        challonge_key = await self.config.guild(guild).tourney_challonge_api_key()
-        link_required = await self.config.guild(guild).challonge_link_required()
-        link_grace = await self.config.guild(guild).challonge_link_grace_hours()
-        link_reminder = await self.config.guild(guild).challonge_link_reminder_hours()
-        link_map = await self.config.guild(guild).challonge_links()
         team_map = await self.config.guild(guild).challonge_team_map()
-        auto_sync = await self.config.guild(guild).challonge_sync_roles_enabled()
-        auto_interval = await self.config.guild(guild).challonge_sync_roles_interval()
 
         active = await self._load_application_list(guild, "active_applications")
         approved = await self._load_application_list(guild, "approved_applications")
@@ -3833,42 +3799,30 @@ class ChampionsCircle(commands.Cog):
                 value=str(len(team_text_channels)),
                 inline=True,
             )
-        if signup_url or bracket_url or challonge_slug:
+        if bracket_url or challonge_slug:
             lines = []
-            if signup_url:
-                lines.append(f"Signup: {signup_url}")
+            if challonge_slug:
+                lines.append(f"Tournament: `{challonge_slug}`")
             if bracket_url:
                 lines.append(f"Bracket: {bracket_url}")
-            if challonge_slug:
-                lines.append(f"Tournament: {challonge_slug}")
+            if team_map:
+                lines.append(f"Teams mapped: {len(team_map)}")
             embed.add_field(name="Challonge", value="\n".join(lines), inline=False)
         embed.add_field(
-            name="Challonge links",
-            value=(
-                f"Required: {link_required}\n"
-                f"Grace: {link_grace}h\n"
-                f"Reminder: {link_reminder}h\n"
-                f"Linked users: {len(link_map or {})}\n"
-                f"Auto sync: {auto_sync} ({auto_interval}m)"
-            ),
-            inline=False,
+            name="Challonge API",
+            value="Set" if challonge_key else "Not set",
+            inline=True,
         )
-        if team_map:
+        # Draft system info
+        draft_assignments = await self.config.guild(guild).draft_assignments()
+        draft_locked = await self.config.guild(guild).draft_locked()
+        if draft_assignments:
+            total_drafted = sum(len(v) for v in draft_assignments.values() if isinstance(v, list))
             embed.add_field(
-                name="Challonge team map",
-                value=f"Mapped teams: {len(team_map)}",
+                name="Draft",
+                value=f"Players drafted: {total_drafted}\nLocked: {'Yes' if draft_locked else 'No'}",
                 inline=True,
             )
-        embed.add_field(
-            name="Challonge API key",
-            value="Set" if challonge_key else "Not set",
-            inline=True,
-        )
-        embed.add_field(
-            name="Challonge API key",
-            value="Set" if challonge_key else "Not set",
-            inline=True,
-        )
         embed.add_field(
             name="Applications",
             value=(
