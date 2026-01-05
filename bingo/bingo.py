@@ -50,11 +50,12 @@ CELL_COLS = [(340, 800), (896, 1352), (1444, 1904), (1996, 2460), (2552, 3012)]
 CELL_ROWS = [(1600, 2060), (2180, 2640), (2760, 3220), (3340, 3800), (3916, 4380)]
 
 CENTER_CELL = (2, 2)
-CELL_PADDING = 12
+CELL_PADDING = 10
 TEXT_COLOR = (20, 20, 20)
-LINE_SPACING = 2
-MAX_FONT_SIZE = 64
-MIN_FONT_SIZE = 20
+LINE_SPACING = 1
+TEXT_STROKE_WIDTH = 1
+MAX_FONT_SIZE = 76
+MIN_FONT_SIZE = 18
 
 
 class Bingo(commands.Cog):
@@ -293,7 +294,7 @@ class Bingo(commands.Cog):
             lines = self._wrap_text(draw, text, font, max_width)
             line_height = self._line_height(draw, font)
             total_height = line_height * len(lines) + (len(lines) - 1) * LINE_SPACING
-            max_line_width = max(draw.textlength(line, font=font) for line in lines)
+            max_line_width = max(self._text_width(draw, line, font) for line in lines)
             if total_height <= max_height and max_line_width <= max_width:
                 break
         else:
@@ -304,9 +305,16 @@ class Bingo(commands.Cog):
 
         y = y0 + (max_height - total_height) / 2
         for line in lines:
-            line_width = draw.textlength(line, font=font)
+            line_width = self._text_width(draw, line, font)
             x = x0 + (max_width - line_width) / 2
-            draw.text((x, y), line, font=font, fill=TEXT_COLOR)
+            draw.text(
+                (x, y),
+                line,
+                font=font,
+                fill=TEXT_COLOR,
+                stroke_width=TEXT_STROKE_WIDTH,
+                stroke_fill=TEXT_COLOR,
+            )
             y += line_height + LINE_SPACING
 
     def _wrap_text(
@@ -321,12 +329,12 @@ class Bingo(commands.Cog):
         current = ""
         for word in words:
             trial = f"{current} {word}".strip()
-            if draw.textlength(trial, font=font) <= max_width:
+            if self._text_width(draw, trial, font) <= max_width:
                 current = trial
                 continue
             if current:
                 lines.append(current)
-            if draw.textlength(word, font=font) <= max_width:
+            if self._text_width(draw, word, font) <= max_width:
                 current = word
             else:
                 current = self._break_long_word(draw, word, font, max_width, lines)
@@ -345,7 +353,7 @@ class Bingo(commands.Cog):
         fragment = ""
         for ch in word:
             trial = fragment + ch
-            if draw.textlength(trial, font=font) <= max_width:
+            if self._text_width(draw, trial, font) <= max_width:
                 fragment = trial
                 continue
             if fragment:
@@ -354,13 +362,15 @@ class Bingo(commands.Cog):
         return fragment
 
     def _line_height(self, draw: ImageDraw.ImageDraw, font: ImageFont.FreeTypeFont) -> int:
-        box = draw.textbbox((0, 0), "Ag", font=font)
+        box = draw.textbbox((0, 0), "Ag", font=font, stroke_width=TEXT_STROKE_WIDTH)
         return box[3] - box[1]
 
     def _load_font(self, font_path: Optional[str], size: int) -> ImageFont.FreeTypeFont:
         if font_path:
             try:
-                return ImageFont.truetype(font_path, size)
+                font = ImageFont.truetype(font_path, size)
+                self._apply_bold_variation(font)
+                return font
             except OSError:
                 pass
 
@@ -380,10 +390,36 @@ class Bingo(commands.Cog):
         ]
         for candidate in candidates:
             try:
-                return ImageFont.truetype(candidate, size)
+                font = ImageFont.truetype(candidate, size)
+                self._apply_bold_variation(font)
+                return font
             except OSError:
                 continue
         return ImageFont.load_default()
+
+    def _apply_bold_variation(self, font: ImageFont.FreeTypeFont) -> None:
+        try:
+            names = font.get_variation_names()
+        except Exception:
+            return
+        normalized = []
+        for name in names or []:
+            if isinstance(name, bytes):
+                normalized.append(name.decode("utf-8", "ignore"))
+            else:
+                normalized.append(str(name))
+        for candidate in ("Bold", "SemiBold", "ExtraBold", "Black"):
+            if candidate in normalized:
+                try:
+                    font.set_variation_by_name(candidate)
+                except Exception:
+                    pass
+                return
+
+    def _text_width(
+        self, draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont
+    ) -> float:
+        return draw.textlength(text, font=font) + (TEXT_STROKE_WIDTH * 2)
 
     def _resolve_template_path(self) -> Path:
         folder = Path(__file__).parent
