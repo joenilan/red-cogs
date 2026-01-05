@@ -1113,7 +1113,7 @@ class ChampionsCircle(commands.Cog):
             bot_member = guild.me or guild.get_member(self.bot.user.id)
             if bot_member:
                 perms = category.permissions_for(bot_member)
-                if not (perms.view_channel and perms.manage_channels and perms.manage_permissions):
+                if not (perms.view_channel and perms.manage_channels):
                     fallback_name = name
                     for suffix in range(2, 6):
                         candidate = f"{name} ({suffix})"
@@ -1190,7 +1190,6 @@ class ChampionsCircle(commands.Cog):
             overwrites[bot_member] = discord.PermissionOverwrite(
                 view_channel=True,
                 manage_channels=True,
-                manage_permissions=True,
                 connect=True,
                 speak=True,
                 send_messages=True,
@@ -1497,13 +1496,13 @@ class ChampionsCircle(commands.Cog):
                         reason="Champions Circle setup",
                     )
                 except discord.HTTPException as exc:
-                    fallback_name = self._slugify_channel_name(f"{prefix} {index}")
+                    fallback_name = f"{prefix} {index}"
                     if getattr(exc, "code", None) == 50035 and fallback_name:
                         try:
                             overwrites = self._build_team_overwrites(
-                                guild, team_role=team_role, is_voice=False
+                                guild, team_role=team_role, is_voice=True
                             )
-                            channel = await guild.create_text_channel(
+                            channel = await guild.create_voice_channel(
                                 name=fallback_name,
                                 category=category,
                                 overwrites=overwrites,
@@ -1511,7 +1510,7 @@ class ChampionsCircle(commands.Cog):
                             )
                             created_ids.append(channel.id)
                             failed_details.append(
-                                f"Team {index}: text channel name fallback used ({name} -> {fallback_name})"
+                                f"Team {index}: voice channel name fallback used ({name} -> {fallback_name})"
                             )
                             continue
                         except discord.HTTPException as retry_exc:
@@ -1583,8 +1582,7 @@ class ChampionsCircle(commands.Cog):
         failed: List[int] = []
         failed_details: List[str] = []
         for index in range(1, team_count + 1):
-            emoji = self._team_emoji(index)
-            name = f"{emoji}-{self._slugify_channel_name(f'{prefix} {index}')}"
+            name = self._slugify_channel_name(f"{prefix} {index}")
             channel = existing_channels.get(index)
             team_role = team_roles.get(index)
             if team_role is None:
@@ -1655,17 +1653,15 @@ class ChampionsCircle(commands.Cog):
         bot_member = guild.me or guild.get_member(self.bot.user.id)
         if bot_member:
             perms = bot_member.guild_permissions
-            if not perms.manage_roles or not perms.manage_channels or not perms.manage_permissions:
+            if not perms.manage_roles or not perms.manage_channels:
                 await self._notify_team_asset_issue(
                     guild,
                     message=(
                         "Bot lacks required permissions to create team assets. "
-                        "manage_roles={manage_roles}, manage_channels={manage_channels}, "
-                        "manage_permissions={manage_permissions}"
+                        "manage_roles={manage_roles}, manage_channels={manage_channels}"
                     ).format(
                         manage_roles=perms.manage_roles,
                         manage_channels=perms.manage_channels,
-                        manage_permissions=perms.manage_permissions,
                     ),
                 )
                 return
@@ -1675,7 +1671,6 @@ class ChampionsCircle(commands.Cog):
             overwrites[bot_member] = discord.PermissionOverwrite(
                 view_channel=True,
                 manage_channels=True,
-                manage_permissions=True,
                 connect=True,
                 speak=True,
                 send_messages=True,
