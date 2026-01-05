@@ -1110,6 +1110,29 @@ class ChampionsCircle(commands.Cog):
     ) -> Optional[discord.CategoryChannel]:
         category = next((c for c in guild.categories if c.name.lower() == name.lower()), None)
         if category:
+            bot_member = guild.me or guild.get_member(self.bot.user.id)
+            if bot_member:
+                perms = category.permissions_for(bot_member)
+                if not (perms.view_channel and perms.manage_channels and perms.manage_permissions):
+                    fallback_name = name
+                    for suffix in range(2, 6):
+                        candidate = f"{name} ({suffix})"
+                        if not any(c.name.lower() == candidate.lower() for c in guild.categories):
+                            fallback_name = candidate
+                            break
+                    await self._notify_team_asset_issue(
+                        guild,
+                        message=(
+                            f"Existing category `{category.name}` blocks bot permissions. "
+                            f"Creating new category `{fallback_name}`."
+                        ),
+                    )
+                    try:
+                        return await guild.create_category(
+                            name=fallback_name, reason="Champions Circle setup"
+                        )
+                    except discord.HTTPException:
+                        return None
             return category
         try:
             return await guild.create_category(name=name, reason="Champions Circle setup")
@@ -1600,12 +1623,17 @@ class ChampionsCircle(commands.Cog):
         bot_member = guild.me or guild.get_member(self.bot.user.id)
         if bot_member:
             perms = bot_member.guild_permissions
-            if not perms.manage_roles or not perms.manage_channels:
+            if not perms.manage_roles or not perms.manage_channels or not perms.manage_permissions:
                 await self._notify_team_asset_issue(
                     guild,
                     message=(
                         "Bot lacks required permissions to create team assets. "
-                        f"manage_roles={perms.manage_roles}, manage_channels={perms.manage_channels}"
+                        "manage_roles={manage_roles}, manage_channels={manage_channels}, "
+                        "manage_permissions={manage_permissions}"
+                    ).format(
+                        manage_roles=perms.manage_roles,
+                        manage_channels=perms.manage_channels,
+                        manage_permissions=perms.manage_permissions,
                     ),
                 )
                 return
