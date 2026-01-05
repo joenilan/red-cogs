@@ -638,7 +638,6 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).team_voice_channel_ids.set([])
         await self.config.guild(ctx.guild).team_text_channel_ids.set([])
         await self.config.guild(ctx.guild).team_role_ids.set([])
-        await self.config.guild(ctx.guild).team_captain_role_id.set(None)
         await self.config.guild(ctx.guild).challonge_links.set({})
         await self.config.guild(ctx.guild).challonge_link_last_reminder.set({})
         await self.config.guild(ctx.guild).challonge_team_map.set({})
@@ -1738,11 +1737,36 @@ class ChampionsCircle(commands.Cog):
         captain_role_id = await self.config.guild(guild).team_captain_role_id()
         captain_role = guild.get_role(captain_role_id) if captain_role_id else None
         if captain_role:
-            try:
-                await captain_role.delete(reason="Champions Circle cleanup")
-            except discord.HTTPException:
-                pass
-        await self.config.guild(guild).team_captain_role_id.set(None)
+            bot_member = guild.me or guild.get_member(self.bot.user.id)
+            if not bot_member:
+                self.logger.error("Cannot delete Team Captain role: bot member not found.")
+            elif not bot_member.guild_permissions.manage_roles:
+                await self._notify_team_asset_issue(
+                    guild,
+                    message="Cannot delete Team Captain role: bot lacks Manage Roles.",
+                )
+            elif captain_role >= bot_member.top_role:
+                await self._notify_team_asset_issue(
+                    guild,
+                    message=(
+                        "Cannot delete Team Captain role: role is above the bot. "
+                        "Move the bot role above Team Captain."
+                    ),
+                )
+            else:
+                try:
+                    await captain_role.delete(reason="Champions Circle cleanup")
+                    await self.config.guild(guild).team_captain_role_id.set(None)
+                except discord.HTTPException as exc:
+                    await self._notify_team_asset_issue(
+                        guild,
+                        message=(
+                            "Failed to delete Team Captain role "
+                            f"(HTTP {getattr(exc, 'status', '??')}, code {getattr(exc, 'code', 'n/a')})."
+                        ),
+                    )
+        else:
+            await self.config.guild(guild).team_captain_role_id.set(None)
         await self.config.guild(guild).score_panel_message_ids.set({})
 
     def _parse_challonge_slug(self, value: Optional[str]) -> Optional[str]:
