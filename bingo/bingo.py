@@ -90,6 +90,7 @@ class Bingo(commands.Cog):
         embed.add_field(
             name="Card Generation",
             value=(
+                "`bingo setup` - open the interactive generator\n"
                 "`bingo generate <count> [seed]` - generate one or more cards\n"
                 "`bingo tasks` - list current task pool"
             ),
@@ -169,32 +170,13 @@ class Bingo(commands.Cog):
         if count < 1 or count > 50:
             await ctx.send("Count must be between 1 and 50.")
             return
-        if not self.template_path.exists():
-            await ctx.send("Template image not found (card.jpg).")
+
+        tasks, font_path = await self._load_generation_inputs(ctx)
+        if tasks is None:
             return
 
-        tasks = await self.config.tasks()
-        if len(tasks) < 24:
-            await ctx.send("You need at least 24 tasks to generate a card.")
-            return
-
-        font_path = await self.config.font_path()
-        if seed is None:
-            seed = random.SystemRandom().randint(1, 2**32 - 1)
-
-        timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_dir = cog_data_path(self) / "generated" / timestamp
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        output_files: List[Path] = []
         async with ctx.typing():
-            for i in range(count):
-                card_seed = seed + i
-                rng = random.Random(card_seed)
-                card_tasks = rng.sample(tasks, k=24)
-                output_path = out_dir / f"bingo_card_{i + 1:02d}.png"
-                self._render_card(card_tasks, output_path, font_path)
-                output_files.append(output_path)
+            output_files, seed, out_dir = self._generate_cards(count, seed, tasks, font_path)
 
         if count == 1:
             await ctx.send(
@@ -202,26 +184,13 @@ class Bingo(commands.Cog):
                 file=discord.File(str(output_files[0]), filename=output_files[0].name),
             )
             return
+        await self._send_zip_if_possible(ctx.channel, output_files, seed, count, out_dir)
 
-        zip_path = out_dir / "bingo_cards.zip"
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for path in output_files:
-                zf.write(path, arcname=path.name)
-
-        zip_size = zip_path.stat().st_size
-        max_upload = 8 * 1024 * 1024
-        if zip_size > max_upload:
-            await ctx.send(
-                f"Generated {count} cards with base seed {seed}. "
-                f"Zip is too large to upload ({zip_size / (1024 * 1024):.1f} MB). "
-                f"Find files at: {zip_path}"
-            )
-            return
-
-        await ctx.send(
-            f"Generated {count} cards with base seed {seed}.",
-            file=discord.File(str(zip_path), filename=zip_path.name),
-        )
+    @bingo.command(name="setup")
+    async def bingo_setup(self, ctx: commands.Context) -> None:
+        """Open the interactive generator modal."""
+        view = BingoSetupView(self, ctx.author.id)
+        await ctx.send("Click to open the bingo generator:", view=view)
 
     def _render_card(self, tasks: List[str], output_path: Path, font_path: Optional[str]) -> None:
         base = Image.open(self.template_path).convert("RGBA")
@@ -354,3 +323,257 @@ class Bingo(commands.Cog):
         if png_path.exists():
             return png_path
         return folder / "card.jpg"
+
+    async def _load_generation_inputs(
+        self, ctx: commands.Context
+    ) -> Tuple[Optional[List[str]], Optional[str]]:
+        if not self.template_path.exists():
+            await ctx.send("Template image not found (card.jpg).")
+            return None, None
+
+        tasks = await self.config.tasks()
+        if len(tasks) < 24:
+            await ctx.send("You need at least 24 tasks to generate a card.")
+            return None, None
+
+        font_path = await self.config.font_path()
+        return tasks, font_path
+
+    def _generate_cards(
+        self,
+        count: int,
+        seed: Optional[int],
+        tasks: List[str],
+        font_path: Optional[str],
+    ) -> Tuple[List[Path], int, Path]:
+        if seed is None:
+            seed = random.SystemRandom().randint(1, 2**32 - 1)
+
+        timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = cog_data_path(self) / "generated" / timestamp
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        output_files: List[Path] = []
+        for i in range(count):
+            card_seed = seed + i
+            rng = random.Random(card_seed)
+            card_tasks = rng.sample(tasks, k=24)
+            output_path = out_dir / f"bingo_card_{i + 1:02d}.png"
+            self._render_card(card_tasks, output_path, font_path)
+            output_files.append(output_path)
+
+        return output_files, seed, out_dir
+
+    async def _send_zip_if_possible(
+        self,
+        channel: discord.abc.Messageable,
+        output_files: List[Path],
+        seed: int,
+        count: int,
+        out_dir: Path,
+        role: Optional[discord.Role] = None,
+    ) -> Optional[Path]:
+        zip_path = out_dir / "bingo_cards.zip"
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for path in output_files:
+                zf.write(path, arcname=path.name)
+
+        zip_size = zip_path.stat().st_size
+        max_upload = 8 * 1024 * 1024
+        if zip_size > max_upload:
+            await channel.send(
+                f"Generated {count} cards with base seed {seed}. "
+                f"Zip is too large to upload ({zip_size / (1024 * 1024):.1f} MB). "
+                f"Find files at: {zip_path}"
+            )
+            return None
+
+        content = None
+        allowed_mentions = discord.AllowedMentions.none()
+        if role:
+            content = role.mention
+            allowed_mentions = discord.AllowedMentions(roles=[role])
+
+        await channel.send(
+            content=content,
+            file=discord.File(str(zip_path), filename=zip_path.name),
+            allowed_mentions=allowed_mentions,
+        )
+        return zip_path
+
+
+class BingoSetupView(discord.ui.View):
+    def __init__(self, cog: Bingo, author_id: int):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.author_id = author_id
+        self.add_item(BingoSetupButton(cog))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "Only the command invoker can use this setup.", ephemeral=True
+            )
+            return False
+        return True
+
+
+class BingoSetupButton(discord.ui.Button):
+    def __init__(self, cog: Bingo):
+        super().__init__(label="Open Bingo Generator", style=discord.ButtonStyle.green)
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(BingoPostModal(self.cog, interaction.guild))
+
+
+class BingoPostModal(discord.ui.Modal, title="Generate Bingo Cards"):
+    def __init__(self, cog: Bingo, guild: Optional[discord.Guild]):
+        super().__init__()
+        self.cog = cog
+        self.guild = guild
+
+        self.count = discord.ui.TextInput(
+            label="How many cards?",
+            default="1",
+            required=True,
+        )
+        self.seed = discord.ui.TextInput(
+            label="Seed (optional)",
+            required=False,
+        )
+        self.add_item(self.count)
+        self.add_item(self.seed)
+
+        self.channel_select = self._build_channel_select()
+        if self.channel_select:
+            label = discord.ui.Label(
+                text="Target channel",
+                description="Select where the card should be posted.",
+                component=self.channel_select,
+            )
+            self.add_item(label)
+
+        self.role_select = self._build_role_select()
+        if self.role_select:
+            label = discord.ui.Label(
+                text="Ping role (optional)",
+                description="Select a role to ping with the card.",
+                component=self.role_select,
+            )
+            self.add_item(label)
+
+    def _build_channel_select(self) -> Optional[discord.ui.Select]:
+        if not self.guild:
+            return None
+        options = [
+            discord.SelectOption(label=f"#{ch.name}", value=str(ch.id))
+            for ch in self.guild.text_channels[:25]
+        ]
+        if not options:
+            return None
+        select_cls = getattr(discord.ui, "StringSelect", discord.ui.Select)
+        return select_cls(
+            placeholder="Select a channel",
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+
+    def _build_role_select(self) -> Optional[discord.ui.Select]:
+        if not self.guild:
+            return None
+        roles = [r for r in self.guild.roles if r.name != "@everyone"]
+        roles = sorted(roles, key=lambda r: r.position, reverse=True)[:25]
+        if not roles:
+            return None
+        options = [discord.SelectOption(label=r.name, value=str(r.id)) for r in roles]
+        select_cls = getattr(discord.ui, "StringSelect", discord.ui.Select)
+        return select_cls(
+            placeholder="Select a role (optional)",
+            options=options,
+            min_values=0,
+            max_values=1,
+        )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "This command can only be used in a server.", ephemeral=True
+            )
+            return
+
+        try:
+            count = int(self.count.value.strip())
+        except ValueError:
+            await interaction.response.send_message("Count must be a number.", ephemeral=True)
+            return
+        if count < 1 or count > 50:
+            await interaction.response.send_message(
+                "Count must be between 1 and 50.", ephemeral=True
+            )
+            return
+
+        seed = None
+        seed_value = self.seed.value.strip()
+        if seed_value:
+            try:
+                seed = int(seed_value)
+            except ValueError:
+                await interaction.response.send_message("Seed must be a number.", ephemeral=True)
+                return
+
+        channel_id = None
+        if self.channel_select and self.channel_select.values:
+            channel_id = int(self.channel_select.values[0])
+        if not channel_id:
+            await interaction.response.send_message("Select a target channel.", ephemeral=True)
+            return
+        channel = interaction.guild.get_channel(channel_id)
+        if channel is None:
+            await interaction.response.send_message("Channel not found.", ephemeral=True)
+            return
+
+        role = None
+        if self.role_select and self.role_select.values:
+            role_id = int(self.role_select.values[0])
+            role = interaction.guild.get_role(role_id)
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        tasks = await self.cog.config.tasks()
+        if len(tasks) < 24:
+            await interaction.followup.send(
+                "You need at least 24 tasks to generate a card.", ephemeral=True
+            )
+            return
+        if not self.cog.template_path.exists():
+            await interaction.followup.send(
+                "Template image not found (card.jpg).", ephemeral=True
+            )
+            return
+
+        font_path = await self.cog.config.font_path()
+        output_files, seed, out_dir = self.cog._generate_cards(count, seed, tasks, font_path)
+
+        if count == 1:
+            await channel.send(
+                content=role.mention if role else None,
+                file=discord.File(str(output_files[0]), filename=output_files[0].name),
+                allowed_mentions=discord.AllowedMentions(roles=[role]) if role else None,
+            )
+        else:
+            zip_path = await self.cog._send_zip_if_possible(
+                channel, output_files, seed, count, out_dir, role
+            )
+            if zip_path is None:
+                await interaction.followup.send(
+                    "Zip was too large to upload. Check the channel for the local path.",
+                    ephemeral=True,
+                )
+                return
+
+        await interaction.followup.send(
+            f"Posted {count} card(s) to {channel.mention}.",
+            ephemeral=True,
+        )
