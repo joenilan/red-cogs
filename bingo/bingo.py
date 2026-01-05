@@ -484,15 +484,16 @@ class BingoPostModal(discord.ui.Modal, title="Generate Bingo Cards"):
         if not self.guild:
             return None
         roles = [r for r in self.guild.roles if r.name != "@everyone"]
-        roles = sorted(roles, key=lambda r: r.position, reverse=True)[:25]
+        roles = sorted(roles, key=lambda r: r.position, reverse=True)[:24]
         if not roles:
             return None
-        options = [discord.SelectOption(label=r.name, value=str(r.id)) for r in roles]
+        options = [discord.SelectOption(label="No role ping", value="none")]
+        options.extend(discord.SelectOption(label=r.name, value=str(r.id)) for r in roles)
         select_cls = getattr(discord.ui, "StringSelect", discord.ui.Select)
         return select_cls(
-            placeholder="Select a role (optional)",
+            placeholder="Select a role",
             options=options,
-            min_values=0,
+            min_values=1,
             max_values=1,
         )
 
@@ -536,8 +537,10 @@ class BingoPostModal(discord.ui.Modal, title="Generate Bingo Cards"):
 
         role = None
         if self.role_select and self.role_select.values:
-            role_id = int(self.role_select.values[0])
-            role = interaction.guild.get_role(role_id)
+            selected_role = self.role_select.values[0]
+            if selected_role != "none":
+                role_id = int(selected_role)
+                role = interaction.guild.get_role(role_id)
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
