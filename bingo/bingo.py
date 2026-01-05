@@ -585,7 +585,6 @@ class Bingo(commands.Cog):
             marked.discard(index)
         card["marked"] = sorted(marked)
         cards[str(ctx.channel.id)] = card
-        await self.config.guild(ctx.guild).cards.set(cards)
 
         output_path = self._active_card_path(ctx.channel.id)
         font_path = await self.config.font_path()
@@ -596,7 +595,10 @@ class Bingo(commands.Cog):
 
         async with ctx.typing():
             self._render_card(tasks, output_path, font_path, marked)
-            await self._send_or_update_card(ctx.channel, card, output_path)
+            await self._send_or_update_card(ctx.channel, card, output_path, bump=True)
+
+        cards[str(ctx.channel.id)] = card
+        await self.config.guild(ctx.guild).cards.set(cards)
 
     async def _require_editor(self, ctx: commands.Context, card: dict) -> bool:
         if ctx.author.guild_permissions.administrator:
@@ -634,6 +636,7 @@ class Bingo(commands.Cog):
         *,
         mention_role: Optional[discord.Role] = None,
         mention_user_id: Optional[int] = None,
+        bump: bool = False,
     ) -> None:
         message_id = card.get("message_id")
         allowed_mentions = discord.AllowedMentions.none()
@@ -647,12 +650,32 @@ class Bingo(commands.Cog):
                 content = member.mention
                 allowed_mentions = discord.AllowedMentions(users=[member])
 
-        if message_id:
+        if message_id and bump:
+            try:
+                message = await channel.fetch_message(int(message_id))
+                try:
+                    await message.delete()
+                except (discord.Forbidden, discord.HTTPException):
+                    try:
+                        await message.edit(
+                            content=content,
+                            attachments=[],
+                            files=[discord.File(str(output_path), filename=output_path.name)],
+                            allowed_mentions=allowed_mentions,
+                        )
+                        return
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        pass
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+        if message_id and not bump:
             try:
                 message = await channel.fetch_message(int(message_id))
                 await message.edit(
                     content=content,
-                    attachments=[discord.File(str(output_path), filename=output_path.name)],
+                    attachments=[],
+                    files=[discord.File(str(output_path), filename=output_path.name)],
                     allowed_mentions=allowed_mentions,
                 )
                 return
