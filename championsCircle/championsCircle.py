@@ -606,14 +606,15 @@ class ChampionsCircle(commands.Cog):
         channel = ctx.channel
         await ctx.send("Ending tournament and clearing channel...")
 
+        purge_failed = False
         try:
             await channel.purge(limit=None)
         except discord.Forbidden:
-            await ctx.send("I don't have permission to delete messages in this channel.")
-            return
+            purge_failed = True
+            await ctx.send("I don't have permission to delete messages in this channel. Continuing reset.")
         except discord.HTTPException:
-            await ctx.send("An error occurred while trying to delete messages.")
-            return
+            purge_failed = True
+            await ctx.send("An error occurred while trying to delete messages. Continuing reset.")
 
         # Reset cog state
         await self.config.guild(ctx.guild).active_applications.set([])
@@ -661,7 +662,16 @@ class ChampionsCircle(commands.Cog):
             self.logger.error(f"Champions role with ID {await self.config.guild(ctx.guild).champions_role_id()} not found.")
 
         # Send a temporary message that will be deleted after 10 seconds
-        temp_msg = await channel.send("Tournament ended. Channel cleared, cog state reset, and application cooldowns reset. You can now use the tourney start command for a new tournament.", delete_after=10)
+        if purge_failed:
+            await channel.send(
+                "Tournament ended. Channel messages were not cleared, but cog state and applications were reset.",
+                delete_after=10,
+            )
+        else:
+            await channel.send(
+                "Tournament ended. Channel cleared, cog state reset, and application cooldowns reset. You can now use the tourney start command for a new tournament.",
+                delete_after=10,
+            )
 
     @commands.group(name="ccscore")
     @commands.guild_only()
