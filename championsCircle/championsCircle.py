@@ -1175,6 +1175,28 @@ class ChampionsCircle(commands.Cog):
             )
         return overwrites
 
+    def _build_fallback_overwrites(
+        self,
+        guild: discord.Guild,
+        *,
+        is_voice: bool,
+    ) -> Dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
+        overwrites: Dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        }
+        bot_member = guild.me or guild.get_member(self.bot.user.id)
+        if bot_member:
+            overwrites[bot_member] = discord.PermissionOverwrite(
+                view_channel=True,
+                manage_channels=True,
+                manage_permissions=True,
+                connect=True if is_voice else None,
+                speak=True if is_voice else None,
+                send_messages=None if is_voice else True,
+                read_message_history=None if is_voice else True,
+            )
+        return overwrites
+
     async def _get_team_number_for_channel(
         self, guild: discord.Guild, channel: discord.abc.GuildChannel
     ) -> Optional[int]:
@@ -1500,18 +1522,23 @@ class ChampionsCircle(commands.Cog):
                 existing_channels[team_number] = channel
 
         created_ids: List[int] = []
+        missing_roles: List[int] = []
         for index in range(1, team_count + 1):
             emoji = self._team_emoji(index)
             name = f"{emoji}-{self._slugify_channel_name(f'{prefix} {index}')}"
             channel = existing_channels.get(index)
             team_role = team_roles.get(index)
-            if team_role is None:
-                continue
             if channel is None:
                 try:
-                    overwrites = self._build_team_overwrites(
-                        guild, team_role=team_role, is_voice=False
-                    )
+                    if team_role:
+                        overwrites = self._build_team_overwrites(
+                            guild, team_role=team_role, is_voice=False
+                        )
+                    else:
+                        missing_roles.append(index)
+                        overwrites = self._build_fallback_overwrites(
+                            guild, is_voice=False
+                        )
                     channel = await guild.create_text_channel(
                         name=name,
                         category=category,
@@ -1527,17 +1554,26 @@ class ChampionsCircle(commands.Cog):
                     except discord.HTTPException:
                         pass
                 overwrites = dict(channel.overwrites)
-                overwrites.update(
-                    self._build_team_overwrites(
-                        guild, team_role=team_role, is_voice=False
+                if team_role:
+                    overwrites.update(
+                        self._build_team_overwrites(
+                            guild, team_role=team_role, is_voice=False
+                        )
                     )
-                )
+                else:
+                    missing_roles.append(index)
+                    overwrites.update(self._build_fallback_overwrites(guild, is_voice=False))
                 try:
                     await channel.edit(overwrites=overwrites)
                 except discord.HTTPException:
                     pass
             created_ids.append(channel.id)
         await self.config.guild(guild).team_text_channel_ids.set(created_ids)
+        if missing_roles:
+            self.logger.error(
+                "Missing team roles for teams: %s. Check Manage Roles and role hierarchy.",
+                ", ".join(str(team) for team in sorted(set(missing_roles))),
+            )
         return created_ids
 
     async def _create_team_voice_assets(self, guild: discord.Guild) -> None:
