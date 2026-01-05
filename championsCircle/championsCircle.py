@@ -67,6 +67,7 @@ class ChampionsCircle(commands.Cog):
             "challonge_sync_roles_enabled": True,
             "challonge_sync_roles_interval": 15,
             "score_panel_message_ids": {},
+            "score_active_round": None,
             # Draft system
             "draft_assignments": {},  # {team_number: [user_id, user_id, ...]}
             "draft_captains": {},  # {team_number: user_id}
@@ -687,6 +688,7 @@ class ChampionsCircle(commands.Cog):
             await ctx.send("Use `ccscore report <match_id> <score>` or `ccscore panel`.")
 
     @ccscore.command(name="panel")
+    @commands.admin_or_permissions(manage_guild=True)
     async def ccscore_panel(self, ctx):
         """Post a score report button in the current voice channel chat."""
         if not isinstance(ctx.channel, (discord.VoiceChannel, discord.StageChannel)):
@@ -704,6 +706,39 @@ class ChampionsCircle(commands.Cog):
             await ctx.send("Only team captains or mods can post the score panel.")
             return
         await ctx.send("Use the button below to report your match score:", view=ScoreReportView(self))
+
+    @ccscore.command(name="round")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def ccscore_round(self, ctx, *, value: Optional[str] = None):
+        """Set the active round for score reporting and post buttons."""
+        if value is None:
+            current = await self.config.guild(ctx.guild).score_active_round()
+            if current is None:
+                await ctx.send("No active round is set.")
+            else:
+                await ctx.send(f"Active round: {current}")
+            return
+
+        cleaned = value.strip().lower()
+        if cleaned in {"clear", "none", "off", "disable"}:
+            await self.config.guild(ctx.guild).score_active_round.set(None)
+            await self._clear_score_panels(ctx.guild)
+            await ctx.send("Cleared active round and removed score panels.")
+            return
+
+        try:
+            round_number = int(cleaned)
+        except ValueError:
+            await ctx.send("Round must be a number or `clear`.")
+            return
+        if round_number == 0:
+            await self.config.guild(ctx.guild).score_active_round.set(None)
+            await self._clear_score_panels(ctx.guild)
+            await ctx.send("Cleared active round and removed score panels.")
+            return
+        await self.config.guild(ctx.guild).score_active_round.set(round_number)
+        await self._post_score_panels(ctx.guild)
+        await ctx.send(f"Active round set to {round_number}. Score panels posted.")
 
     @ccscore.command(name="report")
     async def ccscore_report(self, ctx, match_id: int, score: str):
@@ -1293,6 +1328,9 @@ class ChampionsCircle(commands.Cog):
         voice_channel_ids = await self.config.guild(guild).team_voice_channel_ids()
         if not voice_channel_ids:
             return
+        active_round = await self.config.guild(guild).score_active_round()
+        if active_round is None:
+            return
         panel_map = await self.config.guild(guild).score_panel_message_ids()
         if not isinstance(panel_map, dict):
             panel_map = {}
@@ -1310,10 +1348,11 @@ class ChampionsCircle(commands.Cog):
                         message = await channel.fetch_message(existing_id)
                 except discord.HTTPException:
                     message = None
+            content = f"Round {active_round} is open. Use the button below to report your match score:"
             if message:
                 try:
                     await message.edit(
-                        content="Use the button below to report your match score:",
+                        content=content,
                         view=ScoreReportView(self),
                     )
                     updated_map[str(channel_id)] = message.id
@@ -1322,13 +1361,32 @@ class ChampionsCircle(commands.Cog):
                     message = None
             try:
                 message = await channel.send(
-                    "Use the button below to report your match score:",
+                    content,
                     view=ScoreReportView(self),
                 )
                 updated_map[str(channel_id)] = message.id
             except discord.HTTPException:
                 continue
         await self.config.guild(guild).score_panel_message_ids.set(updated_map)
+
+    async def _clear_score_panels(self, guild: discord.Guild) -> None:
+        panel_map = await self.config.guild(guild).score_panel_message_ids()
+        if not isinstance(panel_map, dict):
+            panel_map = {}
+        for channel_id, message_id in list(panel_map.items()):
+            channel = guild.get_channel(int(channel_id))
+            if not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
+                continue
+            try:
+                if hasattr(channel, "fetch_message"):
+                    message = await channel.fetch_message(message_id)
+                else:
+                    message = None
+                if message:
+                    await message.delete()
+            except discord.HTTPException:
+                continue
+        await self.config.guild(guild).score_panel_message_ids.set({})
 
     async def _get_participant_name_map(self, guild: discord.Guild) -> Dict[int, str]:
         api_key, slug = await self._get_challonge_credentials(guild)
@@ -1350,7 +1408,7 @@ class ChampionsCircle(commands.Cog):
         return name_map
 
     async def _get_open_matches_for_participant(
-        self, guild: discord.Guild, participant_id: int
+        self, guild: discord.Guild, participant_id: int, *, round_filter: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         api_key, slug = await self._get_challonge_credentials(guild)
         if not api_key or not slug:
@@ -1366,6 +1424,8 @@ class ChampionsCircle(commands.Cog):
             match = entry.get("match", {})
             state = match.get("state")
             if state not in {"open", "pending"}:
+                continue
+            if round_filter is not None and match.get("round") != round_filter:
                 continue
             p1 = match.get("player1_id") or match.get("participant1_id")
             p2 = match.get("player2_id") or match.get("participant2_id")
@@ -1524,10 +1584,14 @@ class ChampionsCircle(commands.Cog):
             )
             return
 
-        matches = await self._get_open_matches_for_participant(guild, int(participant_id))
+        active_round = await self.config.guild(guild).score_active_round()
+        matches = await self._get_open_matches_for_participant(
+            guild, int(participant_id), round_filter=active_round
+        )
         if not matches:
             await interaction.response.send_message(
-                "No open matches found for your team.", ephemeral=True
+                "No open matches found for your team for the active round.",
+                ephemeral=True,
             )
             return
 
@@ -1550,7 +1614,12 @@ class ChampionsCircle(commands.Cog):
             return
 
         view = ScoreMatchSelectView(
-            self, guild.id, int(participant_id), matches, name_map
+            self,
+            guild.id,
+            int(participant_id),
+            matches,
+            name_map,
+            round_filter=active_round,
         )
         await interaction.response.send_message(
             "Select the match you want to report:",
@@ -4477,8 +4546,8 @@ class ChampionsCircle(commands.Cog):
         embed.add_field(
             name="Score Reporting",
             value=(
-                "`ccscore report <match_id> <score>` - submit a score (requires team role)\n"
-                "`ccscore panel` - post a score report button in team voice chat"
+                "`ccscore round <number|clear>` - set the active round and post score buttons\n"
+                "`ccscore report <match_id> <score>` - submit a score (requires team role)"
             ),
             inline=False,
         )
@@ -5505,11 +5574,13 @@ class ScoreMatchSelectView(discord.ui.View):
         participant_id: int,
         matches: List[Dict[str, Any]],
         name_map: Dict[int, str],
+        round_filter: Optional[int] = None,
     ):
         super().__init__(timeout=300)
         self.cog = cog
         self.guild_id = guild_id
         self.participant_id = participant_id
+        self.round_filter = round_filter
 
         options = []
         for match in matches:
@@ -5542,7 +5613,7 @@ class ScoreMatchSelectView(discord.ui.View):
         name_map = await self.cog._get_participant_name_map(interaction.guild)
         opponent_name = None
         matches = await self.cog._get_open_matches_for_participant(
-            interaction.guild, self.participant_id
+            interaction.guild, self.participant_id, round_filter=self.round_filter
         )
         for match in matches:
             if int(match.get("id", 0)) == match_id:
