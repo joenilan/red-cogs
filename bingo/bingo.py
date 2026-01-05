@@ -50,6 +50,7 @@ CELL_COLS = [(340, 800), (896, 1352), (1444, 1904), (1996, 2460), (2552, 3012)]
 CELL_ROWS = [(1600, 2060), (2180, 2640), (2760, 3220), (3340, 3800), (3916, 4380)]
 
 CENTER_CELL = (2, 2)
+FREE_SPACE_INDEX = CENTER_CELL[0] * 5 + CENTER_CELL[1] + 1
 CELL_PADDING = 10
 TEXT_COLOR = (20, 20, 20)
 LINE_SPACING = 1
@@ -117,6 +118,7 @@ class Bingo(commands.Cog):
             name="Editor Controls",
             value=(
                 "`bingo editrole @role` - set a default editor role\n"
+                "`bingo select` - open a dropdown to mark a square\n"
                 "`bingo mark <index>` - mark a square (1-25)\n"
                 "`bingo unmark <index>` - unmark a square"
             ),
@@ -244,6 +246,35 @@ class Bingo(commands.Cog):
     async def bingo_unmark(self, ctx: commands.Context, index: int) -> None:
         """Unmark a square on the current channel's card."""
         await self._update_card_mark(ctx, index, False)
+
+    @bingo.command(name="select")
+    async def bingo_select(self, ctx: commands.Context) -> None:
+        """Select a square to mark from a dropdown."""
+        cards = await self.config.guild(ctx.guild).cards()
+        card = cards.get(str(ctx.channel.id))
+        if not card:
+            await ctx.send("No tracked bingo card in this channel. Use `!bingo setup`.")
+            return
+
+        if not await self._require_editor(ctx, card):
+            return
+
+        tasks = card.get("tasks") or []
+        if len(tasks) != 24:
+            await ctx.send("Stored card data is invalid. Regenerate the card.")
+            return
+
+        task_map = self._task_map(tasks)
+        marked = set(card.get("marked") or [])
+        marked.add(FREE_SPACE_INDEX)
+        view = BingoMarkSelectView(
+            self,
+            author_id=ctx.author.id,
+            channel=ctx.channel,
+            task_map=task_map,
+            marked=marked,
+        )
+        await ctx.send("Select a square to mark:", view=view)
 
     def _render_card(
         self,
@@ -477,12 +508,13 @@ class Bingo(commands.Cog):
         out_dir = cog_data_path(self) / "generated" / timestamp
         out_dir.mkdir(parents=True, exist_ok=True)
         output_path = out_dir / "bingo_card_01.png"
-        self._render_card(card_tasks, output_path, font_path, marked=set())
+        marked = {FREE_SPACE_INDEX}
+        self._render_card(card_tasks, output_path, font_path, marked=marked)
 
         stored_role_id = editor_role.id if editor_role and editor_user_id is None else None
         card_entry = {
             "tasks": card_tasks,
-            "marked": [],
+            "marked": sorted(marked),
             "seed": card_seed,
             "message_id": None,
             "editor_role_id": stored_role_id,
@@ -564,70 +596,105 @@ class Bingo(commands.Cog):
         return zip_path
 
     async def _update_card_mark(self, ctx: commands.Context, index: int, mark: bool) -> None:
-        if index < 1 or index > 25:
-            await ctx.send("Index must be between 1 and 25.")
-            return
-        if index == 13:
-            await ctx.send("Center is the free space and cannot be marked.")
-            return
-
-        cards = await self.config.guild(ctx.guild).cards()
-        card = cards.get(str(ctx.channel.id))
-        if not card:
-            await ctx.send("No tracked bingo card in this channel. Use `!bingo setup`.")
-            return
-        if not await self._require_editor(ctx, card):
-            return
-
-        marked = set(card.get("marked") or [])
-        if mark:
-            marked.add(index)
-        else:
-            marked.discard(index)
-        card["marked"] = sorted(marked)
-        cards[str(ctx.channel.id)] = card
-
-        output_path = self._active_card_path(ctx.channel.id)
-        font_path = await self.config.font_path()
-        tasks = card.get("tasks") or []
-        if len(tasks) != 24:
-            await ctx.send("Stored card data is invalid. Regenerate the card.")
-            return
-
         async with ctx.typing():
-            self._render_card(tasks, output_path, font_path, marked)
-            await self._send_or_update_card(ctx.channel, card, output_path, bump=True)
-
-        cards[str(ctx.channel.id)] = card
-        await self.config.guild(ctx.guild).cards.set(cards)
+            ok, message = await self._apply_card_mark(
+                guild=ctx.guild,
+                channel=ctx.channel,
+                user=ctx.author,
+                index=index,
+                mark=mark,
+            )
+        if not ok and message:
+            await ctx.send(message)
 
     async def _require_editor(self, ctx: commands.Context, card: dict) -> bool:
-        if ctx.author.guild_permissions.administrator:
-            return True
+        allowed, reason = await self._can_edit(ctx.author, card)
+        if not allowed and reason:
+            await ctx.send(reason)
+        return allowed
+
+    async def _can_edit(self, member: discord.Member, card: dict) -> Tuple[bool, Optional[str]]:
+        if member.guild_permissions.administrator:
+            return True, None
         editor_user_id = card.get("editor_user_id")
         if editor_user_id:
-            if ctx.author.id == editor_user_id:
-                return True
-            await ctx.send("Only the assigned editor can edit this card.")
-            return False
+            if member.id == editor_user_id:
+                return True, None
+            return False, "Only the assigned editor can edit this card."
 
         editor_role_id = card.get("editor_role_id")
         if editor_role_id:
-            role = ctx.guild.get_role(editor_role_id)
-            if role and role in ctx.author.roles:
-                return True
-            await ctx.send("Only the assigned role can edit this card.")
-            return False
+            role = member.guild.get_role(editor_role_id)
+            if role and role in member.roles:
+                return True, None
+            return False, "Only the assigned role can edit this card."
 
-        role_id = await self.config.guild(ctx.guild).editor_role_id()
+        role_id = await self.config.guild(member.guild).editor_role_id()
         if not role_id:
-            await ctx.send("No editor role is configured. Use `!bingo editrole`.")
-            return False
-        role = ctx.guild.get_role(role_id)
-        if role and role in ctx.author.roles:
-            return True
-        await ctx.send("Only the editor role can edit this card.")
-        return False
+            return False, "No editor role is configured. Use `!bingo editrole`."
+        role = member.guild.get_role(role_id)
+        if role and role in member.roles:
+            return True, None
+        return False, "Only the editor role can edit this card."
+
+    async def _apply_card_mark(
+        self,
+        *,
+        guild: discord.Guild,
+        channel: discord.TextChannel,
+        user: discord.Member,
+        index: int,
+        mark: bool,
+    ) -> Tuple[bool, Optional[str]]:
+        if index < 1 or index > 25:
+            return False, "Index must be between 1 and 25."
+        if index == FREE_SPACE_INDEX:
+            return False, "Free space is always marked."
+
+        cards = await self.config.guild(guild).cards()
+        card = cards.get(str(channel.id))
+        if not card:
+            return False, "No tracked bingo card in this channel. Use `!bingo setup`."
+
+        allowed, reason = await self._can_edit(user, card)
+        if not allowed:
+            return False, reason
+
+        tasks = card.get("tasks") or []
+        if len(tasks) != 24:
+            return False, "Stored card data is invalid. Regenerate the card."
+
+        marked = set(card.get("marked") or [])
+        marked.add(FREE_SPACE_INDEX)
+        if mark:
+            if index in marked:
+                return False, "That square is already marked."
+            marked.add(index)
+        else:
+            if index not in marked:
+                return False, "That square is already unmarked."
+            marked.discard(index)
+        card["marked"] = sorted(marked)
+
+        output_path = self._active_card_path(channel.id)
+        font_path = await self.config.font_path()
+        self._render_card(tasks, output_path, font_path, marked)
+        await self._send_or_update_card(channel, card, output_path, bump=True)
+
+        cards[str(channel.id)] = card
+        await self.config.guild(guild).cards.set(cards)
+        return True, None
+
+    def _task_map(self, tasks: List[str]) -> dict:
+        mapping = {}
+        task_iter = iter(tasks)
+        for row_idx in range(5):
+            for col_idx in range(5):
+                index = row_idx * 5 + col_idx + 1
+                if (row_idx, col_idx) == CENTER_CELL:
+                    continue
+                mapping[index] = next(task_iter, "")
+        return mapping
 
     async def _send_or_update_card(
         self,
@@ -1003,3 +1070,76 @@ class BingoEditorSelectView(discord.ui.View):
             f"Posted the card to {self.channel.mention}.",
             ephemeral=True,
         )
+
+
+class BingoMarkSelectView(discord.ui.View):
+    def __init__(
+        self,
+        cog: Bingo,
+        *,
+        author_id: int,
+        channel: discord.TextChannel,
+        task_map: dict,
+        marked: set,
+    ):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.author_id = author_id
+        self.channel = channel
+
+        options = []
+        for index in sorted(task_map):
+            if index == FREE_SPACE_INDEX:
+                continue
+            task = task_map.get(index, "")
+            label = self._option_label(index, task, index in marked)
+            options.append(discord.SelectOption(label=label, value=str(index)))
+
+        select_cls = getattr(discord.ui, "StringSelect", discord.ui.Select)
+        self.square_select = select_cls(
+            placeholder="Select a square",
+            options=options[:25],
+            min_values=1,
+            max_values=1,
+        )
+        self.square_select.callback = self._select_square
+        self.add_item(self.square_select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "Only the command invoker can use this selector.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def _select_square(self, interaction: discord.Interaction) -> None:
+        index = int(self.square_select.values[0])
+        row = (index - 1) // 5 + 1
+        col = (index - 1) % 5 + 1
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        ok, message = await self.cog._apply_card_mark(
+            guild=interaction.guild,
+            channel=self.channel,
+            user=interaction.user,
+            index=index,
+            mark=True,
+        )
+        if not ok:
+            response = message or "Unable to update the card."
+        else:
+            response = f"Marked R{row}C{col}."
+
+        for item in self.children:
+            item.disabled = True
+        await interaction.message.edit(view=self)
+        await interaction.followup.send(response, ephemeral=True)
+
+    def _option_label(self, index: int, task: str, is_marked: bool) -> str:
+        row = (index - 1) // 5 + 1
+        col = (index - 1) % 5 + 1
+        prefix = "[X] " if is_marked else ""
+        label = f"{prefix}R{row}C{col} ({index}) - {task}".strip()
+        if len(label) > 100:
+            return label[:97] + "..."
+        return label
