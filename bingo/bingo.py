@@ -61,14 +61,24 @@ class Bingo(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=8352147791)
         self.config.register_global(tasks=[], font_path=None)
-        self.config.register_guild(captain_role_id=None, cards={})
+        self.config.register_guild(editor_role_id=None, cards={})
         self.template_path = self._resolve_template_path()
 
     async def cog_load(self):
         tasks = await self.config.tasks()
         if not tasks:
             await self.config.tasks.set(DEFAULT_TASKS)
+        await self._migrate_editor_role()
         self._hide_non_help_commands()
+
+    async def _migrate_editor_role(self) -> None:
+        all_guilds = await self.config.all_guilds()
+        for guild_id, data in (all_guilds or {}).items():
+            if data.get("editor_role_id"):
+                continue
+            legacy_role = data.get("captain_role_id")
+            if legacy_role:
+                await self.config.guild_from_id(guild_id).editor_role_id.set(legacy_role)
 
     def _hide_non_help_commands(self) -> None:
         for command in self.walk_commands():
@@ -101,7 +111,7 @@ class Bingo(commands.Cog):
         embed.add_field(
             name="Editor Controls",
             value=(
-                "`bingo seteditorrole @role` - set a default editor role\n"
+                "`bingo editrole @role` - set a default editor role\n"
                 "`bingo mark <index>` - mark a square (1-25)\n"
                 "`bingo unmark <index>` - unmark a square"
             ),
@@ -170,28 +180,21 @@ class Bingo(commands.Cog):
         await self.config.font_path.set(str(font_file))
         await ctx.send("Font override saved.")
 
-    @bingo.command(name="seteditorrole")
-    async def bingo_seteditorrole(
+    @bingo.command(name="editrole")
+    async def bingo_editrole(
         self, ctx: commands.Context, role: Optional[discord.Role] = None
     ) -> None:
         """Set the default editor role required to edit bingo cards."""
-        await self._set_editor_role(ctx, role)
-
-    @bingo.command(name="setcaptainrole")
-    async def bingo_setcaptainrole(
-        self, ctx: commands.Context, role: Optional[discord.Role] = None
-    ) -> None:
-        """Backward-compatible alias for seteditorrole."""
         await self._set_editor_role(ctx, role)
 
     async def _set_editor_role(
         self, ctx: commands.Context, role: Optional[discord.Role]
     ) -> None:
         if role is None:
-            await self.config.guild(ctx.guild).captain_role_id.set(None)
+            await self.config.guild(ctx.guild).editor_role_id.set(None)
             await ctx.send("Editor role requirement cleared.")
             return
-        await self.config.guild(ctx.guild).captain_role_id.set(role.id)
+        await self.config.guild(ctx.guild).editor_role_id.set(role.id)
         await ctx.send(f"Editor role set to {role.mention}.")
 
     @bingo.command(name="generate")
@@ -523,9 +526,9 @@ class Bingo(commands.Cog):
             await ctx.send("Only the assigned role can edit this card.")
             return False
 
-        role_id = await self.config.guild(ctx.guild).captain_role_id()
+        role_id = await self.config.guild(ctx.guild).editor_role_id()
         if not role_id:
-            await ctx.send("No editor role is configured. Use `!bingo seteditorrole`.")
+            await ctx.send("No editor role is configured. Use `!bingo editrole`.")
             return False
         role = ctx.guild.get_role(role_id)
         if role and role in ctx.author.roles:
