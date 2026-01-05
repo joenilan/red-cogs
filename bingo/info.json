@@ -1,0 +1,14 @@
+{
+    "name": "Bingo",
+    "short": "Generate bingo cards from a template image",
+    "description": "Creates randomized bingo cards and exports them as PNG/ZIP attachments.",
+    "end_user_data_statement": "This cog stores a task list, optional font path, and generated card files.",
+    "author": ["DreadedZombie"],
+    "required_cogs": {},
+    "requirements": ["discord.py>=2.4.0", "Pillow>=10.0.0"],
+    "tags": ["bingo", "image", "tournament"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
