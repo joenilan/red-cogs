@@ -1497,9 +1497,33 @@ class ChampionsCircle(commands.Cog):
                         reason="Champions Circle setup",
                     )
                 except discord.HTTPException as exc:
-                    failed_details.append(
-                        f"Team {index}: HTTP {getattr(exc, 'status', '??')} (code {getattr(exc, 'code', 'n/a')})"
-                    )
+                    fallback_name = self._slugify_channel_name(f"{prefix} {index}")
+                    if getattr(exc, "code", None) == 50035 and fallback_name:
+                        try:
+                            overwrites = self._build_team_overwrites(
+                                guild, team_role=team_role, is_voice=False
+                            )
+                            channel = await guild.create_text_channel(
+                                name=fallback_name,
+                                category=category,
+                                overwrites=overwrites,
+                                reason="Champions Circle setup (fallback name)",
+                            )
+                            created_ids.append(channel.id)
+                            failed_details.append(
+                                f"Team {index}: text channel name fallback used ({name} -> {fallback_name})"
+                            )
+                            continue
+                        except discord.HTTPException as retry_exc:
+                            failed_details.append(
+                                f"Team {index}: HTTP {getattr(retry_exc, 'status', '??')} "
+                                f"(code {getattr(retry_exc, 'code', 'n/a')})"
+                            )
+                    else:
+                        failed_details.append(
+                            f"Team {index}: HTTP {getattr(exc, 'status', '??')} "
+                            f"(code {getattr(exc, 'code', 'n/a')})"
+                        )
                     failed.append(index)
                     continue
             else:
@@ -1533,6 +1557,10 @@ class ChampionsCircle(commands.Cog):
             )
             if failed_details:
                 self.logger.error("Voice channel create errors: %s", " | ".join(failed_details))
+                await self._notify_team_asset_issue(
+                    guild,
+                    message="Voice channel errors: " + " | ".join(failed_details),
+                )
         return created_ids
 
     async def _ensure_team_text_channels(
@@ -1609,6 +1637,10 @@ class ChampionsCircle(commands.Cog):
             )
             if failed_details:
                 self.logger.error("Text channel create errors: %s", " | ".join(failed_details))
+                await self._notify_team_asset_issue(
+                    guild,
+                    message="Text channel errors: " + " | ".join(failed_details),
+                )
         return created_ids
 
     async def _create_team_voice_assets(self, guild: discord.Guild) -> None:
