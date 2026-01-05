@@ -3562,87 +3562,8 @@ class ChampionsCircle(commands.Cog):
                         await self._save_application_list(guild, "cancelled_applications", cancelled_apps)
                         await self.update_embed(guild)
 
-                    link_required = guild_data.get("challonge_link_required", True)
-                    if link_required and approved_apps:
-                        links = await self._get_challonge_links(guild)
-                        reminder_map = await self.config.guild(guild).challonge_link_last_reminder()
-                        if not isinstance(reminder_map, dict):
-                            reminder_map = {}
-                        grace_hours = int(guild_data.get("challonge_link_grace_hours", 48))
-                        reminder_hours = int(guild_data.get("challonge_link_reminder_hours", 12))
-
-                        still_approved: List[Dict[str, Any]] = []
-                        approved_changed = False
-                        cancelled_changed = False
-                        for app in approved_apps:
-                            user_id = app.get("user_id")
-                            if not user_id:
-                                still_approved.append(app)
-                                continue
-                            link_entry = links.get(str(user_id))
-                            if link_entry:
-                                reminder_map.pop(str(user_id), None)
-                                still_approved.append(app)
-                                continue
-
-                            approved_at = int(app.get("approved_at") or app.get("timestamp") or 0)
-                            if approved_at and now_ts - approved_at > grace_hours * 3600:
-                                cancelled_apps.append(app)
-                                cancelled_changed = True
-                                approved_changed = True
-                                member = guild.get_member(user_id)
-                                role_id = await self.config.guild(guild).champions_role_id()
-                                role = guild.get_role(role_id) if role_id else None
-                                if member and role and role in member.roles:
-                                    try:
-                                        await member.remove_roles(role)
-                                    except discord.HTTPException:
-                                        self.logger.error(
-                                            "Failed to remove Champions role from %s", member.name
-                                        )
-                                if member:
-                                    await self._send_status_dm(
-                                        member=member,
-                                        guild=guild,
-                                        status_line="Your approval expired due to missing Challonge link.",
-                                        extra="You can reapply if needed.",
-                                    )
-                                await self._sync_challonge_participant(guild, user_id, add=False)
-                                await self._remove_challonge_link(guild, user_id)
-                                reminder_map.pop(str(user_id), None)
-                                continue
-
-                            last_reminder = int(reminder_map.get(str(user_id), 0))
-                            if not last_reminder or now_ts - last_reminder >= reminder_hours * 3600:
-                                member = guild.get_member(user_id)
-                                if member:
-                                    await self._send_status_dm(
-                                        member=member,
-                                        guild=guild,
-                                        status_line="Reminder: link your Challonge participant.",
-                                        extra=(
-                                            "Use the command below in the server (DMs do not work) "
-                                            "to stay eligible."
-                                        ),
-                                        command_hint=(
-                                            f"{await self._get_preferred_prefix(guild)}"
-                                            "ccchallonge link me <participant name|id>"
-                                        ),
-                                    )
-                                    reminder_map[str(user_id)] = now_ts
-                            still_approved.append(app)
-
-                        if approved_changed:
-                            await self._save_application_list(
-                                guild, "approved_applications", still_approved
-                            )
-                        if cancelled_changed:
-                            await self._save_application_list(
-                                guild, "cancelled_applications", cancelled_apps
-                            )
-                        await self.config.guild(guild).challonge_link_last_reminder.set(reminder_map)
-                        if approved_changed or cancelled_changed:
-                            await self.update_embed(guild)
+                    # Legacy linking enforcement disabled - now using draft system
+                    # Players are assigned to teams via !ccdraft, no individual linking needed
             except Exception as e:
                 self.logger.error(f"Error in close_expired_applications: {str(e)}")
 
@@ -4327,28 +4248,6 @@ class ApplicationReviewView(discord.ui.View):
         )
 
         if member:
-            link_required = await self.cog.config.guild(
-                interaction.guild
-            ).challonge_link_required()
-            link_entry = None
-            if link_required:
-                link_entry = await self.cog._get_challonge_link(
-                    interaction.guild, self.applicant_id
-                )
-
-            extra_lines = []
-            command_hint = None
-            if link_required and not link_entry:
-                grace_hours = await self.cog.config.guild(
-                    interaction.guild
-                ).challonge_link_grace_hours()
-                extra_lines.append(
-                    f"Action required: link your Challonge participant within {grace_hours} hours."
-                )
-                prefix = await self.cog._get_preferred_prefix(interaction.guild)
-                command_hint = f"{prefix}ccchallonge link me"
-                extra_lines.append("Run this command in the server (DMs do not work).")
-
             thread_url = None
             thread = interaction.guild.get_thread(entry.get("thread_id")) if entry else None
             if isinstance(thread, discord.Thread):
@@ -4358,14 +4257,12 @@ class ApplicationReviewView(discord.ui.View):
                 member=member,
                 guild=interaction.guild,
                 status_line="Your tournament application has been approved!",
-                extra="\n".join(extra_lines) if extra_lines else None,
+                extra="You're now in the draft pool. Watch for the draft to see which team you're assigned to!",
                 application_url=thread_url,
-                command_hint=command_hint,
             )
 
-        await self.cog._sync_challonge_participant(
-            interaction.guild, self.applicant_id, add=True
-        )
+        # Note: We no longer add individuals to Challonge here.
+        # Teams are created on Challonge, players assigned via !ccdraft
         await self.cog.update_embed(interaction.guild)
         await self._send_ephemeral(interaction, "Application approved.")
 
