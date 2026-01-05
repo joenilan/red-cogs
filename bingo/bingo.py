@@ -53,7 +53,8 @@ CENTER_CELL = (2, 2)
 CELL_PADDING = 10
 TEXT_COLOR = (20, 20, 20)
 LINE_SPACING = 1
-TEXT_STROKE_WIDTH = 1
+TEXT_STROKE_WIDTH = 0
+FONT_WEIGHT_PREFERENCE = ("SemiBold", "Bold", "ExtraBold", "Black")
 MAX_FONT_SIZE = 76
 MIN_FONT_SIZE = 18
 
@@ -408,7 +409,7 @@ class Bingo(commands.Cog):
                 normalized.append(name.decode("utf-8", "ignore"))
             else:
                 normalized.append(str(name))
-        for candidate in ("Bold", "SemiBold", "ExtraBold", "Black"):
+        for candidate in FONT_WEIGHT_PREFERENCE:
             if candidate in normalized:
                 try:
                     font.set_variation_by_name(candidate)
@@ -438,7 +439,7 @@ class Bingo(commands.Cog):
         y0, y1 = row
         inset = 60
         start = (x0 + inset, y0 + (y1 - y0) * 0.55)
-        mid = (x0 + (x1 - x0) * 0.45, y0 + y1 - inset)
+        mid = (x0 + (x1 - x0) * 0.45, y1 - inset)
         end = (x1 - inset, y0 + inset)
         draw.line([start, mid, end], fill=(22, 153, 74, 220), width=22, joint="curve")
 
