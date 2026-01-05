@@ -688,10 +688,12 @@ class ChampionsCircle(commands.Cog):
 
     @ccscore.command(name="panel")
     async def ccscore_panel(self, ctx):
-        """Post a score report button in the current team channel."""
+        """Post a score report button in the current channel."""
         team_number = await self._get_team_number_for_channel(ctx.guild, ctx.channel)
         if not team_number:
-            await ctx.send("This is not a team text channel.")
+            team_number = await self._get_team_number_for_member(ctx.guild, ctx.author)
+        if not team_number:
+            await ctx.send("You must have a team role to post a score panel.")
             return
         team_role = self._get_team_role_for_number(ctx.guild, team_number)
         captain_role_id = await self.config.guild(ctx.guild).team_captain_role_id()
@@ -705,7 +707,9 @@ class ChampionsCircle(commands.Cog):
         """Report a match score (format: X-Y)."""
         team_number = await self._get_team_number_for_channel(ctx.guild, ctx.channel)
         if not team_number:
-            await ctx.send("This is not a team text channel.")
+            team_number = await self._get_team_number_for_member(ctx.guild, ctx.author)
+        if not team_number:
+            await ctx.send("You must have a team role to report scores.")
             return
         team_role = self._get_team_role_for_number(ctx.guild, team_number)
         captain_role_id = await self.config.guild(ctx.guild).team_captain_role_id()
@@ -1205,6 +1209,25 @@ class ChampionsCircle(commands.Cog):
             return None
         return self._extract_team_number(channel.name or "")
 
+    async def _get_team_number_for_member(
+        self, guild: discord.Guild, member: discord.Member
+    ) -> Optional[int]:
+        role_ids = await self.config.guild(guild).team_role_ids()
+        role_id_set = set(role_ids or [])
+        team_numbers: List[int] = []
+        for role in member.roles:
+            if role.is_default():
+                continue
+            if role_id_set and role.id not in role_id_set:
+                continue
+            team_number = self._extract_team_number(role.name or "")
+            if team_number:
+                team_numbers.append(team_number)
+        unique = sorted(set(team_numbers))
+        if len(unique) == 1:
+            return unique[0]
+        return None
+
     async def _notify_team_asset_issue(self, guild: discord.Guild, *, message: str) -> None:
         channel_id = await self.config.guild(guild).champions_channel()
         channel = guild.get_channel(channel_id) if channel_id else None
@@ -1391,16 +1414,20 @@ class ChampionsCircle(commands.Cog):
     async def _start_score_report(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
         channel = interaction.channel
-        if not guild or not isinstance(channel, discord.TextChannel):
+        if not guild:
             await interaction.response.send_message(
-                "Score reporting must be used in a team text channel.", ephemeral=True
+                "Score reporting must be used in a server.", ephemeral=True
             )
             return
 
-        team_number = await self._get_team_number_for_channel(guild, channel)
+        team_number = None
+        if isinstance(channel, discord.TextChannel):
+            team_number = await self._get_team_number_for_channel(guild, channel)
+        if not team_number and isinstance(interaction.user, discord.Member):
+            team_number = await self._get_team_number_for_member(guild, interaction.user)
         if not team_number:
             await interaction.response.send_message(
-                "This is not a team channel.", ephemeral=True
+                "You must have a team role to report scores.", ephemeral=True
             )
             return
 
@@ -1698,27 +1725,13 @@ class ChampionsCircle(commands.Cog):
             prefix=prefix,
             team_roles=team_roles,
         )
-        text_ids = await self._ensure_team_text_channels(
-            guild,
-            category=category,
-            team_count=team_count,
-            prefix=prefix,
-            team_roles=team_roles,
-        )
+        await self.config.guild(guild).team_text_channel_ids.set([])
         if len(voice_ids) < team_count:
             await self._notify_team_asset_issue(
                 guild,
                 message=(
                     "Some team voice channels failed to create. "
                     "Check Manage Channels/Permissions and bot role hierarchy."
-                ),
-            )
-        if len(text_ids) < team_count:
-            await self._notify_team_asset_issue(
-                guild,
-                message=(
-                    "Some team channels failed to create. "
-                    "Please ensure the bot has **Manage Channels** and **Manage Permissions**."
                 ),
             )
         await self._post_score_panels(guild)
@@ -4390,7 +4403,7 @@ class ChampionsCircle(commands.Cog):
         embed.add_field(
             name="Score Reporting",
             value=(
-                "`ccscore report <match_id> <score>` - submit a score from team chat\n"
+                "`ccscore report <match_id> <score>` - submit a score (requires team role)\n"
                 "`ccscore panel` - post a score report button"
             ),
             inline=False,
