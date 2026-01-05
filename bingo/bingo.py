@@ -50,8 +50,11 @@ CELL_COLS = [(340, 800), (896, 1352), (1444, 1904), (1996, 2460), (2552, 3012)]
 CELL_ROWS = [(1600, 2060), (2180, 2640), (2760, 3220), (3340, 3800), (3916, 4380)]
 
 CENTER_CELL = (2, 2)
-CELL_PADDING = 20
+CELL_PADDING = 12
 TEXT_COLOR = (20, 20, 20)
+LINE_SPACING = 2
+MAX_FONT_SIZE = 64
+MIN_FONT_SIZE = 20
 
 
 class Bingo(commands.Cog):
@@ -285,26 +288,26 @@ class Bingo(commands.Cog):
         max_width = x1 - x0
         max_height = y1 - y0
 
-        for size in range(48, 17, -2):
+        for size in range(MAX_FONT_SIZE, MIN_FONT_SIZE - 1, -2):
             font = self._load_font(font_path, size)
             lines = self._wrap_text(draw, text, font, max_width)
             line_height = self._line_height(draw, font)
-            total_height = line_height * len(lines) + (len(lines) - 1) * 4
+            total_height = line_height * len(lines) + (len(lines) - 1) * LINE_SPACING
             max_line_width = max(draw.textlength(line, font=font) for line in lines)
             if total_height <= max_height and max_line_width <= max_width:
                 break
         else:
-            font = self._load_font(font_path, 18)
+            font = self._load_font(font_path, MIN_FONT_SIZE)
             lines = self._wrap_text(draw, text, font, max_width)
             line_height = self._line_height(draw, font)
-            total_height = line_height * len(lines) + (len(lines) - 1) * 4
+            total_height = line_height * len(lines) + (len(lines) - 1) * LINE_SPACING
 
         y = y0 + (max_height - total_height) / 2
         for line in lines:
             line_width = draw.textlength(line, font=font)
             x = x0 + (max_width - line_width) / 2
             draw.text((x, y), line, font=font, fill=TEXT_COLOR)
-            y += line_height + 4
+            y += line_height + LINE_SPACING
 
     def _wrap_text(
         self,
@@ -362,6 +365,13 @@ class Bingo(commands.Cog):
                 pass
 
         candidates = [
+            "DejaVuSansCondensed.ttf",
+            str(Path("/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf")),
+            str(Path("/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Regular.ttf")),
+            str(Path("/usr/share/fonts/truetype/liberation2/LiberationSansNarrow-Regular.ttf")),
+            "arialn.ttf",
+            str(Path("C:/Windows/Fonts/arialn.ttf")),
+            str(Path("C:/Windows/Fonts/arialnb.ttf")),
             "DejaVuSans.ttf",
             "arial.ttf",
             str(Path("C:/Windows/Fonts/arial.ttf")),
