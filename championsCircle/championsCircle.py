@@ -638,6 +638,7 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).team_voice_channel_ids.set([])
         await self.config.guild(ctx.guild).team_text_channel_ids.set([])
         await self.config.guild(ctx.guild).team_role_ids.set([])
+        await self.config.guild(ctx.guild).team_captain_role_id.set(None)
         await self.config.guild(ctx.guild).challonge_links.set({})
         await self.config.guild(ctx.guild).challonge_link_last_reminder.set({})
         await self.config.guild(ctx.guild).challonge_team_map.set({})
@@ -1734,6 +1735,14 @@ class ChampionsCircle(commands.Cog):
                         await role.delete(reason="Champions Circle cleanup")
                     except discord.HTTPException:
                         continue
+        captain_role_id = await self.config.guild(guild).team_captain_role_id()
+        captain_role = guild.get_role(captain_role_id) if captain_role_id else None
+        if captain_role:
+            try:
+                await captain_role.delete(reason="Champions Circle cleanup")
+            except discord.HTTPException:
+                pass
+        await self.config.guild(guild).team_captain_role_id.set(None)
         await self.config.guild(guild).score_panel_message_ids.set({})
 
     def _parse_challonge_slug(self, value: Optional[str]) -> Optional[str]:
