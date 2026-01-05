@@ -66,6 +66,12 @@ class Bingo(commands.Cog):
         tasks = await self.config.tasks()
         if not tasks:
             await self.config.tasks.set(DEFAULT_TASKS)
+        self._hide_non_help_commands()
+
+    def _hide_non_help_commands(self) -> None:
+        for command in self.walk_commands():
+            if command.name != "bingohelp":
+                command.hidden = True
 
     @commands.group(name="bingo")
     @commands.guild_only()
@@ -73,7 +79,36 @@ class Bingo(commands.Cog):
     async def bingo(self, ctx: commands.Context) -> None:
         """Bingo card generator."""
         if ctx.invoked_subcommand is None:
-            await ctx.send_help()
+            await ctx.send("Use `!bingohelp` for bingo commands.")
+
+    @commands.command(name="bingohelp")
+    @commands.guild_only()
+    @commands.admin_or_permissions(administrator=True)
+    async def bingohelp(self, ctx: commands.Context) -> None:
+        """Display help for bingo commands."""
+        embed = discord.Embed(title="Bingo Help", color=0x5FD6FF)
+        embed.add_field(
+            name="Card Generation",
+            value=(
+                "`bingo generate <count> [seed]` - generate one or more cards\n"
+                "`bingo tasks` - list current task pool"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Task Pool",
+            value=(
+                "`bingo addtask <task>` - add a task to the pool\n"
+                "`bingo removetask <index>` - remove a task by number"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Style",
+            value="`bingo setfont <path>` - set a custom TTF font path",
+            inline=False,
+        )
+        await ctx.send(embed=embed)
 
     @bingo.command(name="tasks")
     async def bingo_tasks(self, ctx: commands.Context) -> None:
