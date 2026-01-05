@@ -10,8 +10,8 @@ The tournament flow is designed for **minimum player effort**:
 
 1. Players apply in Discord
 2. Admins approve applications
-3. Draft happens live on stream (captains pick players)
-4. Admin mirrors picks in Discord with simple commands
+3. Captains are set and the snake draft starts
+4. Captains pick players one at a time in Discord
 5. Players automatically see their team channels
 6. Matches play out, scores reported via button
 
@@ -64,6 +64,12 @@ If teams weren't created (API key set after tournament), run:
 !ccchallonge createteams
 ```
 
+Optional: set or refresh the bracket URL for embeds:
+```
+!ccchallonge set https://challonge.com/your-bracket
+!ccchallonge refresh
+```
+
 ---
 
 ## Phase 2: Applications
@@ -96,6 +102,18 @@ Shows counts of active, approved, denied, and cancelled applications.
 
 ### Before the Draft
 
+Set captains (one per team):
+
+```
+!ccdraft captains @Captain1 @Captain2 @Captain3 ...
+```
+
+Or set captains individually:
+
+```
+!ccdraft captain 1 @Captain1
+```
+
 Check your draft pool:
 
 ```
@@ -104,37 +122,37 @@ Check your draft pool:
 
 Shows all approved players who haven't been drafted yet, with their rank.
 
-Check team status:
+Start the draft (snake order):
 
 ```
-!ccdraft show
+!ccdraft start
 ```
 
-Shows all teams and their current rosters.
+Check current status:
 
-### During the Draft (Live on Stream)
-
-As captains make picks verbally on stream, mirror them in Discord:
-
-**Assign players to a team:**
 ```
-!ccdraft assign 1 @PlayerA @PlayerB @PlayerC
+!ccdraft status
 ```
 
-This:
-- Adds those players to Team 1
-- Gives them the "Team 1" role
-- They can now see Team 1's private channels
-- Updates Challonge with the roster info
+### During the Draft (Snake Order)
 
-**Remove a player from a team (if mistake):**
+Captains pick **one player at a time** when their team is on the clock:
+
 ```
+!ccdraft pick @PlayerA
+```
+
+Only the current team captain can pick (admins can override).
+
+**Undo the last pick (if mistake):**
+```
+!ccdraft undo
+```
+
+**Admin override (manual assign/remove):**
+```
+!ccdraft assign 1 @PlayerA
 !ccdraft remove 1 @PlayerA
-```
-
-**Assign team captain:**
-```
-!ccdraft captain 1 @PlayerA
 ```
 
 ### After the Draft
@@ -210,22 +228,32 @@ This:
 | Command | Description |
 |---------|-------------|
 | `!ccchallonge key <token>` | Set API key |
-| `!ccchallonge tournament <slug>` | Link tournament (auto-creates teams) |
-| `!ccchallonge createteams` | Manually create team participants |
+| `!ccchallonge tournament <slug>` | Set tournament slug |
+| `!ccchallonge set <bracket_url>` | Set bracket URL |
+| `!ccchallonge refresh` | Refresh bracket URL |
+| `!ccchallonge createteams` | Create team participants |
 | `!ccchallonge info` | Show tournament info |
 | `!ccchallonge participants` | List Challonge participants |
 | `!ccchallonge matches` | Show matches |
+| `!ccchallonge sync` | Sync rosters to Challonge |
 | `!ccchallonge syncroles` | Re-sync team roles |
+| `!ccchallonge purgeall` | Remove all Challonge participants |
 
 ### Draft
 | Command | Description |
 |---------|-------------|
 | `!ccdraft pool` | Show undrafted players |
+| `!ccdraft captains @p1 @p2 ...` | Set captains for all teams |
+| `!ccdraft captain 1 @player` | Set team captain |
+| `!ccdraft start` | Start the snake draft |
+| `!ccdraft pick @player` | Pick player when on the clock |
+| `!ccdraft status` | Show draft status |
+| `!ccdraft undo` | Undo last pick |
+| `!ccdraft reset` | Reset pick order (keeps assignments) |
 | `!ccdraft show` | Show all team rosters |
 | `!ccdraft show 1` | Show specific team roster |
-| `!ccdraft assign 1 @p1 @p2 @p3` | Assign players to team |
-| `!ccdraft remove 1 @player` | Remove player from team |
-| `!ccdraft captain 1 @player` | Set team captain |
+| `!ccdraft assign 1 @p1` | Admin override assign |
+| `!ccdraft remove 1 @player` | Admin override remove |
 | `!ccdraft lock` | Lock draft |
 | `!ccdraft unlock` | Unlock draft |
 | `!ccdraft clear` | Clear all assignments |
@@ -243,58 +271,56 @@ This:
 
 ```
 Day 1: Setup
-─────────────
+-----------
 !ccsetup
-  → Configure: "Season 5 Championship", 3v3, 8 teams, 7 day applications
+  Configure: "Season 5 Championship", 3v3, 8 teams, 7 day applications
 
 !ccchallonge key abc123xyz...
 !ccchallonge tournament season-5-championship
-  → "Created 8 teams on Challonge. Ready for draft!"
+  "Created 8 teams on Challonge. Ready for draft!"
 
 !ccstart
-  → Applications open, embed posted
-
+  Applications open, embed posted
 
 Days 2-7: Applications
-─────────────────────
+----------------------
 Players apply via button
 Admins approve/deny in forum threads
 
-
 Day 8: Draft Night (on stream)
-─────────────────────────────
+------------------------------
 !ccdraft pool
-  → Shows 24 approved players
+  Shows 24 approved players
 
-Draft starts...
+!ccdraft captains @Captain1 @Captain2 @Captain3 @Captain4
+!ccdraft start
+
 Captain 1 picks: "I'll take PlayerA"
-  !ccdraft assign 1 @PlayerA
+  !ccdraft pick @PlayerA
 
 Captain 2 picks: "PlayerB for Team 2"
-  !ccdraft assign 2 @PlayerB
+  !ccdraft pick @PlayerB
 
 ...continues until all teams filled...
 
 !ccdraft show
-  → Shows all 8 teams with 3 players each
+  Shows all 8 teams with 3 players each
 
 !ccdraft lock
 
-
 Day 9+: Matches
-──────────────
+---------------
 Matches play out
 Players use "Report Score" button in team channels
 Bracket progresses on Challonge
 
-
 Finals Day:
-──────────
+-----------
 Grand finals happen
 Winner crowned
 
 !ccend
-  → Tournament archived, ready for next season
+  Tournament archived, ready for next season
 ```
 
 ---
@@ -312,6 +338,8 @@ Check they were properly assigned with `!ccdraft show <team#>`.
 Re-sync roles with `!ccchallonge syncroles`.
 
 ### Wrong player on team
+If the draft is in progress, use `!ccdraft undo` to roll back the last pick.
+
 ```
 !ccdraft unlock
 !ccdraft remove <team#> @wrongplayer
@@ -340,7 +368,7 @@ Re-sync roles with `!ccchallonge syncroles`.
 
 **Data Flow:**
 ```
-Application → Approval → Draft Pool → Draft Assignment → Team Role → Channel Access
-                                           ↓
-                                    Challonge misc field updated
+Application -> Approval -> Draft Pool -> Draft Assignment -> Team Role -> Channel Access
+                           |
+                           -> Challonge misc field updated
 ```
