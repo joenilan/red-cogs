@@ -365,6 +365,7 @@ class Bingo(commands.Cog):
                 pass
 
         candidates = [
+            str(Path(__file__).parent / "assets" / "SofiaSansCondensed[wght].ttf"),
             "DejaVuSansCondensed.ttf",
             str(Path("/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf")),
             str(Path("/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Regular.ttf")),
