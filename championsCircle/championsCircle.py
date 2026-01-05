@@ -557,7 +557,7 @@ class ChampionsCircle(commands.Cog):
             await ctx.send("Tournament end cancelled.")
             return
 
-        # Archive/lock application threads
+        # Archive/lock (and delete) application threads
         forum_id = await self.config.guild(ctx.guild).champions_forum()
         forum = ctx.guild.get_channel(forum_id) if forum_id else None
         thread_ids: set[int] = set()
@@ -582,9 +582,12 @@ class ChampionsCircle(commands.Cog):
                     thread = None
             if isinstance(thread, discord.Thread):
                 try:
-                    await thread.edit(archived=True, locked=True)
+                    await thread.delete()
                 except discord.HTTPException:
-                    self.logger.error("Failed to archive thread %s", thread_id)
+                    try:
+                        await thread.edit(archived=True, locked=True)
+                    except discord.HTTPException:
+                        self.logger.error("Failed to archive/delete thread %s", thread_id)
 
         roster_thread_id = await self.config.guild(ctx.guild).roster_thread_id()
         if roster_thread_id:
@@ -596,9 +599,12 @@ class ChampionsCircle(commands.Cog):
                     roster_thread = None
             if isinstance(roster_thread, discord.Thread):
                 try:
-                    await roster_thread.edit(archived=True, locked=True)
+                    await roster_thread.delete()
                 except discord.HTTPException:
-                    self.logger.error("Failed to archive roster thread %s", roster_thread_id)
+                    try:
+                        await roster_thread.edit(archived=True, locked=True)
+                    except discord.HTTPException:
+                        self.logger.error("Failed to archive/delete roster thread %s", roster_thread_id)
 
         await self._cleanup_team_voice_assets(ctx.guild)
 
