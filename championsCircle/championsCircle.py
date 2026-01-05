@@ -1181,6 +1181,25 @@ class ChampionsCircle(commands.Cog):
         prefix = await self.config.guild(guild).team_voice_channel_prefix() or "Team"
         return f"{prefix} {team_number}"
 
+    async def _team_role_color(self, guild: discord.Guild, team_number: int) -> discord.Color:
+        style = await self.config.guild(guild).team_name_style()
+        if style == "colors":
+            colors = self._team_color_names()
+            if 1 <= team_number <= len(colors):
+                name = colors[team_number - 1].lower()
+                palette = {
+                    "red": discord.Color.red(),
+                    "cyan": discord.Color.teal(),
+                    "blue": discord.Color.blue(),
+                    "pink": discord.Color.magenta(),
+                    "yellow": discord.Color.gold(),
+                    "purple": discord.Color.purple(),
+                    "green": discord.Color.green(),
+                    "orange": discord.Color.orange(),
+                }
+                return palette.get(name, self._random_role_color())
+        return self._random_role_color()
+
     def _random_role_color(self) -> discord.Color:
         palette = [
             discord.Color.red(),
@@ -1247,7 +1266,7 @@ class ChampionsCircle(commands.Cog):
                         name=role_name,
                         reason="Champions Circle team role",
                         mentionable=True,
-                        color=self._random_role_color(),
+                        color=await self._team_role_color(guild, index),
                     )
                 except discord.HTTPException:
                     continue
