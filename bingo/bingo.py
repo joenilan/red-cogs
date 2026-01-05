@@ -1,5 +1,6 @@
 import datetime as dt
 import random
+import re
 import zipfile
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -60,7 +61,7 @@ class Bingo(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=8352147791)
         self.config.register_global(tasks=[], font_path=None)
-        self.config.register_guild(captain_role_id=None, cards={}, use_champions_circle=False)
+        self.config.register_guild(captain_role_id=None, cards={})
         self.template_path = self._resolve_template_path()
 
     async def cog_load(self):
@@ -98,10 +99,9 @@ class Bingo(commands.Cog):
             inline=False,
         )
         embed.add_field(
-            name="Captain Controls",
+            name="Editor Controls",
             value=(
-                "`bingo setcaptainrole @role` - restrict edits to captains\n"
-                "`bingo usechampions <true|false>` - use ChampionsCircle data\n"
+                "`bingo seteditorrole @role` - set a default editor role\n"
                 "`bingo mark <index>` - mark a square (1-25)\n"
                 "`bingo unmark <index>` - unmark a square"
             ),
@@ -170,24 +170,29 @@ class Bingo(commands.Cog):
         await self.config.font_path.set(str(font_file))
         await ctx.send("Font override saved.")
 
+    @bingo.command(name="seteditorrole")
+    async def bingo_seteditorrole(
+        self, ctx: commands.Context, role: Optional[discord.Role] = None
+    ) -> None:
+        """Set the default editor role required to edit bingo cards."""
+        await self._set_editor_role(ctx, role)
+
     @bingo.command(name="setcaptainrole")
     async def bingo_setcaptainrole(
         self, ctx: commands.Context, role: Optional[discord.Role] = None
     ) -> None:
-        """Set the captain role required to edit bingo cards."""
+        """Backward-compatible alias for seteditorrole."""
+        await self._set_editor_role(ctx, role)
+
+    async def _set_editor_role(
+        self, ctx: commands.Context, role: Optional[discord.Role]
+    ) -> None:
         if role is None:
             await self.config.guild(ctx.guild).captain_role_id.set(None)
-            await ctx.send("Captain role requirement cleared.")
+            await ctx.send("Editor role requirement cleared.")
             return
         await self.config.guild(ctx.guild).captain_role_id.set(role.id)
-        await ctx.send(f"Captain role set to {role.mention}.")
-
-    @bingo.command(name="usechampions")
-    async def bingo_usechampions(self, ctx: commands.Context, enabled: bool) -> None:
-        """Enable or disable ChampionsCircle integration for captain checks."""
-        await self.config.guild(ctx.guild).use_champions_circle.set(enabled)
-        state = "enabled" if enabled else "disabled"
-        await ctx.send(f"ChampionsCircle integration is now {state}.")
+        await ctx.send(f"Editor role set to {role.mention}.")
 
     @bingo.command(name="generate")
     async def bingo_generate(
@@ -465,8 +470,6 @@ class Bingo(commands.Cog):
         return zip_path
 
     async def _update_card_mark(self, ctx: commands.Context, index: int, mark: bool) -> None:
-        if not await self._require_captain(ctx):
-            return
         if index < 1 or index > 25:
             await ctx.send("Index must be between 1 and 25.")
             return
@@ -477,7 +480,9 @@ class Bingo(commands.Cog):
         cards = await self.config.guild(ctx.guild).cards()
         card = cards.get(str(ctx.channel.id))
         if not card:
-            await ctx.send("No tracked bingo card in this channel.")
+            await ctx.send("No tracked bingo card in this channel. Use `!bingo setup`.")
+            return
+        if not await self._require_editor(ctx, card):
             return
 
         marked = set(card.get("marked") or [])
@@ -499,88 +504,34 @@ class Bingo(commands.Cog):
         async with ctx.typing():
             self._render_card(tasks, output_path, font_path, marked)
             await self._send_or_update_card(ctx.channel, card, output_path)
-        await ctx.message.add_reaction("✅")
 
-    async def _require_captain(self, ctx: commands.Context) -> bool:
+    async def _require_editor(self, ctx: commands.Context, card: dict) -> bool:
         if ctx.author.guild_permissions.administrator:
             return True
-        use_champions = await self.config.guild(ctx.guild).use_champions_circle()
-        if use_champions:
-            champions = self._get_champions_cog()
-            if champions:
-                allowed, message = await self._champions_can_edit(ctx, champions)
-                if allowed:
-                    return True
-                if message:
-                    await ctx.send(message)
-                    return False
-                await ctx.send("ChampionsCircle is loaded but team data is not available.")
-                return False
-            await ctx.send("ChampionsCircle integration is enabled but the cog is not loaded.")
+        editor_user_id = card.get("editor_user_id")
+        if editor_user_id:
+            if ctx.author.id == editor_user_id:
+                return True
+            await ctx.send("Only the assigned editor can edit this card.")
             return False
+
+        editor_role_id = card.get("editor_role_id")
+        if editor_role_id:
+            role = ctx.guild.get_role(editor_role_id)
+            if role and role in ctx.author.roles:
+                return True
+            await ctx.send("Only the assigned role can edit this card.")
+            return False
+
         role_id = await self.config.guild(ctx.guild).captain_role_id()
         if not role_id:
-            await ctx.send("Captain role is not configured. Use `!bingo setcaptainrole`.")
+            await ctx.send("No editor role is configured. Use `!bingo seteditorrole`.")
             return False
         role = ctx.guild.get_role(role_id)
         if role and role in ctx.author.roles:
             return True
-        await ctx.send("Only captains can edit this card.")
+        await ctx.send("Only the editor role can edit this card.")
         return False
-
-    def _get_champions_cog(self) -> Optional[commands.Cog]:
-        return self.bot.get_cog("ChampionsCircle") or self.bot.get_cog("championsCircle")
-
-    async def _champions_can_edit(
-        self,
-        ctx: commands.Context,
-        champions: commands.Cog,
-    ) -> Tuple[bool, Optional[str]]:
-        guild = ctx.guild
-        try:
-            team_channels = await champions.config.guild(guild).team_text_channel_ids()
-        except Exception:
-            return False, None
-
-        if not team_channels or ctx.channel.id not in team_channels:
-            return False, "This command only works inside a ChampionsCircle team channel."
-
-        team_number = None
-        if hasattr(champions, "_extract_team_number"):
-            try:
-                team_number = champions._extract_team_number(ctx.channel.name or "")
-            except Exception:
-                team_number = None
-        if not team_number:
-            try:
-                team_number = team_channels.index(ctx.channel.id) + 1
-            except ValueError:
-                team_number = None
-        if not team_number:
-            return False, "Unable to determine team number for this channel."
-
-        draft_captains = await champions.config.guild(guild).draft_captains()
-        if isinstance(draft_captains, dict):
-            captain_id = draft_captains.get(str(team_number))
-            if captain_id == ctx.author.id:
-                return True, None
-
-        captain_role_id = await champions.config.guild(guild).team_captain_role_id()
-        captain_role = guild.get_role(captain_role_id) if captain_role_id else None
-        if not captain_role:
-            return False, "ChampionsCircle captains are not configured yet."
-        if captain_role not in ctx.author.roles:
-            return False, "Only the captain for this team can edit this card."
-
-        team_role_ids = await champions.config.guild(guild).team_role_ids()
-        team_role = None
-        if isinstance(team_role_ids, list) and len(team_role_ids) >= team_number:
-            team_role = guild.get_role(team_role_ids[team_number - 1])
-        if not team_role:
-            return False, "Team role for this channel is missing."
-        if team_role in ctx.author.roles:
-            return True, None
-        return False, "You can only edit the card for your own team."
 
     async def _send_or_update_card(
         self,
@@ -589,6 +540,7 @@ class Bingo(commands.Cog):
         output_path: Path,
         *,
         mention_role: Optional[discord.Role] = None,
+        mention_user_id: Optional[int] = None,
     ) -> None:
         message_id = card.get("message_id")
         allowed_mentions = discord.AllowedMentions.none()
@@ -596,6 +548,11 @@ class Bingo(commands.Cog):
         if mention_role:
             content = mention_role.mention
             allowed_mentions = discord.AllowedMentions(roles=[mention_role])
+        elif mention_user_id:
+            member = channel.guild.get_member(mention_user_id)
+            if member:
+                content = member.mention
+                allowed_mentions = discord.AllowedMentions(users=[member])
 
         if message_id:
             try:
@@ -662,8 +619,13 @@ class BingoPostModal(discord.ui.Modal, title="Generate Bingo Cards"):
             label="Seed (optional)",
             required=False,
         )
+        self.editor_user = discord.ui.TextInput(
+            label="Editor user ID or @mention (optional)",
+            required=False,
+        )
         self.add_item(self.count)
         self.add_item(self.seed)
+        self.add_item(self.editor_user)
 
         self.channel_select = self._build_channel_select()
         if self.channel_select:
@@ -674,12 +636,12 @@ class BingoPostModal(discord.ui.Modal, title="Generate Bingo Cards"):
             )
             self.add_item(label)
 
-        self.role_select = self._build_role_select()
-        if self.role_select:
+        self.editor_role_select = self._build_editor_role_select()
+        if self.editor_role_select:
             label = discord.ui.Label(
-                text="Ping role (optional)",
-                description="Select a role to ping with the card.",
-                component=self.role_select,
+                text="Editor role (optional)",
+                description="Role that can edit the card (also pinged).",
+                component=self.editor_role_select,
             )
             self.add_item(label)
 
@@ -700,18 +662,18 @@ class BingoPostModal(discord.ui.Modal, title="Generate Bingo Cards"):
             max_values=1,
         )
 
-    def _build_role_select(self) -> Optional[discord.ui.Select]:
+    def _build_editor_role_select(self) -> Optional[discord.ui.Select]:
         if not self.guild:
             return None
         roles = [r for r in self.guild.roles if r.name != "@everyone"]
         roles = sorted(roles, key=lambda r: r.position, reverse=True)[:24]
         if not roles:
             return None
-        options = [discord.SelectOption(label="No role ping", value="none")]
+        options = [discord.SelectOption(label="No editor role", value="none")]
         options.extend(discord.SelectOption(label=r.name, value=str(r.id)) for r in roles)
         select_cls = getattr(discord.ui, "StringSelect", discord.ui.Select)
         return select_cls(
-            placeholder="Select a role",
+            placeholder="Select an editor role",
             options=options,
             min_values=1,
             max_values=1,
@@ -755,12 +717,31 @@ class BingoPostModal(discord.ui.Modal, title="Generate Bingo Cards"):
             await interaction.response.send_message("Channel not found.", ephemeral=True)
             return
 
-        role = None
-        if self.role_select and self.role_select.values:
-            selected_role = self.role_select.values[0]
+        editor_role = None
+        if self.editor_role_select and self.editor_role_select.values:
+            selected_role = self.editor_role_select.values[0]
             if selected_role != "none":
                 role_id = int(selected_role)
-                role = interaction.guild.get_role(role_id)
+                editor_role = interaction.guild.get_role(role_id)
+
+        editor_user_id = None
+        editor_user_raw = (self.editor_user.value or "").strip()
+        if editor_user_raw:
+            match = re.match(r"<@!?(\\d+)>", editor_user_raw)
+            if match:
+                editor_user_id = int(match.group(1))
+            elif editor_user_raw.isdigit():
+                editor_user_id = int(editor_user_raw)
+            else:
+                await interaction.response.send_message(
+                    "Editor user must be a user ID or @mention.", ephemeral=True
+                )
+                return
+            if not interaction.guild.get_member(editor_user_id):
+                await interaction.response.send_message(
+                    "Editor user not found in this server.", ephemeral=True
+                )
+                return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -793,13 +774,16 @@ class BingoPostModal(discord.ui.Modal, title="Generate Bingo Cards"):
                 "marked": [],
                 "seed": card_seed,
                 "message_id": None,
+                "editor_role_id": editor_role.id if editor_role else None,
+                "editor_user_id": editor_user_id,
             }
 
             await self.cog._send_or_update_card(
                 channel,
                 card_entry,
                 output_path,
-                mention_role=role,
+                mention_role=editor_role,
+                mention_user_id=editor_user_id,
             )
 
             cards = await self.cog.config.guild(interaction.guild).cards()
@@ -808,7 +792,7 @@ class BingoPostModal(discord.ui.Modal, title="Generate Bingo Cards"):
         else:
             output_files, seed, out_dir = self.cog._generate_cards(count, seed, tasks, font_path)
             zip_path = await self.cog._send_zip_if_possible(
-                channel, output_files, seed, count, out_dir, role
+                channel, output_files, seed, count, out_dir, editor_role
             )
             if zip_path is None:
                 await interaction.followup.send(
