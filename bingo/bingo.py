@@ -60,6 +60,7 @@ class Bingo(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=8352147791)
         self.config.register_global(tasks=[], font_path=None)
+        self.config.register_guild(captain_role_id=None, cards={})
         self.template_path = self._resolve_template_path()
 
     async def cog_load(self):
@@ -93,6 +94,15 @@ class Bingo(commands.Cog):
                 "`bingo setup` - open the interactive generator\n"
                 "`bingo generate <count> [seed]` - generate one or more cards\n"
                 "`bingo tasks` - list current task pool"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Captain Controls",
+            value=(
+                "`bingo setcaptainrole @role` - restrict edits to captains\n"
+                "`bingo mark <index>` - mark a square (1-25)\n"
+                "`bingo unmark <index>` - unmark a square"
             ),
             inline=False,
         )
@@ -159,6 +169,18 @@ class Bingo(commands.Cog):
         await self.config.font_path.set(str(font_file))
         await ctx.send("Font override saved.")
 
+    @bingo.command(name="setcaptainrole")
+    async def bingo_setcaptainrole(
+        self, ctx: commands.Context, role: Optional[discord.Role] = None
+    ) -> None:
+        """Set the captain role required to edit bingo cards."""
+        if role is None:
+            await self.config.guild(ctx.guild).captain_role_id.set(None)
+            await ctx.send("Captain role requirement cleared.")
+            return
+        await self.config.guild(ctx.guild).captain_role_id.set(role.id)
+        await ctx.send(f"Captain role set to {role.mention}.")
+
     @bingo.command(name="generate")
     async def bingo_generate(
         self,
@@ -192,18 +214,37 @@ class Bingo(commands.Cog):
         view = BingoSetupView(self, ctx.author.id)
         await ctx.send("Click to open the bingo generator:", view=view)
 
-    def _render_card(self, tasks: List[str], output_path: Path, font_path: Optional[str]) -> None:
+    @bingo.command(name="mark")
+    async def bingo_mark(self, ctx: commands.Context, index: int) -> None:
+        """Mark a square on the current channel's card."""
+        await self._update_card_mark(ctx, index, True)
+
+    @bingo.command(name="unmark")
+    async def bingo_unmark(self, ctx: commands.Context, index: int) -> None:
+        """Unmark a square on the current channel's card."""
+        await self._update_card_mark(ctx, index, False)
+
+    def _render_card(
+        self,
+        tasks: List[str],
+        output_path: Path,
+        font_path: Optional[str],
+        marked: Optional[set] = None,
+    ) -> None:
         base = Image.open(self.template_path).convert("RGBA")
         draw = ImageDraw.Draw(base)
         task_iter = iter(tasks)
 
         for row_idx, row in enumerate(CELL_ROWS):
             for col_idx, col in enumerate(CELL_COLS):
+                index = row_idx * 5 + col_idx + 1
                 if (row_idx, col_idx) == CENTER_CELL:
                     continue
                 task = next(task_iter)
                 box = self._cell_box(col, row)
                 self._draw_wrapped_text(draw, task, box, font_path)
+                if marked and index in marked:
+                    self._draw_checkmark(draw, col, row)
 
         base.save(output_path, format="PNG")
 
@@ -324,6 +365,20 @@ class Bingo(commands.Cog):
             return png_path
         return folder / "card.jpg"
 
+    def _draw_checkmark(
+        self,
+        draw: ImageDraw.ImageDraw,
+        col: Tuple[int, int],
+        row: Tuple[int, int],
+    ) -> None:
+        x0, x1 = col
+        y0, y1 = row
+        inset = 60
+        start = (x0 + inset, y0 + (y1 - y0) * 0.55)
+        mid = (x0 + (x1 - x0) * 0.45, y0 + y1 - inset)
+        end = (x1 - inset, y0 + inset)
+        draw.line([start, mid, end], fill=(22, 153, 74, 220), width=22, joint="curve")
+
     async def _load_generation_inputs(
         self, ctx: commands.Context
     ) -> Tuple[Optional[List[str]], Optional[str]]:
@@ -400,6 +455,95 @@ class Bingo(commands.Cog):
             allowed_mentions=allowed_mentions,
         )
         return zip_path
+
+    async def _update_card_mark(self, ctx: commands.Context, index: int, mark: bool) -> None:
+        if not await self._require_captain(ctx):
+            return
+        if index < 1 or index > 25:
+            await ctx.send("Index must be between 1 and 25.")
+            return
+        if index == 13:
+            await ctx.send("Center is the free space and cannot be marked.")
+            return
+
+        cards = await self.config.guild(ctx.guild).cards()
+        card = cards.get(str(ctx.channel.id))
+        if not card:
+            await ctx.send("No tracked bingo card in this channel.")
+            return
+
+        marked = set(card.get("marked") or [])
+        if mark:
+            marked.add(index)
+        else:
+            marked.discard(index)
+        card["marked"] = sorted(marked)
+        cards[str(ctx.channel.id)] = card
+        await self.config.guild(ctx.guild).cards.set(cards)
+
+        output_path = self._active_card_path(ctx.channel.id)
+        font_path = await self.config.font_path()
+        tasks = card.get("tasks") or []
+        if len(tasks) != 24:
+            await ctx.send("Stored card data is invalid. Regenerate the card.")
+            return
+
+        async with ctx.typing():
+            self._render_card(tasks, output_path, font_path, marked)
+            await self._send_or_update_card(ctx.channel, card, output_path)
+        await ctx.message.add_reaction("✅")
+
+    async def _require_captain(self, ctx: commands.Context) -> bool:
+        if ctx.author.guild_permissions.administrator:
+            return True
+        role_id = await self.config.guild(ctx.guild).captain_role_id()
+        if not role_id:
+            await ctx.send("Captain role is not configured. Use `!bingo setcaptainrole`.")
+            return False
+        role = ctx.guild.get_role(role_id)
+        if role and role in ctx.author.roles:
+            return True
+        await ctx.send("Only captains can edit this card.")
+        return False
+
+    async def _send_or_update_card(
+        self,
+        channel: discord.TextChannel,
+        card: dict,
+        output_path: Path,
+        *,
+        mention_role: Optional[discord.Role] = None,
+    ) -> None:
+        message_id = card.get("message_id")
+        allowed_mentions = discord.AllowedMentions.none()
+        content = None
+        if mention_role:
+            content = mention_role.mention
+            allowed_mentions = discord.AllowedMentions(roles=[mention_role])
+
+        if message_id:
+            try:
+                message = await channel.fetch_message(int(message_id))
+                await message.edit(
+                    content=content,
+                    attachments=[discord.File(str(output_path), filename=output_path.name)],
+                    allowed_mentions=allowed_mentions,
+                )
+                return
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+        message = await channel.send(
+            content=content,
+            file=discord.File(str(output_path), filename=output_path.name),
+            allowed_mentions=allowed_mentions,
+        )
+        card["message_id"] = message.id
+
+    def _active_card_path(self, channel_id: int) -> Path:
+        out_dir = cog_data_path(self) / "generated" / "active"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir / f"bingo_card_{channel_id}.png"
 
 
 class BingoSetupView(discord.ui.View):
@@ -557,15 +701,36 @@ class BingoPostModal(discord.ui.Modal, title="Generate Bingo Cards"):
             return
 
         font_path = await self.cog.config.font_path()
-        output_files, seed, out_dir = self.cog._generate_cards(count, seed, tasks, font_path)
-
         if count == 1:
-            await channel.send(
-                content=role.mention if role else None,
-                file=discord.File(str(output_files[0]), filename=output_files[0].name),
-                allowed_mentions=discord.AllowedMentions(roles=[role]) if role else None,
+            card_seed = seed or random.SystemRandom().randint(1, 2**32 - 1)
+            rng = random.Random(card_seed)
+            card_tasks = rng.sample(tasks, k=24)
+
+            timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_dir = cog_data_path(self.cog) / "generated" / timestamp
+            out_dir.mkdir(parents=True, exist_ok=True)
+            output_path = out_dir / "bingo_card_01.png"
+            self.cog._render_card(card_tasks, output_path, font_path, marked=set())
+
+            card_entry = {
+                "tasks": card_tasks,
+                "marked": [],
+                "seed": card_seed,
+                "message_id": None,
+            }
+
+            await self.cog._send_or_update_card(
+                channel,
+                card_entry,
+                output_path,
+                mention_role=role,
             )
+
+            cards = await self.cog.config.guild(interaction.guild).cards()
+            cards[str(channel.id)] = card_entry
+            await self.cog.config.guild(interaction.guild).cards.set(cards)
         else:
+            output_files, seed, out_dir = self.cog._generate_cards(count, seed, tasks, font_path)
             zip_path = await self.cog._send_zip_if_possible(
                 channel, output_files, seed, count, out_dir, role
             )
