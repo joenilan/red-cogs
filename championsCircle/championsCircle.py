@@ -55,6 +55,7 @@ class ChampionsCircle(commands.Cog):
             "team_voice_category_id": None,
             "team_voice_channel_ids": [],
             "team_voice_channel_prefix": "Team",
+            "team_name_style": "numbered",
             "team_captain_role_id": None,
             "team_role_ids": [],
             "team_text_channel_ids": [],
@@ -350,34 +351,16 @@ class ChampionsCircle(commands.Cog):
                     )
                 return
 
-            raw_mode = None
-            if hasattr(modal, "game_mode_select"):
-                raw_mode = getattr(modal.game_mode_select, "values", None)
-                if isinstance(raw_mode, list):
-                    raw_mode = raw_mode[0] if raw_mode else None
-            if not raw_mode:
-                raw_mode = self._extract_component_value(interaction.data, "ccsetup_game_mode")
-            game_mode_value = self._normalize_game_mode(raw_mode)
-            if raw_mode and not game_mode_value:
-                message = "Invalid game mode. Use 1v1, 2v2, 3v3, or 4v4."
-                if interaction.response.is_done():
-                    await interaction.followup.send(message, ephemeral=True)
-                else:
-                    await interaction.response.send_message(message, ephemeral=True)
-                return
-            if game_mode_value:
-                await self.config.guild(interaction.guild).game_mode.set(game_mode_value)
-
             view = SetupContinueView(self, interaction.guild.id, interaction.user.id)
             if interaction.response.is_done():
                 await interaction.followup.send(
-                    "Setup step 2: click Continue to configure team channels.",
+                    "Setup step 2: click Continue to configure teams.",
                     view=view,
                     ephemeral=True,
                 )
             else:
                 await interaction.response.send_message(
-                    "Setup step 2: click Continue to configure team channels.",
+                    "Setup step 2: click Continue to configure teams.",
                     view=view,
                     ephemeral=True,
                 )
@@ -403,6 +386,36 @@ class ChampionsCircle(commands.Cog):
             team_count = self._parse_int(modal.team_count.value) or 0
             if team_count < 0:
                 team_count = 0
+
+            raw_mode = None
+            if hasattr(modal, "game_mode_select"):
+                raw_mode = getattr(modal.game_mode_select, "values", None)
+                if isinstance(raw_mode, list):
+                    raw_mode = raw_mode[0] if raw_mode else None
+            if not raw_mode:
+                raw_mode = self._extract_component_value(interaction.data, "ccsetup_game_mode")
+            game_mode_value = self._normalize_game_mode(raw_mode)
+            if raw_mode and not game_mode_value:
+                message = "Invalid game mode. Use 1v1, 2v2, 3v3, or 4v4."
+                if interaction.response.is_done():
+                    await interaction.followup.send(message, ephemeral=True)
+                else:
+                    await interaction.response.send_message(message, ephemeral=True)
+                return
+            if game_mode_value:
+                await self.config.guild(guild).game_mode.set(game_mode_value)
+
+            raw_style = None
+            if hasattr(modal, "team_style_select"):
+                raw_style = getattr(modal.team_style_select, "values", None)
+                if isinstance(raw_style, list):
+                    raw_style = raw_style[0] if raw_style else None
+            if not raw_style:
+                raw_style = self._extract_component_value(interaction.data, "ccsetup_team_style")
+            if raw_style not in {"numbered", "colors", None}:
+                raw_style = None
+            if raw_style:
+                await self.config.guild(guild).team_name_style.set(raw_style)
 
             prefix = "Team"
             category_name = (
@@ -442,6 +455,7 @@ class ChampionsCircle(commands.Cog):
             tourney_time = await self.config.guild(guild).tourney_time()
             duration = await self.config.guild(guild).application_duration()
             game_mode = await self.config.guild(guild).game_mode()
+            team_style = await self.config.guild(guild).team_name_style()
 
             embed.add_field(name="Title", value=tourney_title)
             embed.add_field(name="Description", value=tourney_description)
@@ -451,6 +465,10 @@ class ChampionsCircle(commands.Cog):
             embed.add_field(
                 name="Team size",
                 value=str(self._team_size_from_mode(game_mode)),
+            )
+            embed.add_field(
+                name="Team naming",
+                value="Colors" if team_style == "colors" else "Numbered",
             )
 
             forum_id = await self.config.guild(guild).champions_forum()
@@ -700,7 +718,7 @@ class ChampionsCircle(commands.Cog):
         if not team_number:
             await ctx.send("You must have a team role to post a score panel.")
             return
-        team_role = self._get_team_role_for_number(ctx.guild, team_number)
+        team_role = await self._get_team_role_for_number(ctx.guild, team_number)
         captain_role_id = await self.config.guild(ctx.guild).team_captain_role_id()
         if not self._member_can_report_score(ctx.author, team_role, captain_role_id):
             await ctx.send("Only team captains or mods can post the score panel.")
@@ -749,7 +767,7 @@ class ChampionsCircle(commands.Cog):
         if not team_number:
             await ctx.send("You must have a team role to report scores.")
             return
-        team_role = self._get_team_role_for_number(ctx.guild, team_number)
+        team_role = await self._get_team_role_for_number(ctx.guild, team_number)
         captain_role_id = await self.config.guild(ctx.guild).team_captain_role_id()
         if not self._member_can_report_score(ctx.author, team_role, captain_role_id):
             await ctx.send("Only team captains or mods can report scores.")
@@ -1142,6 +1160,27 @@ class ChampionsCircle(commands.Cog):
         emojis = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "🟤", "⚫", "⚪"]
         return emojis[(index - 1) % len(emojis)]
 
+    def _team_color_names(self) -> List[str]:
+        return [
+            "Red",
+            "Cyan",
+            "Blue",
+            "Pink",
+            "Yellow",
+            "Purple",
+            "Green",
+            "Orange",
+        ]
+
+    async def _team_label(self, guild: discord.Guild, team_number: int) -> str:
+        style = await self.config.guild(guild).team_name_style()
+        if style == "colors":
+            colors = self._team_color_names()
+            if 1 <= team_number <= len(colors):
+                return colors[team_number - 1]
+        prefix = await self.config.guild(guild).team_voice_channel_prefix() or "Team"
+        return f"{prefix} {team_number}"
+
     def _random_role_color(self) -> discord.Color:
         palette = [
             discord.Color.red(),
@@ -1194,12 +1233,11 @@ class ChampionsCircle(commands.Cog):
         guild: discord.Guild,
         *,
         team_count: int,
-        prefix: str,
     ) -> Dict[int, discord.Role]:
         roles_by_num: Dict[int, discord.Role] = {}
         role_ids: List[int] = []
         for index in range(1, team_count + 1):
-            role_name = f"{prefix} {index}"
+            role_name = await self._team_label(guild, index)
             role = next(
                 (r for r in guild.roles if r.name.lower() == role_name.lower()), None
             )
@@ -1250,25 +1288,31 @@ class ChampionsCircle(commands.Cog):
     async def _get_team_number_for_channel(
         self, guild: discord.Guild, channel: discord.abc.GuildChannel
     ) -> Optional[int]:
-        team_channels = await self.config.guild(guild).team_text_channel_ids()
-        if channel.id not in (team_channels or []):
-            return None
-        return self._extract_team_number(channel.name or "")
+        team_channels = await self.config.guild(guild).team_voice_channel_ids()
+        if channel.id in (team_channels or []):
+            try:
+                return (team_channels or []).index(channel.id) + 1
+            except ValueError:
+                pass
+        team_count = await self.config.guild(guild).team_count()
+        for idx in range(1, (team_count or 0) + 1):
+            label = await self._team_label(guild, idx)
+            if channel.name.lower() == label.lower():
+                return idx
+        return None
 
     async def _get_team_number_for_member(
         self, guild: discord.Guild, member: discord.Member
     ) -> Optional[int]:
         role_ids = await self.config.guild(guild).team_role_ids()
-        role_id_set = set(role_ids or [])
-        team_numbers: List[int] = []
-        for role in member.roles:
-            if role.is_default():
-                continue
-            if role_id_set and role.id not in role_id_set:
-                continue
-            team_number = self._extract_team_number(role.name or "")
-            if team_number:
-                team_numbers.append(team_number)
+        if not role_ids:
+            return None
+        role_map = {role_id: idx + 1 for idx, role_id in enumerate(role_ids)}
+        team_numbers = [
+            role_map[role.id]
+            for role in member.roles
+            if role.id in role_map
+        ]
         unique = sorted(set(team_numbers))
         if len(unique) == 1:
             return unique[0]
@@ -1284,16 +1328,19 @@ class ChampionsCircle(commands.Cog):
                 pass
         self.logger.error(message)
 
-    def _get_team_role_for_number(
+    async def _get_team_role_for_number(
         self, guild: discord.Guild, team_number: int
     ) -> Optional[discord.Role]:
         if team_number <= 0:
             return None
-        for role in guild.roles:
-            if role.name.lower() == f"team {team_number}":
+        role_ids = await self.config.guild(guild).team_role_ids()
+        if role_ids and team_number <= len(role_ids):
+            role = guild.get_role(role_ids[team_number - 1])
+            if role:
                 return role
+        label = await self._team_label(guild, team_number)
         for role in guild.roles:
-            if self._extract_team_number(role.name or "") == team_number:
+            if role.name.lower() == label.lower():
                 return role
         return None
 
@@ -1565,7 +1612,7 @@ class ChampionsCircle(commands.Cog):
             )
             return
 
-        team_role = self._get_team_role_for_number(guild, team_number)
+        team_role = await self._get_team_role_for_number(guild, team_number)
         captain_role_id = await self.config.guild(guild).team_captain_role_id()
         if not self._member_can_report_score(interaction.user, team_role, captain_role_id):
             await interaction.response.send_message(
@@ -1637,18 +1684,26 @@ class ChampionsCircle(commands.Cog):
         team_roles: Optional[Dict[int, discord.Role]] = None,
     ) -> List[int]:
         existing_channels: Dict[int, discord.VoiceChannel] = {}
+        saved_ids = await self.config.guild(guild).team_voice_channel_ids()
+        for idx, channel_id in enumerate(saved_ids or [], start=1):
+            channel = guild.get_channel(channel_id)
+            if isinstance(channel, discord.VoiceChannel) and channel.category_id == category.id:
+                existing_channels[idx] = channel
         for channel in category.voice_channels:
-            team_number = self._extract_team_number(channel.name or "")
-            if team_number:
-                existing_channels[team_number] = channel
+            if channel in existing_channels.values():
+                continue
+            for idx in range(1, team_count + 1):
+                label = await self._team_label(guild, idx)
+                if channel.name.lower() == label.lower():
+                    existing_channels[idx] = channel
+                    break
 
         created_ids: List[int] = []
         missing_roles: List[int] = []
         failed: List[int] = []
         failed_details: List[str] = []
         for index in range(1, team_count + 1):
-            emoji = self._team_emoji(index)
-            name = f"{emoji} {prefix} {index}"
+            name = await self._team_label(guild, index)
             channel = existing_channels.get(index)
             team_role = team_roles.get(index) if team_roles else None
             if team_role is None:
@@ -1666,7 +1721,7 @@ class ChampionsCircle(commands.Cog):
                         reason="Champions Circle setup",
                     )
                 except discord.HTTPException as exc:
-                    fallback_name = f"{prefix} {index}"
+                    fallback_name = self._slugify_channel_name(name)
                     if getattr(exc, "code", None) == 50035 and fallback_name:
                         try:
                             overwrites = self._build_team_overwrites(
@@ -1850,7 +1905,7 @@ class ChampionsCircle(commands.Cog):
             await category.edit(overwrites=overwrites)
         except discord.HTTPException:
             pass
-        team_roles = await self._ensure_team_roles(guild, team_count=team_count, prefix=prefix)
+        team_roles = await self._ensure_team_roles(guild, team_count=team_count)
         if len(team_roles) < team_count:
             await self._notify_team_asset_issue(
                 guild,
@@ -3188,7 +3243,13 @@ class ChampionsCircle(commands.Cog):
             if not team_map:
                 await ctx.send("No team mappings set.")
                 return
-            lines = [f"Team {team}: {pid}" for team, pid in sorted(team_map.items())]
+            lines = []
+            for team, pid in sorted(team_map.items()):
+                try:
+                    label = await self._team_label(ctx.guild, int(team))
+                except Exception:
+                    label = f"Team {team}"
+                lines.append(f"{label}: {pid}")
             await ctx.send("Team map:\n" + "\n".join(lines))
 
     @ccchallonge_teammap.command(name="set")
@@ -3213,7 +3274,8 @@ class ChampionsCircle(commands.Cog):
             team_map = {}
         team_map[str(team_number)] = int(participant_id)
         await self.config.guild(ctx.guild).challonge_team_map.set(team_map)
-        await ctx.send(f"Mapped Team {team_number} -> `{participant_name}`.")
+        team_label = await self._team_label(ctx.guild, team_number)
+        await ctx.send(f"Mapped {team_label} -> `{participant_name}`.")
 
     @ccchallonge_teammap.command(name="clear")
     async def ccchallonge_teammap_clear(self, ctx, team_number: Optional[int] = None):
@@ -3229,9 +3291,11 @@ class ChampionsCircle(commands.Cog):
         removed = team_map.pop(str(team_number), None)
         await self.config.guild(ctx.guild).challonge_team_map.set(team_map)
         if removed is None:
-            await ctx.send(f"No mapping found for Team {team_number}.")
+            team_label = await self._team_label(ctx.guild, team_number)
+            await ctx.send(f"No mapping found for {team_label}.")
         else:
-            await ctx.send(f"Cleared mapping for Team {team_number}.")
+            team_label = await self._team_label(ctx.guild, team_number)
+            await ctx.send(f"Cleared mapping for {team_label}.")
 
     @ccchallonge.command(name="syncroles")
     @commands.admin_or_permissions(administrator=True)
@@ -3449,7 +3513,7 @@ class ChampionsCircle(commands.Cog):
             return
 
         if len(members) != team_count:
-            await ctx.send(f"Provide exactly {team_count} captains (Team 1 -> Team {team_count}).")
+            await ctx.send(f"Provide exactly {team_count} captains in order (slot 1 -> slot {team_count}).")
             return
 
         if len({m.id for m in members}) != len(members):
@@ -3539,7 +3603,8 @@ class ChampionsCircle(commands.Cog):
             if captain_id and captain_id not in roster:
                 roster.insert(0, captain_id)
             if len(roster) > team_size:
-                await ctx.send(f"Team {i} exceeds the team size of {team_size}.")
+                team_label = await self._team_label(ctx.guild, i)
+                await ctx.send(f"{team_label} exceeds the team size of {team_size}.")
                 return
             team_slots[i] = max(team_size - len(roster), 0)
 
@@ -3561,6 +3626,7 @@ class ChampionsCircle(commands.Cog):
         await self.config.guild(ctx.guild).draft_locked.set(False)
 
         next_team = order[0]
+        next_label = await self._team_label(ctx.guild, next_team)
         captain_id = draft_captains.get(str(next_team))
         captain = ctx.guild.get_member(captain_id) if captain_id else None
         captain_label = captain.mention if captain else "No captain set"
@@ -3570,14 +3636,15 @@ class ChampionsCircle(commands.Cog):
             cap_id = draft_captains.get(str(team))
             cap_member = ctx.guild.get_member(cap_id) if cap_id else None
             cap_label = cap_member.display_name if cap_member else "No captain"
-            preview.append(f"{idx}. Team {team} ({cap_label})")
+            team_label = await self._team_label(ctx.guild, team)
+            preview.append(f"{idx}. {team_label} ({cap_label})")
 
         embed = discord.Embed(
             title="Draft Started",
             description=f"Mode: **{game_mode}** | Team size: **{team_size}**",
             color=discord.Color.green(),
         )
-        embed.add_field(name="On the clock", value=f"Team {next_team} — {captain_label}", inline=False)
+        embed.add_field(name="On the clock", value=f"{next_label} - {captain_label}", inline=False)
         embed.add_field(name="Next picks", value="\n".join(preview), inline=False)
 
         await ctx.send(embed=embed)
@@ -3623,12 +3690,13 @@ class ChampionsCircle(commands.Cog):
             embed.add_field(name="On the clock", value="Draft complete", inline=False)
         else:
             team_number = draft_order[next_index]
+            team_label = await self._team_label(ctx.guild, team_number)
             captain_id = draft_captains.get(str(team_number))
             captain = ctx.guild.get_member(captain_id) if captain_id else None
             captain_label = captain.mention if captain else "No captain set"
             embed.add_field(
                 name="On the clock",
-                value=f"Team {team_number} — {captain_label}",
+                value=f"{team_label} - {captain_label}",
                 inline=False,
             )
 
@@ -3638,7 +3706,8 @@ class ChampionsCircle(commands.Cog):
                 cap_id = draft_captains.get(str(team))
                 cap_member = ctx.guild.get_member(cap_id) if cap_id else None
                 cap_label = cap_member.display_name if cap_member else "No captain"
-                upcoming.append(f"{idx + 1}. Team {team} ({cap_label})")
+                team_label = await self._team_label(ctx.guild, team)
+                upcoming.append(f"{idx + 1}. {team_label} ({cap_label})")
             if upcoming:
                 embed.add_field(name="Upcoming", value="\n".join(upcoming), inline=False)
 
@@ -3648,9 +3717,10 @@ class ChampionsCircle(commands.Cog):
             pick_user_id = last_pick.get("user_id")
             pick_member = ctx.guild.get_member(pick_user_id) if pick_user_id else None
             pick_label = pick_member.mention if pick_member else f"<@{pick_user_id}>"
+            pick_team_label = await self._team_label(ctx.guild, pick_team)
             embed.add_field(
                 name="Last pick",
-                value=f"Team {pick_team}: {pick_label}",
+                value=f"{pick_team_label}: {pick_label}",
                 inline=False,
             )
 
@@ -3699,7 +3769,8 @@ class ChampionsCircle(commands.Cog):
             if ctx.author.id != captain_id:
                 captain = ctx.guild.get_member(captain_id) if captain_id else None
                 captain_label = captain.mention if captain else "No captain set"
-                await ctx.send(f"Team {team_number} is on the clock. Captain: {captain_label}")
+                team_label = await self._team_label(ctx.guild, team_number)
+                await ctx.send(f"{team_label} is on the clock. Captain: {captain_label}")
                 return
 
         approved = await self._load_application_list(ctx.guild, "approved_applications")
@@ -3714,7 +3785,8 @@ class ChampionsCircle(commands.Cog):
                 assigned_team = team_str
                 break
         if assigned_team:
-            await ctx.send(f"{member.mention} is already on Team {assigned_team}.")
+            team_label = await self._team_label(ctx.guild, int(assigned_team))
+            await ctx.send(f"{member.mention} is already on {team_label}.")
             return
 
         team_key = str(team_number)
@@ -3722,7 +3794,8 @@ class ChampionsCircle(commands.Cog):
         if not isinstance(roster, list):
             roster = []
         if len(roster) >= team_size:
-            await ctx.send(f"Team {team_number} is already full.")
+            team_label = await self._team_label(ctx.guild, team_number)
+            await ctx.send(f"{team_label} is already full.")
             return
 
         roster.append(member.id)
@@ -3752,7 +3825,8 @@ class ChampionsCircle(commands.Cog):
             await self.config.guild(ctx.guild).draft_current_pick.set(len(draft_order))
             await self.config.guild(ctx.guild).draft_started.set(False)
             await self.config.guild(ctx.guild).draft_locked.set(True)
-            await ctx.send(f"Team {team_number} selected {member.mention}. Draft complete.")
+            team_label = await self._team_label(ctx.guild, team_number)
+            await ctx.send(f"{team_label} selected {member.mention}. Draft complete.")
             return
 
         await self.config.guild(ctx.guild).draft_current_pick.set(next_pick)
@@ -3762,9 +3836,11 @@ class ChampionsCircle(commands.Cog):
         next_captain = ctx.guild.get_member(next_captain_id) if next_captain_id else None
         next_captain_label = next_captain.mention if next_captain else "No captain set"
 
+        team_label = await self._team_label(ctx.guild, team_number)
+        next_label = await self._team_label(ctx.guild, next_team)
         await ctx.send(
-            f"Team {team_number} selected {member.mention}. "
-            f"Next up: Team {next_team} — {next_captain_label}"
+            f"{team_label} selected {member.mention}. "
+            f"Next up: {next_label} - {next_captain_label}"
         )
 
     @ccdraft.command(name="undo")
@@ -3813,7 +3889,8 @@ class ChampionsCircle(commands.Cog):
 
         member = ctx.guild.get_member(user_id)
         label = member.mention if member else f"<@{user_id}>"
-        await ctx.send(f"Undo complete. Removed {label} from Team {team_number}.")
+        team_label = await self._team_label(ctx.guild, team_number)
+        await ctx.send(f"Undo complete. Removed {label} from {team_label}.")
 
     @ccdraft.command(name="reset")
     async def ccdraft_reset(self, ctx):
@@ -3874,8 +3951,9 @@ class ChampionsCircle(commands.Cog):
         member_ids = [m.id for m in members]
         for team_str, captain_id in draft_captains.items():
             if int(team_str) != team_number and captain_id in member_ids:
+                team_label = await self._team_label(ctx.guild, int(team_str))
                 await ctx.send(
-                    f"A captain is already assigned to Team {team_str}. "
+                    f"A captain is already assigned to {team_label}. "
                     "Use `ccdraft captain` to move captains."
                 )
                 return
@@ -3888,8 +3966,9 @@ class ChampionsCircle(commands.Cog):
                 continue
             for member in members:
                 if member.id in team_users:
+                    team_label = await self._team_label(ctx.guild, int(team_str))
                     await ctx.send(
-                        f"{member.mention} is already assigned to Team {team_str}. "
+                        f"{member.mention} is already assigned to {team_label}. "
                         f"Use `ccdraft remove {team_str} @{member.name}` first."
                     )
                     return
@@ -3906,8 +3985,9 @@ class ChampionsCircle(commands.Cog):
         new_members = [m for m in members if m.id not in draft_assignments[team_key]]
 
         if current_size + len(new_members) > team_size:
+            team_label = await self._team_label(ctx.guild, team_number)
             await ctx.send(
-                f"Team {team_number} would exceed the team size limit of {team_size}. "
+                f"{team_label} would exceed the team size limit of {team_size}. "
                 f"Current: {current_size}, trying to add: {len(new_members)}."
             )
             return
@@ -3925,7 +4005,8 @@ class ChampionsCircle(commands.Cog):
         await self._update_challonge_team_roster(ctx.guild, team_number)
 
         mentions = ", ".join(m.mention for m in new_members)
-        await ctx.send(f"Assigned to Team {team_number}: {mentions}")
+        team_label = await self._team_label(ctx.guild, team_number)
+        await ctx.send(f"Assigned to {team_label}: {mentions}")
 
     @ccdraft.command(name="remove")
     async def ccdraft_remove(self, ctx, team_number: int, member: discord.Member):
@@ -3953,7 +4034,8 @@ class ChampionsCircle(commands.Cog):
 
         team_key = str(team_number)
         if team_key not in draft_assignments or member.id not in draft_assignments[team_key]:
-            await ctx.send(f"{member.mention} is not on Team {team_number}.")
+            team_label = await self._team_label(ctx.guild, team_number)
+            await ctx.send(f"{member.mention} is not on {team_label}.")
             return
 
         draft_assignments[team_key].remove(member.id)
@@ -3970,7 +4052,8 @@ class ChampionsCircle(commands.Cog):
         # Update Challonge misc field
         await self._update_challonge_team_roster(ctx.guild, team_number)
 
-        await ctx.send(f"Removed {member.mention} from Team {team_number}. They're back in the draft pool.")
+        team_label = await self._team_label(ctx.guild, team_number)
+        await ctx.send(f"Removed {member.mention} from {team_label}. They're back in the draft pool.")
 
     @ccdraft.command(name="show")
     async def ccdraft_show(self, ctx, team_number: Optional[int] = None):
@@ -3998,9 +4081,10 @@ class ChampionsCircle(commands.Cog):
             team_key = str(team_number)
             user_ids = draft_assignments.get(team_key, [])
             captain_id = draft_captains.get(team_key)
+            team_label = await self._team_label(ctx.guild, team_number)
 
             embed = discord.Embed(
-                title=f"{self._team_emoji(team_number)} Team {team_number}",
+                title=team_label,
                 description=f"**{len(user_ids)}/{team_size}** players",
                 color=self._random_role_color(),
             )
@@ -4039,7 +4123,7 @@ class ChampionsCircle(commands.Cog):
             team_key = str(i)
             user_ids = draft_assignments.get(team_key, [])
             captain_id = draft_captains.get(team_key)
-            emoji = self._team_emoji(i)
+            team_label = await self._team_label(ctx.guild, i)
 
             captain_member = ctx.guild.get_member(captain_id) if captain_id else None
             captain_label = captain_member.mention if captain_member else "Not set"
@@ -4057,7 +4141,7 @@ class ChampionsCircle(commands.Cog):
                 roster = "*Empty*"
 
             embed.add_field(
-                name=f"{emoji} Team {i} ({len(user_ids)}/{team_size})",
+                name=f"{team_label} ({len(user_ids)}/{team_size})",
                 value=f"Captain: {captain_label}\n{roster}",
                 inline=True,
             )
@@ -4133,9 +4217,11 @@ class ChampionsCircle(commands.Cog):
                 await self.config.guild(ctx.guild).draft_captains.set(draft_captains)
                 await self._set_captain_roles(ctx.guild, list(draft_captains.values()))
                 await self._update_challonge_team_roster(ctx.guild, team_number)
-                await ctx.send(f"Cleared Team {team_number}.")
+                team_label = await self._team_label(ctx.guild, team_number)
+                await ctx.send(f"Cleared {team_label}.")
             else:
-                await ctx.send(f"Team {team_number} has no assignments.")
+                team_label = await self._team_label(ctx.guild, team_number)
+                await ctx.send(f"{team_label} has no assignments.")
             return
 
         # Clear all
@@ -4187,15 +4273,17 @@ class ChampionsCircle(commands.Cog):
         team_key = str(team_number)
         for other_team, captain_id in draft_captains.items():
             if str(other_team) != team_key and captain_id == member.id:
-                await ctx.send(f"{member.mention} is already captain of Team {other_team}.")
+                team_label = await self._team_label(ctx.guild, int(other_team))
+                await ctx.send(f"{member.mention} is already captain of {team_label}.")
                 return
 
         for team_str, team_users in draft_assignments.items():
             if str(team_str) == team_key:
                 continue
             if isinstance(team_users, list) and member.id in team_users:
+                team_label = await self._team_label(ctx.guild, int(team_str))
                 await ctx.send(
-                    f"{member.mention} is already assigned to Team {team_str}. "
+                    f"{member.mention} is already assigned to {team_label}. "
                     f"Use `ccdraft remove {team_str} @{member.display_name}` first."
                 )
                 return
@@ -4213,7 +4301,8 @@ class ChampionsCircle(commands.Cog):
         await self._apply_draft_roles(ctx.guild, team_number, [member.id])
         await self._update_challonge_team_roster(ctx.guild, team_number)
 
-        await ctx.send(f"{member.mention} is now the captain of Team {team_number}.")
+        team_label = await self._team_label(ctx.guild, team_number)
+        await ctx.send(f"{member.mention} is now the captain of {team_label}.")
 
     # ─────────────────────────────────────────────────────────────────────────
     # DRAFT HELPER METHODS
@@ -4296,7 +4385,7 @@ class ChampionsCircle(commands.Cog):
         self, guild: discord.Guild, team_number: int, user_ids: List[int]
     ) -> None:
         """Apply team role to drafted players and grant channel access."""
-        team_role = self._get_team_role_for_number(guild, team_number)
+        team_role = await self._get_team_role_for_number(guild, team_number)
         if not team_role:
             return
 
@@ -4312,7 +4401,7 @@ class ChampionsCircle(commands.Cog):
         self, guild: discord.Guild, team_number: int, user_id: int
     ) -> None:
         """Remove team role from a player."""
-        team_role = self._get_team_role_for_number(guild, team_number)
+        team_role = await self._get_team_role_for_number(guild, team_number)
         if not team_role:
             return
 
@@ -4384,10 +4473,8 @@ class ChampionsCircle(commands.Cog):
 
         created = 0
         errors = 0
-        prefix = await self.config.guild(guild).team_voice_channel_prefix() or "Team"
-
         for i in range(1, team_count + 1):
-            team_name = f"{prefix} {i}"
+            team_name = await self._team_label(guild, i)
 
             # Skip if already exists
             if team_name.lower() in existing_names:
@@ -4674,6 +4761,7 @@ class ChampionsCircle(commands.Cog):
         team_count = await self.config.guild(guild).team_count()
         team_roles = await self.config.guild(guild).team_role_ids()
         team_text_channels = await self.config.guild(guild).team_text_channel_ids()
+        team_style = await self.config.guild(guild).team_name_style()
         questions = await self.config.guild(guild).custom_questions()
         applications_open = await self.config.guild(guild).applications_open()
         opened_at = await self.config.guild(guild).applications_opened_at()
@@ -4708,6 +4796,11 @@ class ChampionsCircle(commands.Cog):
         embed.add_field(
             name="Team size",
             value=str(self._team_size_from_mode(game_mode)),
+            inline=True,
+        )
+        embed.add_field(
+            name="Team naming",
+            value="Colors" if team_style == "colors" else "Numbered",
             inline=True,
         )
         embed.add_field(
@@ -5344,7 +5437,6 @@ class SetupModal(discord.ui.Modal, title="Tournament Setup"):
     def __init__(self, cog):
         super().__init__()
         self.cog = cog
-        self.game_mode_select: Optional[discord.ui.Select] = None
 
         self.tourney_title = discord.ui.TextInput(
             label="Tournament Title",
@@ -5375,6 +5467,25 @@ class SetupModal(discord.ui.Modal, title="Tournament Setup"):
         )
         self.add_item(self.duration)
 
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.process_setup(interaction, self)
+
+
+class SetupAdvancedModal(discord.ui.Modal, title="Tournament Setup (Advanced)"):
+    def __init__(self, cog: ChampionsCircle, guild_id: int):
+        super().__init__()
+        self.cog = cog
+        self.guild_id = guild_id
+        self.game_mode_select: Optional[discord.ui.Select] = None
+        self.team_style_select: Optional[discord.ui.Select] = None
+
+        self.team_count = discord.ui.TextInput(
+            label="Team count (optional)",
+            placeholder="Leave blank to skip voice channels",
+            required=False,
+        )
+        self.add_item(self.team_count)
+
         select_cls = getattr(discord.ui, "StringSelect", discord.ui.Select)
         game_mode = select_cls(
             placeholder="Game mode",
@@ -5389,29 +5500,30 @@ class SetupModal(discord.ui.Modal, title="Tournament Setup"):
             custom_id="ccsetup_game_mode",
         )
         self.game_mode_select = game_mode
-        label = discord.ui.Label(
+        mode_label = discord.ui.Label(
             text="Game mode",
             description="Choose 1v1, 2v2, 3v3, or 4v4.",
             component=game_mode,
         )
-        self.add_item(label)
+        self.add_item(mode_label)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.process_setup(interaction, self)
-
-
-class SetupAdvancedModal(discord.ui.Modal, title="Tournament Setup (Advanced)"):
-    def __init__(self, cog: ChampionsCircle, guild_id: int):
-        super().__init__()
-        self.cog = cog
-        self.guild_id = guild_id
-
-        self.team_count = discord.ui.TextInput(
-            label="Team count (optional)",
-            placeholder="Leave blank to skip voice channels",
-            required=False,
+        style_select = select_cls(
+            placeholder="Team names",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Team 1, Team 2 (numbered)", value="numbered"),
+                discord.SelectOption(label="Red, Cyan, Blue (colors)", value="colors"),
+            ],
+            custom_id="ccsetup_team_style",
         )
-        self.add_item(self.team_count)
+        self.team_style_select = style_select
+        style_label = discord.ui.Label(
+            text="Team naming",
+            description="Choose numbered teams or color names.",
+            component=style_select,
+        )
+        self.add_item(style_label)
 
     async def on_submit(self, interaction: discord.Interaction):
         await self.cog.process_advanced_setup(interaction, self)
