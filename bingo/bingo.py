@@ -661,7 +661,7 @@ class BingoPostModal(discord.ui.Modal, title="Post Bingo Card"):
             required=False,
         )
         self.editor_user = discord.ui.TextInput(
-            label="Editor @mention or ID (optional override)",
+            label="Editor @mention or ID (blank = you)",
             required=False,
         )
         self.add_item(self.seed)
@@ -810,8 +810,18 @@ class BingoPostModal(discord.ui.Modal, title="Post Bingo Card"):
                 editor_role = interaction.guild.get_role(default_role_id)
 
         if editor_role is None:
+            editor_user_id = interaction.user.id
+            await self.cog._post_single_card(
+                interaction.guild,
+                channel,
+                tasks=tasks,
+                font_path=font_path,
+                seed=seed,
+                editor_role=None,
+                editor_user_id=editor_user_id,
+            )
             await interaction.followup.send(
-                "Pick an editor user or role, or set a default with `!bingo editrole`.",
+                f"Posted the card to {channel.mention} (locked to you for testing).",
                 ephemeral=True,
             )
             return
