@@ -103,7 +103,7 @@ class Bingo(commands.Cog):
             name="Card Generation",
             value=(
                 "`bingo setup` - open the interactive generator\n"
-                "`bingo generate <count> [seed]` - generate one or more cards\n"
+                "`bingo generate <count> [seed]` - generate a batch of cards\n"
                 "`bingo tasks` - list current task pool"
             ),
             inline=False,
@@ -228,7 +228,7 @@ class Bingo(commands.Cog):
     async def bingo_setup(self, ctx: commands.Context) -> None:
         """Open the interactive generator modal."""
         view = BingoSetupView(self, ctx.author.id)
-        await ctx.send("Click to open the bingo generator:", view=view)
+        await ctx.send("Click to post a bingo card:", view=view)
 
     @bingo.command(name="mark")
     async def bingo_mark(self, ctx: commands.Context, index: int) -> None:
@@ -600,33 +600,27 @@ class BingoSetupView(discord.ui.View):
 
 class BingoSetupButton(discord.ui.Button):
     def __init__(self, cog: Bingo):
-        super().__init__(label="Open Bingo Generator", style=discord.ButtonStyle.green)
+        super().__init__(label="Post Bingo Card", style=discord.ButtonStyle.green)
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_modal(BingoPostModal(self.cog, interaction.guild))
 
 
-class BingoPostModal(discord.ui.Modal, title="Generate Bingo Cards"):
+class BingoPostModal(discord.ui.Modal, title="Post Bingo Card"):
     def __init__(self, cog: Bingo, guild: Optional[discord.Guild]):
         super().__init__()
         self.cog = cog
         self.guild = guild
 
-        self.count = discord.ui.TextInput(
-            label="How many cards?",
-            default="1",
-            required=True,
-        )
         self.seed = discord.ui.TextInput(
             label="Seed (optional)",
             required=False,
         )
         self.editor_user = discord.ui.TextInput(
-            label="Editor user ID or @mention (optional)",
+            label="Editor @mention or user ID (optional)",
             required=False,
         )
-        self.add_item(self.count)
         self.add_item(self.seed)
         self.add_item(self.editor_user)
 
@@ -689,17 +683,6 @@ class BingoPostModal(discord.ui.Modal, title="Generate Bingo Cards"):
             )
             return
 
-        try:
-            count = int(self.count.value.strip())
-        except ValueError:
-            await interaction.response.send_message("Count must be a number.", ephemeral=True)
-            return
-        if count < 1 or count > 50:
-            await interaction.response.send_message(
-                "Count must be between 1 and 50.", ephemeral=True
-            )
-            return
-
         seed = None
         seed_value = self.seed.value.strip()
         if seed_value:
@@ -740,11 +723,11 @@ class BingoPostModal(discord.ui.Modal, title="Generate Bingo Cards"):
                     "Editor user must be a user ID or @mention.", ephemeral=True
                 )
                 return
-            if not interaction.guild.get_member(editor_user_id):
-                await interaction.response.send_message(
-                    "Editor user not found in this server.", ephemeral=True
-                )
-                return
+        if not interaction.guild.get_member(editor_user_id):
+            await interaction.response.send_message(
+                "Editor user not found in this server.", ephemeral=True
+            )
+            return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -759,52 +742,48 @@ class BingoPostModal(discord.ui.Modal, title="Generate Bingo Cards"):
                 "Template image not found (card.jpg).", ephemeral=True
             )
             return
-
-        font_path = await self.cog.config.font_path()
-        if count == 1:
-            card_seed = seed or random.SystemRandom().randint(1, 2**32 - 1)
-            rng = random.Random(card_seed)
-            card_tasks = rng.sample(tasks, k=24)
-
-            timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-            out_dir = cog_data_path(self.cog) / "generated" / timestamp
-            out_dir.mkdir(parents=True, exist_ok=True)
-            output_path = out_dir / "bingo_card_01.png"
-            self.cog._render_card(card_tasks, output_path, font_path, marked=set())
-
-            card_entry = {
-                "tasks": card_tasks,
-                "marked": [],
-                "seed": card_seed,
-                "message_id": None,
-                "editor_role_id": editor_role.id if editor_role else None,
-                "editor_user_id": editor_user_id,
-            }
-
-            await self.cog._send_or_update_card(
-                channel,
-                card_entry,
-                output_path,
-                mention_role=editor_role,
-                mention_user_id=editor_user_id,
-            )
-
-            cards = await self.cog.config.guild(interaction.guild).cards()
-            cards[str(channel.id)] = card_entry
-            await self.cog.config.guild(interaction.guild).cards.set(cards)
-        else:
-            output_files, seed, out_dir = self.cog._generate_cards(count, seed, tasks, font_path)
-            zip_path = await self.cog._send_zip_if_possible(
-                channel, output_files, seed, count, out_dir, editor_role
-            )
-            if zip_path is None:
+        if editor_user_id is None and editor_role is None:
+            default_editor_role = await self.cog.config.guild(interaction.guild).editor_role_id()
+            if not default_editor_role:
                 await interaction.followup.send(
-                    "Zip was too large to upload. Check the channel for the local path.",
+                    "Pick an editor user/role, or set a default with `!bingo editrole`.",
                     ephemeral=True,
                 )
                 return
 
+        font_path = await self.cog.config.font_path()
+        card_seed = seed or random.SystemRandom().randint(1, 2**32 - 1)
+        rng = random.Random(card_seed)
+        card_tasks = rng.sample(tasks, k=24)
+
+        timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = cog_data_path(self.cog) / "generated" / timestamp
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output_path = out_dir / "bingo_card_01.png"
+        self.cog._render_card(card_tasks, output_path, font_path, marked=set())
+
+        card_entry = {
+            "tasks": card_tasks,
+            "marked": [],
+            "seed": card_seed,
+            "message_id": None,
+            "editor_role_id": editor_role.id if editor_role else None,
+            "editor_user_id": editor_user_id,
+        }
+
+        await self.cog._send_or_update_card(
+            channel,
+            card_entry,
+            output_path,
+            mention_role=editor_role,
+            mention_user_id=editor_user_id,
+        )
+
+        cards = await self.cog.config.guild(interaction.guild).cards()
+        cards[str(channel.id)] = card_entry
+        await self.cog.config.guild(interaction.guild).cards.set(cards)
+
         await interaction.followup.send(
-            f"Posted {count} card(s) to {channel.mention}.",
+            f"Posted the card to {channel.mention}.",
             ephemeral=True,
         )
