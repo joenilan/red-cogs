@@ -1453,6 +1453,7 @@ class ChampionsCircle(commands.Cog):
         created_ids: List[int] = []
         missing_roles: List[int] = []
         failed: List[int] = []
+        failed_details: List[str] = []
         for index in range(1, team_count + 1):
             emoji = self._team_emoji(index)
             name = f"{emoji} {prefix} {index}"
@@ -1472,7 +1473,10 @@ class ChampionsCircle(commands.Cog):
                         overwrites=overwrites,
                         reason="Champions Circle setup",
                     )
-                except discord.HTTPException:
+                except discord.HTTPException as exc:
+                    failed_details.append(
+                        f"Team {index}: HTTP {getattr(exc, 'status', '??')} (code {getattr(exc, 'code', 'n/a')})"
+                    )
                     failed.append(index)
                     continue
             else:
@@ -1504,6 +1508,8 @@ class ChampionsCircle(commands.Cog):
                 "Failed to create voice channels for teams: %s",
                 ", ".join(str(team) for team in sorted(set(failed))),
             )
+            if failed_details:
+                self.logger.error("Voice channel create errors: %s", " | ".join(failed_details))
         return created_ids
 
     async def _ensure_team_text_channels(
@@ -1524,6 +1530,7 @@ class ChampionsCircle(commands.Cog):
         created_ids: List[int] = []
         missing_roles: List[int] = []
         failed: List[int] = []
+        failed_details: List[str] = []
         for index in range(1, team_count + 1):
             emoji = self._team_emoji(index)
             name = f"{emoji}-{self._slugify_channel_name(f'{prefix} {index}')}"
@@ -1543,7 +1550,10 @@ class ChampionsCircle(commands.Cog):
                         overwrites=overwrites,
                         reason="Champions Circle setup",
                     )
-                except discord.HTTPException:
+                except discord.HTTPException as exc:
+                    failed_details.append(
+                        f"Team {index}: HTTP {getattr(exc, 'status', '??')} (code {getattr(exc, 'code', 'n/a')})"
+                    )
                     failed.append(index)
                     continue
             else:
@@ -1574,6 +1584,8 @@ class ChampionsCircle(commands.Cog):
                 "Failed to create text channels for teams: %s",
                 ", ".join(str(team) for team in sorted(set(failed))),
             )
+            if failed_details:
+                self.logger.error("Text channel create errors: %s", " | ".join(failed_details))
         return created_ids
 
     async def _create_team_voice_assets(self, guild: discord.Guild) -> None:
@@ -1585,9 +1597,20 @@ class ChampionsCircle(commands.Cog):
         category = await self._ensure_voice_category(guild, category_name)
         if not category:
             return
+        bot_member = guild.me or guild.get_member(self.bot.user.id)
+        if bot_member:
+            perms = bot_member.guild_permissions
+            if not perms.manage_roles or not perms.manage_channels:
+                await self._notify_team_asset_issue(
+                    guild,
+                    message=(
+                        "Bot lacks required permissions to create team assets. "
+                        f"manage_roles={perms.manage_roles}, manage_channels={perms.manage_channels}"
+                    ),
+                )
+                return
         overwrites = dict(category.overwrites)
         overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
-        bot_member = guild.me or guild.get_member(self.bot.user.id)
         if bot_member:
             overwrites[bot_member] = discord.PermissionOverwrite(
                 view_channel=True,
@@ -1613,7 +1636,7 @@ class ChampionsCircle(commands.Cog):
                 ),
             )
             return
-        await self._ensure_team_voice_channels(
+        voice_ids = await self._ensure_team_voice_channels(
             guild,
             category=category,
             team_count=team_count,
@@ -1627,6 +1650,14 @@ class ChampionsCircle(commands.Cog):
             prefix=prefix,
             team_roles=team_roles,
         )
+        if len(voice_ids) < team_count:
+            await self._notify_team_asset_issue(
+                guild,
+                message=(
+                    "Some team voice channels failed to create. "
+                    "Check Manage Channels/Permissions and bot role hierarchy."
+                ),
+            )
         if len(text_ids) < team_count:
             await self._notify_team_asset_issue(
                 guild,
