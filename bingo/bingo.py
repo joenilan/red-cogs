@@ -60,7 +60,7 @@ class Bingo(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=8352147791)
         self.config.register_global(tasks=[], font_path=None)
-        self.config.register_guild(captain_role_id=None, cards={})
+        self.config.register_guild(captain_role_id=None, cards={}, use_champions_circle=False)
         self.template_path = self._resolve_template_path()
 
     async def cog_load(self):
@@ -101,6 +101,7 @@ class Bingo(commands.Cog):
             name="Captain Controls",
             value=(
                 "`bingo setcaptainrole @role` - restrict edits to captains\n"
+                "`bingo usechampions <true|false>` - use ChampionsCircle data\n"
                 "`bingo mark <index>` - mark a square (1-25)\n"
                 "`bingo unmark <index>` - unmark a square"
             ),
@@ -180,6 +181,13 @@ class Bingo(commands.Cog):
             return
         await self.config.guild(ctx.guild).captain_role_id.set(role.id)
         await ctx.send(f"Captain role set to {role.mention}.")
+
+    @bingo.command(name="usechampions")
+    async def bingo_usechampions(self, ctx: commands.Context, enabled: bool) -> None:
+        """Enable or disable ChampionsCircle integration for captain checks."""
+        await self.config.guild(ctx.guild).use_champions_circle.set(enabled)
+        state = "enabled" if enabled else "disabled"
+        await ctx.send(f"ChampionsCircle integration is now {state}.")
 
     @bingo.command(name="generate")
     async def bingo_generate(
@@ -496,15 +504,19 @@ class Bingo(commands.Cog):
     async def _require_captain(self, ctx: commands.Context) -> bool:
         if ctx.author.guild_permissions.administrator:
             return True
-        champions = self._get_champions_cog()
-        if champions:
-            allowed, message = await self._champions_can_edit(ctx, champions)
-            if allowed:
-                return True
-            if message:
-                await ctx.send(message)
+        use_champions = await self.config.guild(ctx.guild).use_champions_circle()
+        if use_champions:
+            champions = self._get_champions_cog()
+            if champions:
+                allowed, message = await self._champions_can_edit(ctx, champions)
+                if allowed:
+                    return True
+                if message:
+                    await ctx.send(message)
+                    return False
+                await ctx.send("ChampionsCircle is loaded but team data is not available.")
                 return False
-            await ctx.send("ChampionsCircle is loaded but team data is not available.")
+            await ctx.send("ChampionsCircle integration is enabled but the cog is not loaded.")
             return False
         role_id = await self.config.guild(ctx.guild).captain_role_id()
         if not role_id:
