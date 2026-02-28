@@ -1,0 +1,14 @@
+{
+    "name": "MMIdleAlpha",
+    "short": "Discord alpha code redeem bridge for MMIdle",
+    "description": "Lets players redeem MMIdle alpha codes directly from Discord and provides admin configuration commands for the redeem API bridge.",
+    "end_user_data_statement": "This cog sends the invoking Discord user ID and redeem code to your configured MMIdle API endpoint. It stores API configuration and secrets in Red Config.",
+    "author": ["DreadedZombie"],
+    "required_cogs": {},
+    "requirements": ["aiohttp"],
+    "tags": ["mmidle", "alpha", "redeem", "discord"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}

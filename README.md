@@ -26,6 +26,11 @@ This repository contains custom cogs for Red-DiscordBot, including a ModApplicat
    - Configurable titles, descriptions, and colors
    - Guild-specific settings
 
+5. **MMIdleAlpha**
+   - Redeem MMIdle alpha access codes directly from Discord
+   - Uses secure shared-secret auth against MMIdle redeem API
+   - Includes admin configuration commands for API and onboarding links
+
 ## Installation
 
 To list all available cogs in this repository:
@@ -103,6 +108,33 @@ Then reload the cog:
 #### Reviewing Applications
 1. Applications will appear in the mod-applications channel
 2. Use the Approve/Deny buttons to process applications
+
+### MMIdleAlpha Cog
+
+#### Setup
+1. Install and load:
+   ```
+   [p]cog install dz-cogs mmidlealpha
+   [p]load mmidlealpha
+   ```
+2. Configure API bridge:
+   ```
+   [p]mmalpha setapi https://game.mmidle.com
+   [p]mmalpha setredeempath /api/integrations/discord/redeem
+   [p]mmalpha setstatuspath /api/integrations/discord/status
+   [p]mmalpha setapplyurl https://game.mmidle.com/apply
+   [p]mmalpha setredeemurl https://game.mmidle.com/redeem
+   [p]mmalpha setsecret <IDLEMMO_DISCORD_REDEEM_SECRET>
+   [p]mmalpha show
+   ```
+
+#### Player Commands
+- `/redeem <code>`: Redeem alpha code against linked MMIdle account
+- `/alphalink`: Show MMIdle apply/link/redeem URLs
+- `/alphastatus`: Show linked/account alpha status
+
+#### Staff Command
+- `/alphadiag [user]`: Admin-only API health + integration diagnostic for a Discord user
 
 ## Configuration
 
