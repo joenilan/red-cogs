@@ -8,7 +8,7 @@ This repository hosts Red-DiscordBot cogs.
 
 - Cog package: `mmidlealpha/`
 - Primary commands:
-  - Player: `/redeem`, `/alphalink`, `/alphastatus`
+  - Player: `/mmidle` (alias `/mmidlealpha`), `/redeem`, `/alphalink`, `/alphastatus`
   - Staff: `/alphadiag`
   - Admin config group: `[p]mmalpha ...`
 - API contract targets MMIdle endpoints:

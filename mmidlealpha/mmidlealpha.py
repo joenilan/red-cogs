@@ -19,7 +19,7 @@ class MMIdleAlpha(commands.Cog):
     """MMIdle alpha access code redeem and onboarding commands."""
 
     __author__ = "DreadedZombie"
-    __version__ = "0.1.1"
+    __version__ = "0.1.2"
 
     def __init__(self, bot: Red) -> None:
         self.bot = bot
@@ -153,6 +153,30 @@ class MMIdleAlpha(commands.Cog):
     @staticmethod
     def _read_error(payload: dict[str, Any]) -> str:
         return str(payload.get("error") or payload.get("message") or "").strip()
+
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @commands.hybrid_command(name="mmidle", aliases=["mmidlealpha"], with_app_command=True)
+    async def mmidle_help(self, ctx: commands.Context) -> None:
+        """Show MMIdle alpha command shortcuts."""
+        cfg = await self._fetch_config()
+        await self._send_private_reply(
+            ctx,
+            "\n".join(
+                [
+                    "MMIdle alpha commands:",
+                    "- /redeem <code> (or prefix: redeem <code>)",
+                    "- /alphastatus",
+                    "- /alphalink",
+                    "",
+                    "Links:",
+                    f"- Apply + link Discord: {cfg['apply_url']}",
+                    f"- Redeem on web: {cfg['redeem_url']}",
+                    "",
+                    "Admin config: [p]mmalpha ...",
+                ]
+            ),
+        )
 
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.allowed_installs(guilds=True, users=True)

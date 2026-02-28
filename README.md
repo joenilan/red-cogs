@@ -129,6 +129,7 @@ Then reload the cog:
    ```
 
 #### Player Commands
+- `/mmidle` (alias: `/mmidlealpha`): Show MMIdle alpha command shortcuts
 - `/redeem <code>`: Redeem alpha code against linked MMIdle account
 - `/alphalink`: Show MMIdle apply/link/redeem URLs
 - `/alphastatus`: Show linked/account alpha status
