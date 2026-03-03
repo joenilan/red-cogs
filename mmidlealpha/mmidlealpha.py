@@ -69,39 +69,23 @@ class MMAlphaRolePanelView(discord.ui.View):
 
 
 class MMAlphaRoleSetupModal(discord.ui.Modal, title="MMIdle Role Panel Setup"):
-    panel_title = discord.ui.TextInput(
-        label="Panel Title",
-        max_length=90,
-        required=True,
-    )
-    panel_description = discord.ui.TextInput(
-        label="Panel Description",
-        style=discord.TextStyle.long,
-        max_length=600,
-        required=False,
-    )
-
     def __init__(
         self,
         cog: "MMIdleAlpha",
         guild: discord.Guild,
         *,
-        default_title: str,
-        default_description: str,
         selected_channel_id: int | None,
         selected_role_ids: list[int],
     ) -> None:
         super().__init__(timeout=300)
         self.cog = cog
         self.guild = guild
-        self.panel_title.default = default_title
-        self.panel_description.default = default_description
         self.channel_select = self._build_channel_select(selected_channel_id)
         if self.channel_select:
             self.add_item(
                 discord.ui.Label(
-                    text="Target Channel",
-                    description="Select where the onboarding panel should be posted.",
+                    text="Post Channel",
+                    description="Choose the channel where the role panel message is posted.",
                     component=self.channel_select,
                 )
             )
@@ -109,8 +93,8 @@ class MMAlphaRoleSetupModal(discord.ui.Modal, title="MMIdle Role Panel Setup"):
         if self.role_select:
             self.add_item(
                 discord.ui.Label(
-                    text="Self-Assignable Roles",
-                    description="Pick up to 25 roles to include in the panel.",
+                    text="Assignable Roles",
+                    description="Pick up to 25 roles users can assign to themselves.",
                     component=self.role_select,
                 )
             )
@@ -179,13 +163,8 @@ class MMAlphaRoleSetupModal(discord.ui.Modal, title="MMIdle Role Panel Setup"):
             await _respond_interaction(interaction, "Selected channel is invalid.")
             return
 
-        title = str(self.panel_title.value or "").strip() or "MMIdle Role Onboarding"
-        description = str(self.panel_description.value or "").strip() or "Pick your server roles below."
-
         await self.cog.config.guild(self.guild).roles_panel_channel_id.set(channel.id)
         await self.cog.config.guild(self.guild).roles_panel_role_ids.set(role_ids[:25])
-        await self.cog.config.guild(self.guild).roles_panel_title.set(title)
-        await self.cog.config.guild(self.guild).roles_panel_description.set(description)
 
         try:
             message, hidden_count = await self.cog._publish_role_panel(self.guild, channel)
@@ -223,8 +202,6 @@ class MMAlphaOpenSetupModalButton(discord.ui.Button):
         modal = MMAlphaRoleSetupModal(
             cog=self.cog,
             guild=guild,
-            default_title=str(guild_cfg.get("roles_panel_title") or "MMIdle Role Onboarding"),
-            default_description=str(guild_cfg.get("roles_panel_description") or "Pick your server roles below."),
             selected_channel_id=int(guild_cfg.get("roles_panel_channel_id") or 0) or None,
             selected_role_ids=[int(r) for r in guild_cfg.get("roles_panel_role_ids", []) if str(r).isdigit()],
         )
@@ -636,8 +613,6 @@ class MMIdleAlpha(commands.Cog):
         modal = MMAlphaRoleSetupModal(
             cog=self,
             guild=guild,
-            default_title=str(guild_cfg.get("roles_panel_title") or "MMIdle Role Onboarding"),
-            default_description=str(guild_cfg.get("roles_panel_description") or "Pick your server roles below."),
             selected_channel_id=int(guild_cfg.get("roles_panel_channel_id") or 0) or None,
             selected_role_ids=[int(r) for r in guild_cfg.get("roles_panel_role_ids", []) if str(r).isdigit()],
         )
