@@ -98,6 +98,15 @@ class MMAlphaRoleSetupModal(discord.ui.Modal, title="MMIdle Role Panel Setup"):
                     component=self.role_select,
                 )
             )
+        self.mode_select = self._build_mode_select()
+        if self.mode_select:
+            self.add_item(
+                discord.ui.Label(
+                    text="Update Mode",
+                    description="Add to existing, replace all, or remove from existing.",
+                    component=self.mode_select,
+                )
+            )
 
     def _build_channel_select(self, selected_channel_id: int | None) -> discord.ui.Select | None:
         channels = self.guild.text_channels[:25]
@@ -141,6 +150,32 @@ class MMAlphaRoleSetupModal(discord.ui.Modal, title="MMIdle Role Panel Setup"):
             max_values=min(25, len(options)),
         )
 
+    def _build_mode_select(self) -> discord.ui.Select:
+        select_cls = getattr(discord.ui, "StringSelect", discord.ui.Select)
+        return select_cls(
+            placeholder="Select update mode",
+            options=[
+                discord.SelectOption(
+                    label="Add Selected Roles",
+                    value="add",
+                    description="Merge selected roles into current panel roles.",
+                    default=True,
+                ),
+                discord.SelectOption(
+                    label="Replace Panel Roles",
+                    value="replace",
+                    description="Replace all current panel roles with selected roles.",
+                ),
+                discord.SelectOption(
+                    label="Remove Selected Roles",
+                    value="remove",
+                    description="Remove selected roles from current panel roles.",
+                ),
+            ],
+            min_values=1,
+            max_values=1,
+        )
+
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None or interaction.guild.id != self.guild.id:
             await _respond_interaction(interaction, "This setup modal is only valid in its original server.")
@@ -154,17 +189,37 @@ class MMAlphaRoleSetupModal(discord.ui.Modal, title="MMIdle Role Panel Setup"):
         if not self.role_select or not self.role_select.values:
             await _respond_interaction(interaction, "Select at least one role.")
             return
+        if not self.mode_select or not self.mode_select.values:
+            await _respond_interaction(interaction, "Select an update mode.")
+            return
 
         channel_id = int(self.channel_select.values[0])
-        role_ids = [int(role_id) for role_id in self.role_select.values if role_id.isdigit()]
+        selected_role_ids = [int(role_id) for role_id in self.role_select.values if role_id.isdigit()]
+        update_mode = str(self.mode_select.values[0]).strip().lower()
+        existing_role_ids = [
+            int(role_id)
+            for role_id in await self.cog.config.guild(self.guild).roles_panel_role_ids()
+            if str(role_id).isdigit()
+        ]
+        existing_set = set(existing_role_ids)
+        selected_set = set(selected_role_ids)
+        if update_mode == "replace":
+            final_role_ids = list(selected_set)
+        elif update_mode == "remove":
+            final_role_ids = list(existing_set - selected_set)
+        else:
+            final_role_ids = list(existing_set | selected_set)
 
         channel = self.guild.get_channel(channel_id)
         if not isinstance(channel, discord.TextChannel):
             await _respond_interaction(interaction, "Selected channel is invalid.")
             return
+        if not final_role_ids:
+            await _respond_interaction(interaction, "Resulting panel role list is empty; pick at least one role.")
+            return
 
         await self.cog.config.guild(self.guild).roles_panel_channel_id.set(channel.id)
-        await self.cog.config.guild(self.guild).roles_panel_role_ids.set(role_ids[:25])
+        await self.cog.config.guild(self.guild).roles_panel_role_ids.set(final_role_ids[:25])
 
         try:
             message, hidden_count = await self.cog._publish_role_panel(self.guild, channel)
@@ -173,6 +228,9 @@ class MMAlphaRoleSetupModal(discord.ui.Modal, title="MMIdle Role Panel Setup"):
             return
 
         lines = [f"Role panel published: {message.jump_url}"]
+        lines.append(
+            f"Mode: {update_mode} | Selected: {len(selected_set)} | Panel Roles Now: {min(len(final_role_ids), 25)}"
+        )
         if hidden_count > 0:
             lines.append(f"Note: {hidden_count} role(s) were skipped due the 25-option Discord limit.")
         await _respond_interaction(interaction, "\n".join(lines))
