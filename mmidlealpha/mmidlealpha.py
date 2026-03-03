@@ -15,11 +15,222 @@ from redbot.core.bot import Red
 CODE_PATTERN = re.compile(r"[^A-Z0-9]")
 
 
+async def _respond_interaction(interaction: discord.Interaction, message: str, *, ephemeral: bool = True) -> None:
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=ephemeral)
+    else:
+        await interaction.response.send_message(message, ephemeral=ephemeral)
+
+
+class MMAlphaRolePanelSelect(discord.ui.Select):
+    def __init__(self, cog: "MMIdleAlpha", guild_id: int, options: list[discord.SelectOption]) -> None:
+        super().__init__(
+            custom_id=f"mmalpha:panel:select:{guild_id}",
+            placeholder="Pick your MMIdle roles",
+            min_values=1,
+            max_values=min(len(options), 25),
+            options=options[:25],
+        )
+        self.cog = cog
+        self.guild_id = guild_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected_ids = {int(value) for value in self.values if value.isdigit()}
+        await self.cog._apply_panel_role_selection(
+            interaction=interaction,
+            guild_id=self.guild_id,
+            selected_role_ids=selected_ids,
+        )
+
+
+class MMAlphaRolePanelClearButton(discord.ui.Button):
+    def __init__(self, cog: "MMIdleAlpha", guild_id: int) -> None:
+        super().__init__(
+            custom_id=f"mmalpha:panel:clear:{guild_id}",
+            style=discord.ButtonStyle.secondary,
+            label="Clear MMIdle Roles",
+        )
+        self.cog = cog
+        self.guild_id = guild_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await self.cog._apply_panel_role_selection(
+            interaction=interaction,
+            guild_id=self.guild_id,
+            selected_role_ids=set(),
+        )
+
+
+class MMAlphaRolePanelView(discord.ui.View):
+    def __init__(self, cog: "MMIdleAlpha", guild_id: int, options: list[discord.SelectOption]) -> None:
+        super().__init__(timeout=None)
+        self.add_item(MMAlphaRolePanelSelect(cog=cog, guild_id=guild_id, options=options))
+        self.add_item(MMAlphaRolePanelClearButton(cog=cog, guild_id=guild_id))
+
+
+class MMAlphaPanelTextModal(discord.ui.Modal, title="MMIdle Role Panel Text"):
+    panel_title = discord.ui.TextInput(
+        label="Panel title",
+        max_length=90,
+        required=True,
+    )
+    panel_description = discord.ui.TextInput(
+        label="Panel description",
+        style=discord.TextStyle.long,
+        max_length=600,
+        required=False,
+    )
+
+    def __init__(self, parent: "MMAlphaRoleSetupView", default_title: str, default_description: str) -> None:
+        super().__init__(timeout=300)
+        self.parent_view = parent
+        self.panel_title.default = default_title
+        self.panel_description.default = default_description
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not await self.parent_view.ensure_owner(interaction):
+            return
+        self.parent_view.panel_title = str(self.panel_title.value).strip() or self.parent_view.panel_title
+        self.parent_view.panel_description = str(self.panel_description.value).strip() or self.parent_view.panel_description
+        await _respond_interaction(interaction, "Panel text updated.")
+
+
+class MMAlphaSetupChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, parent: "MMAlphaRoleSetupView") -> None:
+        super().__init__(
+            custom_id=f"mmalpha:setup:channel:{parent.guild_id}:{parent.owner_id}",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            min_values=1,
+            max_values=1,
+            placeholder="1) Select the target channel for the role panel",
+        )
+        self.parent_view = parent
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not await self.parent_view.ensure_owner(interaction):
+            return
+        channel = self.values[0]
+        self.parent_view.channel_id = channel.id
+        await _respond_interaction(interaction, f"Channel selected: {channel.mention}")
+
+
+class MMAlphaSetupRoleSelect(discord.ui.RoleSelect):
+    def __init__(self, parent: "MMAlphaRoleSetupView") -> None:
+        super().__init__(
+            custom_id=f"mmalpha:setup:roles:{parent.guild_id}:{parent.owner_id}",
+            min_values=1,
+            max_values=25,
+            placeholder="2) Select up to 25 self-assignable roles",
+        )
+        self.parent_view = parent
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not await self.parent_view.ensure_owner(interaction):
+            return
+        selected = [role.id for role in self.values if not role.is_default()]
+        self.parent_view.role_ids = list(dict.fromkeys(selected))
+        await _respond_interaction(interaction, f"Selected {len(self.parent_view.role_ids)} role(s).")
+
+
+class MMAlphaRoleSetupView(discord.ui.View):
+    def __init__(
+        self,
+        cog: "MMIdleAlpha",
+        *,
+        guild_id: int,
+        owner_id: int,
+        channel_id: int | None,
+        role_ids: list[int],
+        panel_title: str,
+        panel_description: str,
+    ) -> None:
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.owner_id = owner_id
+        self.channel_id = channel_id
+        self.role_ids = role_ids
+        self.panel_title = panel_title
+        self.panel_description = panel_description
+        self.add_item(MMAlphaSetupChannelSelect(self))
+        self.add_item(MMAlphaSetupRoleSelect(self))
+
+    async def ensure_owner(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await _respond_interaction(interaction, "Only the setup command author can use this panel.")
+        return False
+
+    @discord.ui.button(label="Customize Text", style=discord.ButtonStyle.secondary, row=2)
+    async def customize_text(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if not await self.ensure_owner(interaction):
+            return
+        await interaction.response.send_modal(
+            MMAlphaPanelTextModal(
+                parent=self,
+                default_title=self.panel_title,
+                default_description=self.panel_description,
+            )
+        )
+
+    @discord.ui.button(label="Save + Publish Panel", style=discord.ButtonStyle.success, row=2)
+    async def publish_panel(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if not await self.ensure_owner(interaction):
+            return
+        guild = interaction.guild
+        if guild is None or guild.id != self.guild_id:
+            await _respond_interaction(interaction, "This setup panel is no longer valid in this server.")
+            return
+
+        channel_id = self.channel_id
+        role_ids = self.role_ids
+        if not channel_id:
+            channel_id = await self.cog.config.guild(guild).roles_panel_channel_id()
+        if not role_ids:
+            role_ids = await self.cog.config.guild(guild).roles_panel_role_ids()
+
+        if not channel_id:
+            await _respond_interaction(interaction, "Select a target channel first.")
+            return
+        if not role_ids:
+            await _respond_interaction(interaction, "Select at least one role first.")
+            return
+
+        channel = guild.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            await _respond_interaction(interaction, "Configured channel is invalid. Pick a text channel.")
+            return
+
+        await self.cog.config.guild(guild).roles_panel_channel_id.set(channel.id)
+        await self.cog.config.guild(guild).roles_panel_role_ids.set(role_ids[:25])
+        await self.cog.config.guild(guild).roles_panel_title.set(self.panel_title)
+        await self.cog.config.guild(guild).roles_panel_description.set(self.panel_description)
+
+        try:
+            message, hidden_count = await self.cog._publish_role_panel(guild, channel)
+        except RuntimeError as err:
+            await _respond_interaction(interaction, str(err))
+            return
+
+        lines = [f"Role panel published: {message.jump_url}"]
+        if hidden_count > 0:
+            lines.append(f"Note: {hidden_count} configured role(s) were not included (Discord limit is 25).")
+        await _respond_interaction(interaction, "\n".join(lines))
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=2)
+    async def close_setup(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if not await self.ensure_owner(interaction):
+            return
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
+
 class MMIdleAlpha(commands.Cog):
     """MMIdle alpha access code redeem and onboarding commands."""
 
     __author__ = "DreadedZombie"
-    __version__ = "0.1.2"
+    __version__ = "0.2.0"
 
     def __init__(self, bot: Red) -> None:
         self.bot = bot
@@ -33,10 +244,21 @@ class MMIdleAlpha(commands.Cog):
             bot_secret="",
             request_timeout_seconds=12,
         )
+        self.config.register_guild(
+            roles_panel_channel_id=0,
+            roles_panel_message_id=0,
+            roles_panel_role_ids=[],
+            roles_panel_title="MMIdle Role Onboarding",
+            roles_panel_description=(
+                "Pick your server roles below. "
+                "Use the dropdown to add or remove your MMIdle server roles."
+            ),
+        )
         self.session: aiohttp.ClientSession | None = None
 
     async def cog_load(self) -> None:
         self._ensure_session()
+        await self._restore_role_panel_views()
 
     def cog_unload(self) -> None:
         if self.session and not self.session.closed:
@@ -154,6 +376,184 @@ class MMIdleAlpha(commands.Cog):
     def _read_error(payload: dict[str, Any]) -> str:
         return str(payload.get("error") or payload.get("message") or "").strip()
 
+    @staticmethod
+    def _dedupe_role_ids(role_ids: list[int]) -> list[int]:
+        seen: set[int] = set()
+        result: list[int] = []
+        for role_id in role_ids:
+            if role_id in seen:
+                continue
+            seen.add(role_id)
+            result.append(role_id)
+        return result
+
+    async def _restore_role_panel_views(self) -> None:
+        guild_configs = await self.config.all_guilds()
+        for guild_id_raw, guild_cfg in guild_configs.items():
+            try:
+                guild_id = int(guild_id_raw)
+            except (TypeError, ValueError):
+                continue
+            message_id = int(guild_cfg.get("roles_panel_message_id") or 0)
+            if message_id <= 0:
+                continue
+            guild = self.bot.get_guild(guild_id)
+            if guild is None:
+                continue
+            view, _hidden_count = await self._build_role_panel_view(guild)
+            if view is None:
+                continue
+            self.bot.add_view(view, message_id=message_id)
+
+    async def _build_role_panel_view(self, guild: discord.Guild) -> tuple[MMAlphaRolePanelView | None, int]:
+        role_ids = self._dedupe_role_ids(
+            [int(r) for r in await self.config.guild(guild).roles_panel_role_ids() if str(r).isdigit()]
+        )
+        options: list[discord.SelectOption] = []
+        for role_id in role_ids:
+            role = guild.get_role(role_id)
+            if role is None or role.is_default():
+                continue
+            options.append(
+                discord.SelectOption(
+                    label=role.name[:100],
+                    value=str(role.id),
+                )
+            )
+
+        hidden_count = 0
+        if len(options) > 25:
+            hidden_count = len(options) - 25
+            options = options[:25]
+        if not options:
+            return None, hidden_count
+        return MMAlphaRolePanelView(cog=self, guild_id=guild.id, options=options), hidden_count
+
+    async def _build_role_panel_embed(self, guild: discord.Guild) -> discord.Embed:
+        title = str(await self.config.guild(guild).roles_panel_title()).strip() or "MMIdle Role Onboarding"
+        description = str(await self.config.guild(guild).roles_panel_description()).strip()
+        if not description:
+            description = "Pick your server roles below."
+        embed = discord.Embed(
+            title=title[:256],
+            description=description[:4000],
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="How this works",
+            value=(
+                "- Select one or more roles in the dropdown.\n"
+                "- Submit selection to apply/remove roles instantly.\n"
+                "- Use **Clear MMIdle Roles** to remove all roles from this panel."
+            ),
+            inline=False,
+        )
+        return embed
+
+    async def _publish_role_panel(
+        self, guild: discord.Guild, channel: discord.TextChannel
+    ) -> tuple[discord.Message, int]:
+        bot_member = guild.me or (guild.get_member(self.bot.user.id) if self.bot.user else None)
+        if bot_member is None:
+            raise RuntimeError("Bot member context missing; cannot publish role panel.")
+        if not channel.permissions_for(bot_member).send_messages:
+            raise RuntimeError(f"I cannot send messages in {channel.mention}.")
+        if not channel.permissions_for(bot_member).embed_links:
+            raise RuntimeError(f"I cannot embed links in {channel.mention}.")
+        if not bot_member.guild_permissions.manage_roles:
+            raise RuntimeError("I need Manage Roles permission to run this panel.")
+
+        view, hidden_count = await self._build_role_panel_view(guild)
+        if view is None:
+            raise RuntimeError("No valid roles configured for panel. Use /mmidlerolesetup first.")
+        embed = await self._build_role_panel_embed(guild)
+
+        existing_message_id = int(await self.config.guild(guild).roles_panel_message_id() or 0)
+        existing_channel_id = int(await self.config.guild(guild).roles_panel_channel_id() or 0)
+        message: discord.Message | None = None
+        if existing_message_id > 0 and existing_channel_id == channel.id:
+            try:
+                existing = await channel.fetch_message(existing_message_id)
+                await existing.edit(embed=embed, view=view)
+                message = existing
+            except discord.HTTPException:
+                message = None
+
+        if message is None:
+            message = await channel.send(embed=embed, view=view)
+
+        await self.config.guild(guild).roles_panel_channel_id.set(channel.id)
+        await self.config.guild(guild).roles_panel_message_id.set(message.id)
+        self.bot.add_view(view, message_id=message.id)
+        return message, hidden_count
+
+    async def _apply_panel_role_selection(
+        self,
+        *,
+        interaction: discord.Interaction,
+        guild_id: int,
+        selected_role_ids: set[int],
+    ) -> None:
+        guild = interaction.guild
+        if guild is None or guild.id != guild_id:
+            await _respond_interaction(interaction, "This role panel is only valid in its original server.")
+            return
+        member = interaction.user if isinstance(interaction.user, discord.Member) else guild.get_member(interaction.user.id)
+        if member is None:
+            await _respond_interaction(interaction, "Could not resolve your member record in this server.")
+            return
+        bot_member = guild.me or (guild.get_member(self.bot.user.id) if self.bot.user else None)
+        if bot_member is None or not bot_member.guild_permissions.manage_roles:
+            await _respond_interaction(interaction, "Bot is missing Manage Roles permission.")
+            return
+
+        panel_role_ids = self._dedupe_role_ids(
+            [int(r) for r in await self.config.guild(guild).roles_panel_role_ids() if str(r).isdigit()]
+        )
+        panel_roles: list[discord.Role] = []
+        unmanageable: list[str] = []
+        for role_id in panel_role_ids:
+            role = guild.get_role(role_id)
+            if role is None or role.is_default():
+                continue
+            if role >= bot_member.top_role:
+                unmanageable.append(role.name)
+                continue
+            panel_roles.append(role)
+        if not panel_roles:
+            await _respond_interaction(interaction, "No manageable roles are configured for this panel.")
+            return
+
+        selected_set = {role.id for role in panel_roles if role.id in selected_role_ids}
+        to_add = [role for role in panel_roles if role.id in selected_set and role not in member.roles]
+        to_remove = [role for role in panel_roles if role.id not in selected_set and role in member.roles]
+
+        try:
+            if to_add:
+                await member.add_roles(*to_add, reason="MMIdle role panel selection")
+            if to_remove:
+                await member.remove_roles(*to_remove, reason="MMIdle role panel selection")
+        except discord.Forbidden:
+            await _respond_interaction(
+                interaction,
+                "I could not update roles (permission/hierarchy issue). Ask staff to verify my role position.",
+            )
+            return
+        except discord.HTTPException:
+            await _respond_interaction(interaction, "Discord rejected the role update. Try again in a moment.")
+            return
+
+        added_names = ", ".join(role.name for role in to_add) or "none"
+        removed_names = ", ".join(role.name for role in to_remove) or "none"
+        lines = [
+            "MMIdle role update complete.",
+            f"Added: {added_names}",
+            f"Removed: {removed_names}",
+        ]
+        if unmanageable:
+            lines.append(f"Skipped (bot role hierarchy): {', '.join(unmanageable)}")
+        await _respond_interaction(interaction, "\n".join(lines))
+
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.allowed_installs(guilds=True, users=True)
     @commands.hybrid_command(name="mmidle", aliases=["mmidlealpha"], with_app_command=True)
@@ -168,15 +568,82 @@ class MMIdleAlpha(commands.Cog):
                     "- /redeem <code> (or prefix: redeem <code>)",
                     "- /alphastatus",
                     "- /alphalink",
+                    "- /mmidleroles (show role panel link in this server)",
                     "",
                     "Links:",
                     f"- Apply + link Discord: {cfg['apply_url']}",
                     f"- Redeem on web: {cfg['redeem_url']}",
                     "",
                     "Admin config: [p]mmalpha ...",
+                    "Admin role onboarding UI: /mmidlerolesetup",
                 ]
             ),
         )
+
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @commands.hybrid_command(name="mmidleroles", with_app_command=True)
+    @commands.guild_only()
+    async def mmidle_roles(self, ctx: commands.Context) -> None:
+        """Show the MMIdle role onboarding panel link."""
+        guild = ctx.guild
+        if guild is None:
+            await self._send_private_reply(ctx, "Use this command inside your server.")
+            return
+        channel_id = int(await self.config.guild(guild).roles_panel_channel_id() or 0)
+        message_id = int(await self.config.guild(guild).roles_panel_message_id() or 0)
+        if channel_id <= 0 or message_id <= 0:
+            await self._send_private_reply(ctx, "Role onboarding panel is not configured yet.")
+            return
+        channel = guild.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            await self._send_private_reply(ctx, "Configured onboarding channel is invalid. Ask staff to republish.")
+            return
+        panel_url = f"https://discord.com/channels/{guild.id}/{channel.id}/{message_id}"
+        await self._send_private_reply(ctx, f"MMIdle role panel: {panel_url}")
+
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.default_permissions(administrator=True)
+    @commands.hybrid_command(name="mmidlerolesetup", with_app_command=True)
+    @commands.guild_only()
+    @commands.admin_or_permissions(administrator=True)
+    async def mmidle_roles_setup(self, ctx: commands.Context) -> None:
+        """Open interactive MMIdle role panel setup."""
+        guild = ctx.guild
+        if guild is None:
+            await self._send_private_reply(ctx, "Use this command inside your server.")
+            return
+
+        guild_cfg = await self.config.guild(guild).all()
+        view = MMAlphaRoleSetupView(
+            cog=self,
+            guild_id=guild.id,
+            owner_id=ctx.author.id,
+            channel_id=int(guild_cfg.get("roles_panel_channel_id") or 0) or None,
+            role_ids=[int(r) for r in guild_cfg.get("roles_panel_role_ids", []) if str(r).isdigit()],
+            panel_title=str(guild_cfg.get("roles_panel_title") or "MMIdle Role Onboarding"),
+            panel_description=str(guild_cfg.get("roles_panel_description") or "Pick your server roles below."),
+        )
+        content = (
+            "MMIdle role onboarding setup:\n"
+            "1) Select a channel\n"
+            "2) Select roles (spaces supported)\n"
+            "3) Customize text (optional)\n"
+            "4) Save + Publish"
+        )
+
+        interaction = getattr(ctx, "interaction", None)
+        if interaction is not None:
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(content, view=view, ephemeral=True)
+                else:
+                    await interaction.response.send_message(content, view=view, ephemeral=True)
+                return
+            except discord.HTTPException:
+                pass
+        await ctx.send(content, view=view)
 
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.allowed_installs(guilds=True, users=True)
@@ -422,7 +889,11 @@ class MMIdleAlpha(commands.Cog):
     async def mmalpha_show(self, ctx: commands.Context) -> None:
         """Show current cog configuration (secret redacted)."""
         cfg = await self._fetch_config()
+        guild_cfg = await self.config.guild(ctx.guild).all() if ctx.guild else {}
         masked_secret = "configured" if cfg["bot_secret"] else "missing"
+        role_channel_id = int(guild_cfg.get("roles_panel_channel_id") or 0)
+        role_message_id = int(guild_cfg.get("roles_panel_message_id") or 0)
+        role_count = len([r for r in guild_cfg.get("roles_panel_role_ids", []) if str(r).isdigit()])
         await ctx.send(
             "\n".join(
                 [
@@ -433,9 +904,71 @@ class MMIdleAlpha(commands.Cog):
                     f"Redeem URL: {cfg['redeem_url']}",
                     f"Request Timeout: {cfg['request_timeout_seconds']}s",
                     f"Bot Secret: {masked_secret}",
+                    f"Roles Panel Channel ID: {role_channel_id or '(missing)'}",
+                    f"Roles Panel Message ID: {role_message_id or '(missing)'}",
+                    f"Roles Configured: {role_count}",
                 ]
             )
         )
+
+    @mmalpha_group.command(name="roleshow")
+    async def mmalpha_role_show(self, ctx: commands.Context) -> None:
+        """Show role onboarding panel configuration for this server."""
+        guild = ctx.guild
+        guild_cfg = await self.config.guild(guild).all()
+        channel_id = int(guild_cfg.get("roles_panel_channel_id") or 0)
+        message_id = int(guild_cfg.get("roles_panel_message_id") or 0)
+        role_ids = [int(r) for r in guild_cfg.get("roles_panel_role_ids", []) if str(r).isdigit()]
+        roles = [guild.get_role(role_id) for role_id in role_ids]
+        role_names = [role.name for role in roles if role is not None]
+        if not role_names:
+            role_display = "(none)"
+        else:
+            role_display = ", ".join(role_names[:25])
+        panel_url = (
+            f"https://discord.com/channels/{guild.id}/{channel_id}/{message_id}"
+            if channel_id and message_id
+            else "(not published)"
+        )
+        await ctx.send(
+            "\n".join(
+                [
+                    f"Panel Title: {guild_cfg.get('roles_panel_title', 'MMIdle Role Onboarding')}",
+                    f"Panel Channel ID: {channel_id or '(missing)'}",
+                    f"Panel Message ID: {message_id or '(missing)'}",
+                    f"Panel URL: {panel_url}",
+                    f"Configured Roles ({len(role_names)}): {role_display}",
+                ]
+            )
+        )
+
+    @mmalpha_group.command(name="publishroles")
+    async def mmalpha_publish_roles(self, ctx: commands.Context, channel: discord.TextChannel | None = None) -> None:
+        """Publish or refresh the MMIdle role onboarding panel."""
+        guild = ctx.guild
+        if channel is None:
+            stored_channel_id = int(await self.config.guild(guild).roles_panel_channel_id() or 0)
+            if stored_channel_id <= 0:
+                await ctx.send("No panel channel configured. Use /mmidlerolesetup first.")
+                return
+            configured_channel = guild.get_channel(stored_channel_id)
+            if not isinstance(configured_channel, discord.TextChannel):
+                await ctx.send("Configured panel channel is invalid. Use /mmidlerolesetup.")
+                return
+            channel = configured_channel
+        else:
+            await self.config.guild(guild).roles_panel_channel_id.set(channel.id)
+
+        try:
+            message, hidden_count = await self._publish_role_panel(guild, channel)
+        except RuntimeError as err:
+            await ctx.send(str(err))
+            return
+
+        lines = [f"Role panel published: {message.jump_url}"]
+        if hidden_count > 0:
+            lines.append(f"Note: {hidden_count} role(s) were skipped (Discord limit is 25 options).")
+        await ctx.send("\n".join(lines))
 
     @mmalpha_group.command(name="setapi")
     async def mmalpha_set_api(self, ctx: commands.Context, api_base_url: str) -> None:
