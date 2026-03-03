@@ -199,6 +199,44 @@ class MMAlphaRoleSetupModal(discord.ui.Modal, title="MMIdle Role Panel Setup"):
         await _respond_interaction(interaction, "\n".join(lines))
 
 
+class MMAlphaOpenSetupModalButton(discord.ui.Button):
+    def __init__(self, cog: "MMIdleAlpha", guild_id: int, owner_id: int) -> None:
+        super().__init__(
+            label="Open MMIdle Role Setup",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"mmalpha:setup:open:{guild_id}:{owner_id}",
+        )
+        self.cog = cog
+        self.guild_id = guild_id
+        self.owner_id = owner_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        if guild is None or guild.id != self.guild_id:
+            await _respond_interaction(interaction, "This setup button is only valid in its original server.")
+            return
+        if interaction.user.id != self.owner_id and not interaction.user.guild_permissions.administrator:
+            await _respond_interaction(interaction, "Only the command invoker or an admin can use this button.")
+            return
+
+        guild_cfg = await self.cog.config.guild(guild).all()
+        modal = MMAlphaRoleSetupModal(
+            cog=self.cog,
+            guild=guild,
+            default_title=str(guild_cfg.get("roles_panel_title") or "MMIdle Role Onboarding"),
+            default_description=str(guild_cfg.get("roles_panel_description") or "Pick your server roles below."),
+            selected_channel_id=int(guild_cfg.get("roles_panel_channel_id") or 0) or None,
+            selected_role_ids=[int(r) for r in guild_cfg.get("roles_panel_role_ids", []) if str(r).isdigit()],
+        )
+        await interaction.response.send_modal(modal)
+
+
+class MMAlphaOpenSetupModalView(discord.ui.View):
+    def __init__(self, cog: "MMIdleAlpha", guild_id: int, owner_id: int) -> None:
+        super().__init__(timeout=600)
+        self.add_item(MMAlphaOpenSetupModalButton(cog=cog, guild_id=guild_id, owner_id=owner_id))
+
+
 class MMIdleAlpha(commands.Cog):
     """MMIdle alpha access code redeem and onboarding commands."""
 
@@ -548,7 +586,7 @@ class MMIdleAlpha(commands.Cog):
                     f"- Redeem on web: {cfg['redeem_url']}",
                     "",
                     "Admin config: [p]mmalpha ...",
-                    "Admin role onboarding UI: /mmidlerolesetup",
+                    "Admin role onboarding UI: [p]mmidlerolesetup (slash optional)",
                 ]
             ),
         )
@@ -582,7 +620,7 @@ class MMIdleAlpha(commands.Cog):
     @commands.guild_only()
     @commands.admin_or_permissions(administrator=True)
     async def mmidle_roles_setup(self, ctx: commands.Context) -> None:
-        """Open MMIdle role panel setup modal."""
+        """Open MMIdle role panel setup (prefix-friendly + modal)."""
         guild = ctx.guild
         if guild is None:
             await self._send_private_reply(ctx, "Use this command inside your server.")
@@ -590,7 +628,8 @@ class MMIdleAlpha(commands.Cog):
 
         interaction = getattr(ctx, "interaction", None)
         if interaction is None:
-            await ctx.send("Use the slash command `/mmidlerolesetup` to open the setup modal.")
+            view = MMAlphaOpenSetupModalView(cog=self, guild_id=guild.id, owner_id=ctx.author.id)
+            await ctx.send("Click the button to open MMIdle role setup modal.", view=view)
             return
 
         guild_cfg = await self.config.guild(guild).all()
