@@ -614,21 +614,21 @@ class MMIdleAlpha(commands.Cog):
                     "- /redeem <code> (or prefix: redeem <code>)",
                     "- /alphastatus",
                     "- /alphalink",
-                    "- /mmidleroles (show role panel link in this server)",
+                    "- /rolepanel (show role panel link in this server)",
                     "",
                     "Links:",
                     f"- Apply + link Discord: {cfg['apply_url']}",
                     f"- Redeem on web: {cfg['redeem_url']}",
                     "",
                     "Admin config: [p]mmalpha ...",
-                    "Admin role onboarding UI: [p]mmidlerolesetup (slash optional)",
+                    "Admin role onboarding UI: [p]rolesetup (slash optional)",
                 ]
             ),
         )
 
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     @app_commands.allowed_installs(guilds=True, users=False)
-    @commands.hybrid_command(name="mmidleroles", with_app_command=True)
+    @commands.hybrid_command(name="rolepanel", aliases=["mmidleroles"], with_app_command=True)
     @commands.guild_only()
     async def mmidle_roles(self, ctx: commands.Context) -> None:
         """Show the MMIdle role onboarding panel link."""
@@ -651,7 +651,7 @@ class MMIdleAlpha(commands.Cog):
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.default_permissions(administrator=True)
-    @commands.hybrid_command(name="mmidlerolesetup", with_app_command=True)
+    @commands.hybrid_command(name="rolesetup", aliases=["mmidlerolesetup"], with_app_command=True)
     @commands.guild_only()
     @commands.admin_or_permissions(administrator=True)
     async def mmidle_roles_setup(self, ctx: commands.Context) -> None:
