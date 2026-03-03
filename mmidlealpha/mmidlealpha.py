@@ -600,9 +600,7 @@ class MMIdleAlpha(commands.Cog):
             lines.append(f"Skipped (bot role hierarchy): {', '.join(unmanageable)}")
         await _respond_interaction(interaction, "\n".join(lines))
 
-    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-    @app_commands.allowed_installs(guilds=True, users=True)
-    @commands.hybrid_command(name="mmidle", aliases=["mmidlealpha"], with_app_command=True)
+    @commands.command(name="mmidle", aliases=["mmidlealpha"])
     async def mmidle_help(self, ctx: commands.Context) -> None:
         """Show MMIdle alpha command shortcuts."""
         cfg = await self._fetch_config()
@@ -610,25 +608,23 @@ class MMIdleAlpha(commands.Cog):
             ctx,
             "\n".join(
                 [
-                    "MMIdle alpha commands:",
-                    "- /redeem <code> (or prefix: redeem <code>)",
-                    "- /alphastatus",
-                    "- /alphalink",
-                    "- /rolepanel (show role panel link in this server)",
+                    "MMIdle alpha commands (prefix):",
+                    "- redeem <code> (slash also: /redeem)",
+                    "- alphastatus",
+                    "- alphalink",
+                    "- rolepanel (show role panel link in this server)",
                     "",
                     "Links:",
                     f"- Apply + link Discord: {cfg['apply_url']}",
                     f"- Redeem on web: {cfg['redeem_url']}",
                     "",
                     "Admin config: [p]mmalpha ...",
-                    "Admin role onboarding UI: [p]rolesetup (slash optional)",
+                    "Admin role onboarding UI: rolesetup (slash optional for direct modal)",
                 ]
             ),
         )
 
-    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-    @app_commands.allowed_installs(guilds=True, users=False)
-    @commands.hybrid_command(name="rolepanel", aliases=["mmidleroles"], with_app_command=True)
+    @commands.command(name="rolepanel", aliases=["mmidleroles"])
     @commands.guild_only()
     async def mmidle_roles(self, ctx: commands.Context) -> None:
         """Show the MMIdle role onboarding panel link."""
@@ -765,9 +761,7 @@ class MMIdleAlpha(commands.Cog):
             return
         raise error
 
-    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-    @app_commands.allowed_installs(guilds=True, users=True)
-    @commands.hybrid_command(name="alphalink", with_app_command=True)
+    @commands.command(name="alphalink")
     async def alpha_link_help(self, ctx: commands.Context) -> None:
         """Get MMIdle alpha onboarding links."""
         cfg = await self._fetch_config()
@@ -778,14 +772,12 @@ class MMIdleAlpha(commands.Cog):
                     "MMIdle alpha onboarding:",
                     f"- Apply + link Discord: {cfg['apply_url']}",
                     f"- Redeem code on site: {cfg['redeem_url']}",
-                    "- Or redeem directly in Discord with /redeem CODE",
+                    "- Or redeem directly in Discord with redeem CODE or /redeem CODE",
                 ]
             ),
         )
 
-    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-    @app_commands.allowed_installs(guilds=True, users=True)
-    @commands.hybrid_command(name="alphastatus", with_app_command=True)
+    @commands.command(name="alphastatus")
     async def alpha_status(self, ctx: commands.Context) -> None:
         """Show MMIdle alpha/link status for your Discord account."""
         try:
@@ -850,11 +842,7 @@ class MMIdleAlpha(commands.Cog):
 
         await self._send_private_reply(ctx, "\n".join(lines))
 
-    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-    @app_commands.allowed_installs(guilds=True, users=False)
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(user="Discord user to inspect (defaults to yourself)")
-    @commands.hybrid_command(name="alphadiag", with_app_command=True)
+    @commands.command(name="alphadiag")
     @commands.admin_or_permissions(administrator=True)
     async def alpha_diag(self, ctx: commands.Context, user: discord.User | None = None) -> None:
         """Staff diagnostic for MMIdle Discord alpha integration."""

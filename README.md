@@ -129,17 +129,17 @@ Then reload the cog:
    ```
 
 #### Player Commands
-- `/mmidle` (alias: `/mmidlealpha`): Show MMIdle alpha command shortcuts
-- `/redeem <code>`: Redeem alpha code against linked MMIdle account
-- `/alphalink`: Show MMIdle apply/link/redeem URLs
-- `/alphastatus`: Show linked/account alpha status
-- `/rolepanel` (alias: `/mmidleroles`): Get jump link to the MMIdle role onboarding panel (if configured)
+- `mmidle` (alias: `mmidlealpha`): Show MMIdle alpha command shortcuts
+- `redeem <code>` or `/redeem <code>`: Redeem alpha code against linked MMIdle account
+- `alphalink`: Show MMIdle apply/link/redeem URLs
+- `alphastatus`: Show linked/account alpha status
+- `rolepanel` (alias: `mmidleroles`): Get jump link to the MMIdle role onboarding panel (if configured)
 
 #### Staff Command
-- `/alphadiag [user]`: Admin-only API health + integration diagnostic for a Discord user
+- `alphadiag [user]`: Admin-only API health + integration diagnostic for a Discord user
 
 #### Role Onboarding Setup (Admin)
-- `/rolesetup` (alias: `/mmidlerolesetup`): Interactive setup UI using Discord channel/role selects (supports role names with spaces)
+- `rolesetup` (alias: `mmidlerolesetup`): Interactive setup flow (prefix-friendly). Slash variant is optional and opens modal immediately.
 - `[p]mmalpha publishroles [#channel]`: Publish/refresh the onboarding role panel
 - `[p]mmalpha roleshow`: Inspect current onboarding panel config
 
